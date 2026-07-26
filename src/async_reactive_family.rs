@@ -24,10 +24,11 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::cell_family::EntryKind;
-use crate::{AsyncComputed, AsyncContext, AsyncSource};
+use crate::{AsyncComputed, AsyncContext, AsyncSource, Read};
 
 mod sealed {
     pub trait Sealed {}
@@ -107,6 +108,20 @@ struct MapState<K, H> {
 
 struct MapInner<K, H> {
     state: Mutex<MapState<K, H>>,
+    /// Reactive *set-membership* signal, minted on the owning [`AsyncContext`].
+    /// Bumped only when the **set** of keys changes, so `len`/`contains_key`
+    /// readers are invalidated without coupling to entry values or to pure
+    /// reordering. Mirrors the single-threaded map's plane.
+    membership: AsyncSource<u64>,
+    /// Atomic (untracked) mirror of the membership version so mutators can bump
+    /// the reactive cell without registering a spurious dependency.
+    version: AtomicU64,
+    /// Reactive *order* signal. Bumped on add/remove and on any future
+    /// move/reorder, so `keys` readers are invalidated independently of
+    /// `len`/`contains_key` readers.
+    order_signal: AsyncSource<u64>,
+    /// Atomic mirror of the order version.
+    order_version: AtomicU64,
 }
 
 /// The async keyed reactive collection (`#reactivemap`) generic over the entry
@@ -136,16 +151,86 @@ where
     H: AsyncMapHandle<V>,
 {
     /// Create an empty map bound to `ctx`.
-    pub fn new(_ctx: &AsyncContext) -> Self {
+    ///
+    /// `ctx` is load-bearing: the membership and order signals are cells minted
+    /// on it, which is what makes `keys`/`len`/`contains_key` reactive here.
+    pub fn new(ctx: &AsyncContext) -> Self {
         Self {
             inner: Arc::new(MapInner {
                 state: Mutex::new(MapState {
                     materialized: HashMap::new(),
                     order: Vec::new(),
                 }),
+                membership: ctx.source(0u64),
+                version: AtomicU64::new(0),
+                order_signal: ctx.source(0u64),
+                order_version: AtomicU64::new(0),
             }),
             _marker: PhantomData,
         }
+    }
+
+    /// Bump the *order* signal (invalidates `keys` readers).
+    ///
+    /// Must be called with the map's `Mutex` released.
+    fn bump_order(&self, ctx: &AsyncContext) {
+        let next = self.inner.order_version.fetch_add(1, Ordering::Relaxed) + 1;
+        ctx.set(&self.inner.order_signal, next);
+    }
+
+    /// Bump set-membership (invalidates `len`/`contains_key` readers). Always
+    /// paired with an order bump because add/remove change order too.
+    fn bump_membership(&self, ctx: &AsyncContext) {
+        let next = self.inner.version.fetch_add(1, Ordering::Relaxed) + 1;
+        ctx.set(&self.inner.membership, next);
+        self.bump_order(ctx);
+    }
+
+    /// Reactive snapshot of the keys in their current order.
+    ///
+    /// Generic over the read surface, exactly like the single-threaded map's
+    /// `ComputeOps` genericity: pass an [`AsyncComputeContext`] from inside a
+    /// compute and the read registers a dependency edge; pass a bare
+    /// [`AsyncContext`] and it does not.
+    ///
+    /// [`AsyncComputeContext`]: crate::AsyncComputeContext
+    pub fn keys<C>(&self, ctx: &C) -> Vec<K>
+    where
+        AsyncSource<u64>: Read<C, Output = u64>,
+    {
+        let _ = self.inner.order_signal.read(ctx);
+        let state = self.inner.state.lock().expect("map state mutex poisoned");
+        state.order.clone()
+    }
+
+    /// Reactive entry count. Subscribes the caller to membership changes only.
+    /// Same tracking discipline as [`keys`](Self::keys).
+    pub fn len<C>(&self, ctx: &C) -> usize
+    where
+        AsyncSource<u64>: Read<C, Output = u64>,
+    {
+        let _ = self.inner.membership.read(ctx);
+        let state = self.inner.state.lock().expect("map state mutex poisoned");
+        state.order.len()
+    }
+
+    /// Reactive emptiness check. Subscribes the caller to membership changes.
+    pub fn is_empty<C>(&self, ctx: &C) -> bool
+    where
+        AsyncSource<u64>: Read<C, Output = u64>,
+    {
+        self.len(ctx) == 0
+    }
+
+    /// Reactive membership test for `key`. Subscribes the caller to membership
+    /// changes (add/remove of any key), not to value changes.
+    pub fn contains_key<C>(&self, ctx: &C, key: &K) -> bool
+    where
+        AsyncSource<u64>: Read<C, Output = u64>,
+    {
+        let _ = self.inner.membership.read(ctx);
+        let state = self.inner.state.lock().expect("map state mutex poisoned");
+        state.materialized.contains_key(key)
     }
 
     fn mint_with(
@@ -169,6 +254,9 @@ where
         }
         state.materialized.insert(key.clone(), handle);
         state.order.push(key);
+        drop(state);
+        // Lock released first: `ctx.set` can drive a dependent recompute.
+        self.bump_membership(ctx);
         handle
     }
 
@@ -306,6 +394,64 @@ mod tests {
     use super::*;
 
     fn assert_send_sync<T: Send + Sync>() {}
+
+    /// The membership plane must invalidate a dependent, not merely return the
+    /// right number. Read through the *tracking* view (`AsyncComputeContext`),
+    /// which is what registers the edge — a bare `AsyncContext` read is
+    /// deliberately untracked.
+    #[tokio::test]
+    async fn membership_plane_invalidates_a_dependent_computed() {
+        let ctx = AsyncContext::new();
+        let fam: AsyncSourceMap<u64, bool> = AsyncSourceMap::new(&ctx);
+        let f = fam.clone();
+        let observed = ctx.computed_async(move |actx| {
+            let n = f.len(&actx);
+            async move { n }
+        });
+        assert_eq!(ctx.get_async(&observed).await, 0);
+
+        fam.set(&ctx, 1, true);
+        assert_eq!(
+            ctx.get_async(&observed).await,
+            1,
+            "adding a key must invalidate a len reader on the async plane"
+        );
+
+        fam.set(&ctx, 2, true);
+        assert_eq!(ctx.get_async(&observed).await, 2);
+    }
+
+    /// `keys` subscribes to the order signal and returns present-set order.
+    #[tokio::test]
+    async fn keys_is_reactive_and_ordered() {
+        let ctx = AsyncContext::new();
+        let fam: AsyncSourceMap<u64, bool> = AsyncSourceMap::new(&ctx);
+        let f = fam.clone();
+        let seen = ctx.computed_async(move |actx| {
+            let ks = f.keys(&actx);
+            async move { ks }
+        });
+        assert!(ctx.get_async(&seen).await.is_empty());
+
+        for k in [3u64, 1, 2] {
+            fam.set(&ctx, k, true);
+        }
+        assert_eq!(ctx.get_async(&seen).await, vec![3, 1, 2]);
+    }
+
+    /// A bare `AsyncContext` read is untracked by design — the same discipline
+    /// the sync map expresses through `ComputeOps`. Pinning it so the generic
+    /// read surface is not silently collapsed to one behaviour later.
+    #[tokio::test]
+    async fn bare_context_read_is_untracked_but_correct() {
+        let ctx = AsyncContext::new();
+        let fam: AsyncSourceMap<u64, bool> = AsyncSourceMap::new(&ctx);
+        assert_eq!(fam.len(&ctx), 0);
+        fam.set(&ctx, 1, true);
+        assert_eq!(fam.len(&ctx), 1);
+        assert!(fam.contains_key(&ctx, &1));
+        assert_eq!(fam.keys(&ctx), vec![1]);
+    }
 
     #[test]
     fn map_is_send_sync() {

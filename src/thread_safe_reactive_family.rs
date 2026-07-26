@@ -27,6 +27,7 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::cell_family::EntryKind;
@@ -119,6 +120,22 @@ struct MapState<K, H> {
 
 struct MapInner<K, H> {
     state: Mutex<MapState<K, H>>,
+    /// Reactive *set-membership* signal, minted on the owning
+    /// [`ThreadSafeContext`]. Holds a monotonic version bumped only when the
+    /// **set** of keys changes. Reading it (in `len`/`contains_key`/`is_empty`)
+    /// subscribes the caller to membership changes without coupling to entry
+    /// values *or to pure reordering*. Mirrors the single-threaded map's plane.
+    membership: Source<u64>,
+    /// Atomic (untracked) mirror of the membership version so mutators can bump
+    /// the reactive cell without registering a spurious dependency. `AtomicU64`
+    /// rather than the sync map's `Cell<u64>` because this map is `Send + Sync`.
+    version: AtomicU64,
+    /// Reactive *order* signal. Bumped on add/remove and on any future
+    /// move/reorder, so `keys` readers are invalidated independently of
+    /// `len`/`contains_key` readers that only care about set identity.
+    order_signal: Source<u64>,
+    /// Atomic mirror of the order version.
+    order_version: AtomicU64,
 }
 
 /// The thread-safe keyed reactive collection (`#reactivemap`) generic over the
@@ -152,16 +169,69 @@ where
     H: ThreadSafeMapHandle<V>,
 {
     /// Create an empty map bound to `ctx`.
-    pub fn new(_ctx: &ThreadSafeContext) -> Self {
+    ///
+    /// `ctx` is load-bearing: the membership and order signals are cells minted
+    /// on it, which is what makes `keys`/`len`/`contains_key` reactive here the
+    /// same way they are on the single-threaded map.
+    pub fn new(ctx: &ThreadSafeContext) -> Self {
         Self {
             inner: Arc::new(MapInner {
                 state: Mutex::new(MapState {
                     materialized: HashMap::new(),
                     order: Vec::new(),
                 }),
+                membership: ctx.source(0u64),
+                version: AtomicU64::new(0),
+                order_signal: ctx.source(0u64),
+                order_version: AtomicU64::new(0),
             }),
             _marker: PhantomData,
         }
+    }
+
+    /// Bump the *order* signal (invalidates `keys` readers).
+    ///
+    /// Must be called with the map's `Mutex` released: `ctx.set` can drive a
+    /// dependent recompute, which may re-enter this map.
+    fn bump_order(&self, ctx: &ThreadSafeContext) {
+        let next = self.inner.order_version.fetch_add(1, Ordering::Relaxed) + 1;
+        ctx.set(&self.inner.order_signal, next);
+    }
+
+    /// Bump set-membership (invalidates `len`/`contains_key` readers). Always
+    /// paired with an order bump because add/remove change order too.
+    fn bump_membership(&self, ctx: &ThreadSafeContext) {
+        let next = self.inner.version.fetch_add(1, Ordering::Relaxed) + 1;
+        ctx.set(&self.inner.membership, next);
+        self.bump_order(ctx);
+    }
+
+    /// Reactive snapshot of the keys in their current order. Subscribes the
+    /// caller to **order** changes, not to per-entry value changes.
+    pub fn keys(&self, ctx: &ThreadSafeContext) -> Vec<K> {
+        let _ = ctx.get(&self.inner.order_signal);
+        let state = self.inner.state.lock().expect("map state mutex poisoned");
+        state.order.clone()
+    }
+
+    /// Reactive entry count. Subscribes the caller to membership changes only.
+    pub fn len(&self, ctx: &ThreadSafeContext) -> usize {
+        let _ = ctx.get(&self.inner.membership);
+        let state = self.inner.state.lock().expect("map state mutex poisoned");
+        state.order.len()
+    }
+
+    /// Reactive emptiness check. Subscribes the caller to membership changes.
+    pub fn is_empty(&self, ctx: &ThreadSafeContext) -> bool {
+        self.len(ctx) == 0
+    }
+
+    /// Reactive membership test for `key`. Subscribes the caller to membership
+    /// changes (add/remove of any key), not to value changes.
+    pub fn contains_key(&self, ctx: &ThreadSafeContext, key: &K) -> bool {
+        let _ = ctx.get(&self.inner.membership);
+        let state = self.inner.state.lock().expect("map state mutex poisoned");
+        state.materialized.contains_key(key)
     }
 
     fn mint_with(
@@ -188,6 +258,10 @@ where
         }
         state.materialized.insert(key.clone(), handle);
         state.order.push(key);
+        drop(state);
+        // Lock released first: `ctx.set` can drive a dependent recompute that
+        // re-enters this map.
+        self.bump_membership(ctx);
         handle
     }
 
@@ -336,6 +410,69 @@ mod tests {
     use super::*;
 
     fn assert_send_sync<T: Send + Sync>() {}
+
+    /// The membership/order plane must actually *invalidate* a dependent, not
+    /// merely return the right number. A computed that reads `len` has to
+    /// recompute when a key is added.
+    #[test]
+    fn membership_plane_invalidates_a_dependent_computed() {
+        let ctx = ThreadSafeContext::new();
+        let fam: ThreadSafeSourceMap<u64, bool> = ThreadSafeSourceMap::new(&ctx);
+        let f = fam.clone();
+        let observed = ctx.computed(move |c| f.len(c));
+        assert_eq!(ctx.get(&observed), 0);
+
+        fam.set(&ctx, 1, true);
+        assert_eq!(
+            ctx.get(&observed),
+            1,
+            "adding a key must invalidate a len reader"
+        );
+
+        fam.set(&ctx, 2, true);
+        assert_eq!(ctx.get(&observed), 2);
+
+        // Re-setting an existing key changes a value, not the key set: the
+        // membership reader must NOT see a change.
+        fam.set(&ctx, 2, false);
+        assert_eq!(ctx.get(&observed), 2);
+    }
+
+    /// `keys` subscribes to the order signal and returns present-set order.
+    #[test]
+    fn keys_is_reactive_and_ordered() {
+        let ctx = ThreadSafeContext::new();
+        let fam: ThreadSafeSourceMap<u64, bool> = ThreadSafeSourceMap::new(&ctx);
+        let f = fam.clone();
+        let seen = ctx.computed(move |c| f.keys(c));
+        assert!(ctx.get(&seen).is_empty());
+
+        for k in [3u64, 1, 2] {
+            fam.set(&ctx, k, true);
+        }
+        assert_eq!(
+            ctx.get(&seen),
+            vec![3, 1, 2],
+            "keys must track insertion order reactively"
+        );
+    }
+
+    /// `contains_key` subscribes to membership, and is a *set* test — not a
+    /// value test.
+    #[test]
+    fn contains_key_is_reactive() {
+        let ctx = ThreadSafeContext::new();
+        let fam: ThreadSafeSourceMap<u64, bool> = ThreadSafeSourceMap::new(&ctx);
+        let f = fam.clone();
+        let has7 = ctx.computed(move |c| f.contains_key(c, &7));
+        assert!(!ctx.get(&has7));
+
+        fam.set(&ctx, 7, true);
+        assert!(
+            ctx.get(&has7),
+            "adding the key must invalidate a contains_key reader"
+        );
+    }
 
     #[test]
     fn map_is_send_sync() {
