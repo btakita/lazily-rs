@@ -74,6 +74,10 @@ mod source_tree;
 pub use context::audit_probe;
 #[cfg(feature = "async")]
 mod async_queue;
+#[cfg(feature = "async")]
+mod async_topic;
+#[cfg(feature = "async")]
+mod async_work_queue;
 mod coordination;
 #[cfg(feature = "distributed")]
 mod crdt;
@@ -130,7 +134,12 @@ mod thread_safe;
 mod thread_safe_queue;
 #[cfg(feature = "thread-safe")]
 mod thread_safe_reactive_family;
+#[cfg(feature = "thread-safe")]
+mod thread_safe_topic;
+#[cfg(feature = "thread-safe")]
+mod thread_safe_work_queue;
 mod time;
+mod topic_core;
 #[cfg(feature = "ipc")]
 mod transport;
 mod typed_context;
@@ -140,6 +149,7 @@ mod webrtc_signaling;
 mod webrtc_transport;
 mod windowing;
 mod work_queue;
+mod work_queue_core;
 #[cfg(feature = "websocket")]
 mod ws_backend;
 
@@ -151,7 +161,7 @@ pub use async_context::{
     AsyncSource, AsyncTeardownScope,
 };
 #[cfg(feature = "async")]
-pub use async_queue::AsyncQueueCell;
+pub use async_queue::{AsyncQueueCell, AsyncQueueReaderHandles};
 #[cfg(feature = "async")]
 #[allow(deprecated)]
 pub use async_reactive_family::{AsyncCellMap, AsyncSlotMap};
@@ -159,6 +169,10 @@ pub use async_reactive_family::{AsyncCellMap, AsyncSlotMap};
 pub use async_reactive_family::{
     AsyncComputedMap, AsyncMapHandle, AsyncReactiveMap, AsyncSourceMap,
 };
+#[cfg(feature = "async")]
+pub use async_topic::AsyncTopicCell;
+#[cfg(feature = "async")]
+pub use async_work_queue::{AsyncWorkQueueCell, AsyncWorkQueueReaderHandles};
 #[cfg(feature = "webrtc")]
 pub use bridge::{BridgeHub, HubError};
 pub use cell::{Computed, Source};
@@ -341,6 +355,10 @@ pub use thread_safe_reactive_family::{ThreadSafeCellMap, ThreadSafeSlotMap};
 pub use thread_safe_reactive_family::{
     ThreadSafeComputedMap, ThreadSafeMapHandle, ThreadSafeReactiveMap, ThreadSafeSourceMap,
 };
+#[cfg(feature = "thread-safe")]
+pub use thread_safe_topic::ThreadSafeTopicCell;
+#[cfg(feature = "thread-safe")]
+pub use thread_safe_work_queue::{ThreadSafeWorkQueueCell, ThreadSafeWorkQueueReaderHandles};
 pub use time::{
     CronCell, CronCore, DeadlineCell, DeadlineCore, Deadlined, IntervalCell, IntervalCore,
     ManualClock, TimelineSource, TimerCell, TimerCore,

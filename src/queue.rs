@@ -102,6 +102,7 @@ use crate::Context;
 use crate::cell::Computed;
 use crate::cell::Source;
 use crate::context::ComputeOps;
+use crate::topic_core::TopicCore;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -728,21 +729,8 @@ pub enum TopicSubscribeOutcome {
     AlreadyConnected,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TopicSubscription {
-    cursor: u64,
-    durability: TopicDurability,
-    connected: bool,
-}
-
-struct TopicState<T, I> {
-    base_offset: u64,
-    elements: VecDeque<T>,
-    subscriptions: HashMap<I, TopicSubscription>,
-}
-
 struct TopicCellInner<T, I> {
-    state: Rc<std::cell::RefCell<TopicState<T, I>>>,
+    core: Rc<std::cell::RefCell<TopicCore<T, I>>>,
     // A distinct demand-driven reader per stable subscriber is the essential
     // invalidation boundary: publish fans out to connected readers; advance,
     // disconnect, and reconnect touch only the named reader.
@@ -777,11 +765,7 @@ where
     pub fn new(_ctx: &Context) -> Self {
         Self {
             inner: Rc::new(TopicCellInner {
-                state: Rc::new(std::cell::RefCell::new(TopicState {
-                    base_offset: 0,
-                    elements: VecDeque::new(),
-                    subscriptions: HashMap::new(),
-                })),
+                core: Rc::new(std::cell::RefCell::new(TopicCore::new())),
                 readers: std::cell::RefCell::new(HashMap::new()),
             }),
         }
@@ -794,50 +778,13 @@ where
     ///
     /// Panics if any cursor lies outside `base_offset..=end_offset`.
     pub fn from_snapshot(ctx: &Context, snapshot: TopicSnapshot<T, I>) -> Self {
-        let end_offset = snapshot.base_offset + snapshot.elements.len() as u64;
-        for sub in snapshot.subscriptions.values() {
-            assert!(
-                (snapshot.base_offset..=end_offset).contains(&sub.cursor),
-                "TopicCell cursor must be within the retained absolute offset range"
-            );
-            assert!(
-                sub.durability != TopicDurability::Ephemeral || sub.connected,
-                "disconnected ephemeral TopicCell subscriptions must be removed"
-            );
-        }
-
-        let state = Rc::new(std::cell::RefCell::new(TopicState {
-            base_offset: snapshot.base_offset,
-            elements: snapshot.elements.into(),
-            subscriptions: snapshot
-                .subscriptions
-                .into_iter()
-                .map(|(id, sub)| {
-                    (
-                        id,
-                        TopicSubscription {
-                            cursor: sub.cursor,
-                            durability: sub.durability,
-                            connected: sub.connected,
-                        },
-                    )
-                })
-                .collect(),
-        }));
         let topic = Self {
             inner: Rc::new(TopicCellInner {
-                state,
+                core: Rc::new(std::cell::RefCell::new(TopicCore::from_snapshot(snapshot))),
                 readers: std::cell::RefCell::new(HashMap::new()),
             }),
         };
-        let ids: Vec<I> = topic
-            .inner
-            .state
-            .borrow()
-            .subscriptions
-            .keys()
-            .cloned()
-            .collect();
+        let ids = topic.inner.core.borrow().subscription_ids();
         for id in ids {
             topic.ensure_reader(ctx, id);
         }
@@ -848,19 +795,9 @@ where
         if let Some(handle) = self.inner.readers.borrow().get(&id) {
             return *handle;
         }
-        let state = Rc::clone(&self.inner.state);
+        let core = Rc::clone(&self.inner.core);
         let reader_id = id.clone();
-        let handle = ctx.computed(move |_ctx| {
-            let state = state.borrow();
-            let Some(sub) = state.subscriptions.get(&reader_id) else {
-                return Vec::new();
-            };
-            if !sub.connected {
-                return Vec::new();
-            }
-            let skip = sub.cursor.saturating_sub(state.base_offset) as usize;
-            state.elements.iter().skip(skip).cloned().collect()
-        });
+        let handle = ctx.computed(move |_ctx| core.borrow().read_suffix(&reader_id));
         self.inner.readers.borrow_mut().insert(id, handle);
         handle
     }
@@ -874,38 +811,16 @@ where
         id: I,
         durability: TopicDurability,
     ) -> TopicSubscribeOutcome {
-        let existing = {
-            let mut state = self.inner.state.borrow_mut();
-            if let Some(sub) = state.subscriptions.get_mut(&id) {
-                if sub.connected {
-                    Some((TopicSubscribeOutcome::AlreadyConnected, false))
-                } else {
-                    sub.connected = true;
-                    Some((TopicSubscribeOutcome::Reconnected, true))
-                }
-            } else {
-                let cursor = state.base_offset + state.elements.len() as u64;
-                state.subscriptions.insert(
-                    id.clone(),
-                    TopicSubscription {
-                        cursor,
-                        durability,
-                        connected: true,
-                    },
-                );
-                None
-            }
-        };
-
+        let (outcome, invalidate) = self
+            .inner
+            .core
+            .borrow_mut()
+            .subscribe(id.clone(), durability);
         let reader = self.ensure_reader(ctx, id);
-        match existing {
-            Some((outcome, true)) => {
-                ctx.clear_slots(&[reader.id]);
-                outcome
-            }
-            Some((outcome, false)) => outcome,
-            None => TopicSubscribeOutcome::Created,
+        if invalidate {
+            ctx.clear_slots(&[reader.id]);
         }
+        outcome
     }
 
     /// Reconnect a durable identity, preserving its cursor. Unknown identities
@@ -918,21 +833,8 @@ where
     /// cursor; ephemeral records and their retention-neutral session state are
     /// removed. Returns whether state changed.
     pub fn disconnect(&self, ctx: &Context, id: &I) -> bool {
-        let (changed, remove_reader) = {
-            let mut state = self.inner.state.borrow_mut();
-            let Some(sub) = state.subscriptions.get_mut(id) else {
-                return false;
-            };
-            if !sub.connected {
-                return false;
-            }
-            if sub.durability == TopicDurability::Ephemeral {
-                state.subscriptions.remove(id);
-                (true, true)
-            } else {
-                sub.connected = false;
-                (true, false)
-            }
+        let Some(remove_reader) = self.inner.core.borrow_mut().disconnect(id) else {
+            return false;
         };
         let reader = if remove_reader {
             self.inner.readers.borrow_mut().remove(id)
@@ -942,24 +844,13 @@ where
         if let Some(reader) = reader {
             ctx.clear_slots(&[reader.id]);
         }
-        changed
+        true
     }
 
     /// Append exactly one element, leaving every cursor unchanged. Returns its
     /// absolute offset and invalidates every connected subscriber independently.
     pub fn publish(&self, ctx: &Context, value: T) -> u64 {
-        let (offset, connected): (u64, Vec<I>) = {
-            let mut state = self.inner.state.borrow_mut();
-            let offset = state.base_offset + state.elements.len() as u64;
-            state.elements.push_back(value);
-            let connected = state
-                .subscriptions
-                .iter()
-                .filter(|(_, sub)| sub.connected && sub.cursor <= offset)
-                .map(|(id, _)| id.clone())
-                .collect();
-            (offset, connected)
-        };
+        let (offset, connected) = self.inner.core.borrow_mut().publish(value);
         let readers = self.inner.readers.borrow();
         let roots: Vec<_> = connected
             .iter()
@@ -990,25 +881,7 @@ where
     /// passed. At the tail, for an offline subscriber, or for an unknown id this
     /// is a no-op returning `None`.
     pub fn advance(&self, ctx: &Context, id: &I) -> Option<T> {
-        let value = {
-            let mut state = self.inner.state.borrow_mut();
-            let (cursor, connected) = state
-                .subscriptions
-                .get(id)
-                .map(|sub| (sub.cursor, sub.connected))?;
-            let end_offset = state.base_offset + state.elements.len() as u64;
-            if !connected || cursor >= end_offset {
-                return None;
-            }
-            let index = cursor.saturating_sub(state.base_offset) as usize;
-            let value = state.elements.get(index).cloned()?;
-            state
-                .subscriptions
-                .get_mut(id)
-                .expect("subscription exists")
-                .cursor += 1;
-            value
-        };
+        let value = self.inner.core.borrow_mut().advance(id)?;
         if let Some(reader) = self.inner.readers.borrow().get(id) {
             ctx.clear_slots(&[reader.id]);
         }
@@ -1019,49 +892,27 @@ where
     /// elements when no durable subscription exists. Subscriber cursors remain
     /// absolute, so safe GC invalidates no reader. Returns the removed count.
     pub fn gc(&self) -> usize {
-        let mut state = self.inner.state.borrow_mut();
-        let end_offset = state.base_offset + state.elements.len() as u64;
-        let frontier = state
-            .subscriptions
-            .values()
-            .filter(|sub| sub.durability == TopicDurability::Durable)
-            .map(|sub| sub.cursor)
-            .min()
-            .unwrap_or(end_offset);
-        let remove = frontier.saturating_sub(state.base_offset) as usize;
-        state.elements.drain(..remove);
-        state.base_offset = frontier;
-        remove
+        self.inner.core.borrow_mut().gc()
     }
 
     /// Absolute offset of the first retained element.
     pub fn base_offset(&self) -> u64 {
-        self.inner.state.borrow().base_offset
+        self.inner.core.borrow().base_offset()
     }
 
     /// Absolute offset immediately after the retained append log.
     pub fn end_offset(&self) -> u64 {
-        let state = self.inner.state.borrow();
-        state.base_offset + state.elements.len() as u64
+        self.inner.core.borrow().end_offset()
     }
 
     /// Non-reactive retained-log snapshot, oldest first.
     pub fn elements(&self) -> Vec<T> {
-        self.inner.state.borrow().elements.iter().cloned().collect()
+        self.inner.core.borrow().elements()
     }
 
     /// Snapshot one subscription record.
     pub fn subscription(&self, id: &I) -> Option<TopicSubscriptionSnapshot> {
-        self.inner
-            .state
-            .borrow()
-            .subscriptions
-            .get(id)
-            .map(|sub| TopicSubscriptionSnapshot {
-                cursor: sub.cursor,
-                durability: sub.durability,
-                connected: sub.connected,
-            })
+        self.inner.core.borrow().subscription(id)
     }
 
     /// Handle to the named subscriber's reactive unread suffix.
@@ -1071,25 +922,7 @@ where
 
     /// Atomic durable/live-state snapshot suitable for restart and conformance.
     pub fn snapshot(&self) -> TopicSnapshot<T, I> {
-        let state = self.inner.state.borrow();
-        TopicSnapshot {
-            base_offset: state.base_offset,
-            elements: state.elements.iter().cloned().collect(),
-            subscriptions: state
-                .subscriptions
-                .iter()
-                .map(|(id, sub)| {
-                    (
-                        id.clone(),
-                        TopicSubscriptionSnapshot {
-                            cursor: sub.cursor,
-                            durability: sub.durability,
-                            connected: sub.connected,
-                        },
-                    )
-                })
-                .collect(),
-        }
+        self.inner.core.borrow().snapshot()
     }
 }
 

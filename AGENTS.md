@@ -44,6 +44,30 @@ this repo.
   (`#lzworkqueue`): FIFO exclusive claims with stable item/fresh delivery ids,
   worker-owned ack/nack, strict visibility-timeout redelivery, bounded attempts,
   DLQ, and independent pending/in-flight/dead-letter reader kinds.
+- `src/topic_core.rs` / `src/work_queue_core.rs` — the graph-agnostic cores every
+  queue-family flavor shares (`#lazilythreadsafetopiccel`,
+  `#lazilythreadsafeworkqueu`), the same split `keyed_order.rs` makes for the map
+  family and for the same reason: the cursor/retention/GC algebra and the
+  lease/ack/nack/redelivery/DLQ state machine touch no handle and await nothing.
+  **Reactivity is deliberately excluded** — invalidation is a graph write, so
+  every mutator returns *which readers changed* (a `Vec` of subscriber ids;
+  `Transition::changed() -> ReaderChange`) and each flavor clears exactly that set
+  on its own graph. `QueueStorage` already played this role for `QueueCell`
+- `src/thread_safe_queue.rs` / `src/thread_safe_topic.rs` /
+  `src/thread_safe_work_queue.rs` — the `Send + Sync` flavors (feature
+  `thread-safe`). `Arc<Mutex<core>>` storage with invalidation run **outside** the
+  lock (a reader's compute takes the context lock then the core lock, so an op
+  that invalidated while holding the core inverts the order and deadlocks), and
+  multi-root invalidation via `batch()` — `ThreadSafeContext` needs no
+  `clear_slots` because `finish_batch` hands every collected root to one
+  `clear_frontier_locked`
+- `src/async_queue.rs` / `src/async_topic.rs` / `src/async_work_queue.rs` — the
+  `AsyncContext` flavors (feature `async`). Reader kinds use
+  `AsyncContext::computed` (synchronous compute, async graph), so `len()`,
+  `read_stream()` and `pending_len()` return plain values rather than an `Option`
+  needing a settle step: **nothing in the queue family is async-coloured**, and
+  the work queue's clock stays a caller argument so lease expiry is deterministic
+  and fixture-replayable. Multi-root invalidation via `AsyncContext::clear_slots`
 - `src/time.rs` — temporal source primitives (`#lztime`): logical-clock-driven `TimelineSource` cores (`TimerCore`/`IntervalCore`/`CronCore`/`DeadlineCore`) split from thin reactive cells (`TimerCell` single-shot / `IntervalCell` periodic / `CronCell` pattern-periodic / `DeadlineCell<T>` value+deadline → `Deadlined`), plus `ManualClock`. Edge-only reactive invalidation; `BytesPayload` cores (`DeadlineCell` is `PyObjectPayload`). Foundation for leases/expiry/windows/presence.
 - `src/transport.rs` — cross-process zero-copy transport (`#lzzcpy`): `BlobBackend` adapter trait + `InProcessBackend` (wraps `ShmBlobArena`) + `ArrowBackend` (Arrow IPC stream bytes) + `ShmBackend` (POSIX `shm_open`+`mmap`, `shm` feature, Linux) + `spill_message`/`resolve_value` policy + `BlobRouter` multi-backend resolver
 - `src/crdt_tree.rs` — `CrdtTree` lossless document contract (`#lzcrdttree`): merge, frontier, delta, empty-frontier snapshot, and materialized value; implemented by `TextCrdt`
@@ -73,6 +97,14 @@ this repo.
 - `tests/relay_core.rs` — RelayCell Phase 2 (`#relaycell`) spike: converged-egress independent of drain schedule (operational `relay_converges`) across Sum/Max/KeepLatest; Block/DropNewest/DropOldest/Conflate overflow behaviour; reactive `depth`/`is_full`/`is_empty`; construction rejects Conflate for RawFifo
 - `tests/merge_conformance.rs` — RelayCell Phase 1 (`#relaycell`) cross-language fixture replay (lazily-spec/conformance/collections/`mergecell_algebra.json`); KeepLatest/Sum/Max per-op converged value + invalidation (idempotent/identity no-op), fixture flags vs policy `const`s
 - `tests/merge_laws.rs` — RelayCell Phase 1 (`#relaycell`) property-based law-tests: every `MergePolicy` is associative; commutativity/idempotency asserted per `const` flag (and flag-honesty counterexamples); `Cell ≡ MergeCell<KeepLatest>`, converged-state determinism regardless of op order, idempotent-`⊕` free dedup via the `PartialEq` store-guard, `Reactive`/`Source` supertype uniformity
+- `tests/queue_family_conformance.rs` — the queue family's per-flavor gate: all
+  eleven canonical fixtures (`queuecell_*` / `topiccell_*` / `workqueue_*`)
+  replayed against **all three flavors** through one `TopicModel` /
+  `WorkQueueModel` trait, plus a nine-row ledger (3 primitives × 3 flavors)
+  enforced by grepping `src/` in both directions so a shipped flavor cannot sit
+  unreplayed. Every gate was mutation-checked. Note the topic fixtures were
+  previously opened by nothing — `topic_conformance.rs` hand-transcribes the same
+  scenarios as Rust asserts, which is coverage that cannot detect drift
 - `tests/queue_conformance.rs` — reactive queue (`QueueCell`) compute fixtures (lazily-spec/conformance/collections/`queuecell_*.json`); SPSC total FIFO, popped-head reader-kind independence, MPSC multi-writer inside `batch()`, bounded reactive backpressure (`is_full`), closure lifecycle
 - `tests/work_queue_conformance.rs` — canonical `workqueue_*.json` replay:
   exclusive competing delivery, ownership rejection, at-least-once lease

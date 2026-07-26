@@ -168,12 +168,13 @@ test-collections-family-conformance:
 # AsyncQueueCell appears this goes red and names the runner to extend. Wired into
 # `check` on purpose — the collections gate spent its whole life compiling to
 # "running 0 tests" because no target ran it.
-# Needs `thread-safe`: the thread-safe flavor replay is behind that cfg, so the
-# featureless spelling compiles the module out and reports 3 passed instead of 6 —
-# a gate quietly running half of itself. BOTH flavors are cfg-gated, so both
-# features are required: 3 passed with neither, 6 with thread-safe alone, 8 with
-# both. Verified each count rather than trusting the exit code, which is 0 in all
-# three cases.
+# Needs `thread-safe`: the thread-safe flavor replays are behind that cfg, so the
+# featureless spelling compiles those modules out and reports a fraction of the
+# suite — a gate quietly running half of itself. BOTH flavors are cfg-gated, so
+# both features are required. Counts, verified rather than inferred from an exit
+# code that is 0 in every case: 6 with neither feature, 16 with thread-safe
+# alone, 13 with async alone, 23 with both. If this number drops, a flavor
+# stopped being replayed.
 test-queue-family-conformance:
 >$(CARGO) test --locked --features "thread-safe async" --test queue_family_conformance
 

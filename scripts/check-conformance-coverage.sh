@@ -34,10 +34,6 @@ fi
 KNOWN_UNCOVERED=(
   "agent-doc/delta_agent_doc_state.json"
   "agent-doc/snapshot_agent_doc_state.json"
-  "collections/topiccell_broadcast_cursor_isolation.json"
-  "collections/topiccell_durable_replay_gc.json"
-  "collections/topiccell_ephemeral_lifecycle.json"
-  "collections/topiccell_offline_tail_bounds.json"
   "receipts/causal_receipts.json"
   "reliable-sync/coalesce_bounds_outbox.json"
   "reliable-sync/liveness_lease_eviction.json"

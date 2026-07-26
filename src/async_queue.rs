@@ -36,6 +36,25 @@ struct Inner<T, S> {
     closed: AsyncSource<bool>,
 }
 
+/// The four derived reader kinds, exposed so a conformance runner can ask the
+/// graph whether the library cleared the node it owns. `closed` is a source, not
+/// a derive, so it is not one of these.
+#[derive(Debug)]
+pub struct AsyncQueueReaderHandles<T> {
+    pub head: AsyncComputed<Option<T>>,
+    pub len: AsyncComputed<usize>,
+    pub is_empty: AsyncComputed<bool>,
+    pub is_full: AsyncComputed<bool>,
+}
+
+impl<T> Clone for AsyncQueueReaderHandles<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for AsyncQueueReaderHandles<T> {}
+
 /// The `AsyncContext` reactive FIFO. Reader kinds invalidate independently: a push
 /// onto a non-empty queue never touches `head`, a pop always does.
 pub struct AsyncQueueCell<T, S = VecDequeStorage<T>> {
@@ -227,5 +246,16 @@ where
     /// Declared capacity, or `None` when unbounded. Not reactive.
     pub fn capacity(&self) -> Option<usize> {
         self.inner.capacity
+    }
+
+    /// The derived reader-kind handles, for conformance runners that must assert
+    /// *which* nodes an op invalidated rather than only what they now read.
+    pub fn reader_handles(&self) -> AsyncQueueReaderHandles<T> {
+        AsyncQueueReaderHandles {
+            head: self.inner.head,
+            len: self.inner.len,
+            is_empty: self.inner.is_empty,
+            is_full: self.inner.is_full,
+        }
     }
 }

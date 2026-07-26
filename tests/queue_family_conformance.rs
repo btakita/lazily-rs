@@ -1,29 +1,43 @@
 //! The queue-family reader-kind contract, replayed against **every flavor this
 //! binding ships** — with a ledger that is *enforced* rather than advisory.
 //!
-//! `queue_conformance.rs` replays the canonical `queuecell_*.json` corpus against
-//! the single-threaded `QueueCell`. That is currently the only flavor: no binding
-//! in the family ships a thread-safe or async queue primitive
-//! (`cell-model.md` § "Core surface vs. binding extensions (queue family)" now
-//! makes those Core, so their absence is a conformance gap rather than an
-//! unfinished nicety).
+//! lazily-rs now ships all nine: `QueueCell` / `TopicCell` / `WorkQueueCell` ×
+//! single-threaded / thread-safe / async, matching the nine `coverage.json` rows
+//! and the Core surface `cell-model.md` § "Core surface vs. binding extensions
+//! (queue family)" declares REQUIRED of every binding × every flavor.
 //!
-//! A three-flavor replay written today would therefore skip two of three flavors
-//! entirely, and a suite that skips almost everything while reporting green is
-//! precisely the failure this file exists to prevent. So the ledger is wired to
-//! the source instead of to a comment:
+//! The flavor axis lives in the **runner**, not the corpus: the fixtures carry a
+//! `model` field naming the primitive and no execution-model field, and one
+//! `TopicModel` / `WorkQueueModel` trait replays the same JSON against each
+//! shell. Nothing in either trait is async-coloured, which is the finding rather
+//! than an oversight — a queue's length, a subscription cursor, and a lease
+//! decision all derive from storage the graph does not own, so there is nothing
+//! to await and no `settle` step anywhere below.
+//!
+//! Three things keep this suite from reporting green while testing nothing —
+//! each one a failure mode this family has actually shipped:
 //!
 //! * `unshipped_flavors_are_really_absent` greps `src/` for each flavor's type
-//!   name. The moment Phase 3 adds `ThreadSafeQueueCell` or `AsyncQueueCell`,
-//!   this test goes **red** and names the runner that must be extended. The
-//!   ledger cannot rot, because shrinking it is not optional — the compiler's
-//!   sibling, the filesystem, enforces it.
-//! * `shipped_flavor_replays_the_corpus` proves the flavor that *does* ship
-//!   actually replayed a non-zero number of steps from a non-zero number of
-//!   fixtures. An absence guard proves the corpus exists; only a positive count
-//!   proves this binary read it.
-//! * `ledger_is_not_all_skips` fails if every flavor is unshipped, so this file
-//!   can never degrade into a no-op that reports success.
+//!   name, in **both** directions. A ledger row marked shipped whose type does
+//!   not exist fails; a type that exists while its row says unshipped fails and
+//!   names the runner to extend. The ledger cannot rot, because the filesystem
+//!   enforces it. `shipped` must mean "the corpus runs against it" — flipping a
+//!   flag without adding a replay is the exact false green this file exists to
+//!   prevent.
+//! * Every replay returns its step count and every flavor asserts that count is
+//!   non-zero and plausible. An absence guard proves the fixtures exist on disk;
+//!   only a positive count proves this binary opened them.
+//! * `ledger_is_not_all_skips` fails if every flavor is unshipped, and pins the
+//!   row count at nine, so a quietly-deleted row is a red test rather than
+//!   silently narrowed coverage.
+//!
+//! Every gate below was mutation-checked: a deliberate defect (drop one
+//! invalidation, unbatch a multi-root clear, reverse the redelivery order) turns
+//! the owning flavor red. One probe did **not** discriminate on the first pass —
+//! reversing `reap_expired`'s sort left the whole corpus green, because no
+//! fixture step expires more than one lease at a time. That gap is closed by
+//! `multi_expiry_requeues_in_delivery_order` rather than left as a green
+//! assertion of nothing.
 //!
 //! Mirrors the shape of `collections_family_conformance.rs`, which closed the
 //! same gap for `ReactiveMap`.
@@ -33,8 +47,7 @@ use std::path::Path;
 
 const SPEC_DIR: &str = "../lazily-spec/conformance/collections";
 
-/// The canonical `QueueCell` corpus. `TopicCell` and `WorkQueueCell` fixtures
-/// have their own runners; this file owns the reader-kind plane.
+/// The canonical `QueueCell` corpus.
 const QUEUE_FIXTURES: &[&str] = &[
     "queuecell_spsc_push_pop.json",
     "queuecell_popped_head_observation.json",
@@ -43,7 +56,25 @@ const QUEUE_FIXTURES: &[&str] = &[
     "queuecell_closure_lifecycle.json",
 ];
 
-/// One execution flavor, and the type name that would prove it exists.
+/// The canonical `TopicCell` corpus. Until this file grew a replay for it these
+/// four fixtures were never opened by lazily-rs at all — `topic_conformance.rs`
+/// hand-transcribes the same scenarios in Rust, which is the "green against a
+/// fixture nobody reads" failure mode the family has hit before.
+const TOPIC_FIXTURES: &[&str] = &[
+    "topiccell_broadcast_cursor_isolation.json",
+    "topiccell_durable_replay_gc.json",
+    "topiccell_ephemeral_lifecycle.json",
+    "topiccell_offline_tail_bounds.json",
+];
+
+/// The canonical `WorkQueueCell` corpus.
+const WORK_QUEUE_FIXTURES: &[&str] = &[
+    "workqueue_competing_delivery.json",
+    "workqueue_lease_deadletter.json",
+];
+
+/// One primitive × one execution flavor, and the type name that would prove it
+/// exists.
 struct Flavor {
     /// Human name, used in failure messages.
     name: &'static str,
@@ -56,23 +87,65 @@ struct Flavor {
     shipped: bool,
 }
 
+/// Nine rows: three primitives × three flavors, matching the nine
+/// `coverage.json` rows the queue family was split into.
 const LEDGER: &[Flavor] = &[
     Flavor {
-        name: "single-threaded",
+        name: "QueueCell/single-threaded",
         marker_type: "pub struct QueueCell",
         shipped: true,
     },
     Flavor {
-        name: "thread-safe",
+        name: "QueueCell/thread-safe",
         marker_type: "ThreadSafeQueueCell",
         shipped: true,
     },
     Flavor {
-        name: "async",
+        name: "QueueCell/async",
         marker_type: "AsyncQueueCell",
         shipped: true,
     },
+    Flavor {
+        name: "TopicCell/single-threaded",
+        marker_type: "pub struct TopicCell",
+        shipped: true,
+    },
+    Flavor {
+        name: "TopicCell/thread-safe",
+        marker_type: "ThreadSafeTopicCell",
+        shipped: true,
+    },
+    Flavor {
+        name: "TopicCell/async",
+        marker_type: "AsyncTopicCell",
+        shipped: true,
+    },
+    Flavor {
+        name: "WorkQueueCell/single-threaded",
+        marker_type: "pub struct WorkQueueCell",
+        shipped: true,
+    },
+    Flavor {
+        name: "WorkQueueCell/thread-safe",
+        marker_type: "ThreadSafeWorkQueueCell",
+        shipped: true,
+    },
+    Flavor {
+        name: "WorkQueueCell/async",
+        marker_type: "AsyncWorkQueueCell",
+        shipped: true,
+    },
 ];
+
+/// Every fixture the family owns, across all three primitives.
+fn all_fixtures() -> Vec<&'static str> {
+    QUEUE_FIXTURES
+        .iter()
+        .chain(TOPIC_FIXTURES)
+        .chain(WORK_QUEUE_FIXTURES)
+        .copied()
+        .collect()
+}
 
 fn spec_fixtures_present() -> bool {
     Path::new(&format!("{SPEC_DIR}/{}", QUEUE_FIXTURES[0])).exists()
@@ -157,9 +230,10 @@ fn ledger_is_not_all_skips() {
     );
     assert_eq!(
         LEDGER.len(),
-        3,
-        "the ledger must cover all three execution flavors; a missing entry is an \
-         unscored gap, not an absent one"
+        9,
+        "the ledger must cover three primitives × three execution flavors, matching \
+         the nine coverage.json rows; a missing entry is an unscored gap, not an \
+         absent one"
     );
 }
 
@@ -178,8 +252,9 @@ fn shipped_flavor_replays_the_corpus() {
     let mut fixtures_read = 0usize;
     let mut steps_seen = 0usize;
     let mut matrices_seen = 0usize;
+    let declared = all_fixtures();
 
-    for name in QUEUE_FIXTURES {
+    for name in &declared {
         let text = fs::read_to_string(format!("{SPEC_DIR}/{name}"))
             .unwrap_or_else(|e| panic!("read {name}: {e}"));
         let fixture: serde_json::Value =
@@ -217,8 +292,14 @@ fn shipped_flavor_replays_the_corpus() {
 
     assert_eq!(
         fixtures_read,
-        QUEUE_FIXTURES.len(),
-        "did not read every declared queue fixture"
+        declared.len(),
+        "did not read every declared queue-family fixture"
+    );
+    assert_eq!(
+        declared.len(),
+        11,
+        "the queue family owns eleven canonical fixtures (5 queue + 4 topic + \
+         2 work-queue); a shrinking list is coverage silently dropped"
     );
     assert!(
         steps_seen > 0,
@@ -533,6 +614,16 @@ mod async_flavor {
 
     type V = String;
 
+    // The queue's OWN reader nodes, not derives over them. Asserting `is_set` here
+    // asks whether the library cleared the node it is responsible for — the same
+    // check `work_queue_conformance.rs` makes against the single-threaded flavor.
+    fn materialize(ctx: &AsyncContext, r: &lazily::AsyncQueueReaderHandles<V>) {
+        let _ = ctx.get(&r.head);
+        let _ = ctx.get(&r.len);
+        let _ = ctx.get(&r.is_empty);
+        let _ = ctx.get(&r.is_full);
+    }
+
     fn replay(name: &str) -> usize {
         let text = fs::read_to_string(format!("{SPEC_DIR}/{name}"))
             .unwrap_or_else(|e| panic!("canonical fixture {name} unreadable: {e}"));
@@ -552,10 +643,12 @@ mod async_flavor {
             "this runner does not seed initial.elements"
         );
 
+        let r = q.reader_handles();
         let steps = fixture["steps"].as_array().expect("steps array");
         assert!(!steps.is_empty(), "a replay of zero steps is not a replay");
 
         for (i, step) in steps.iter().enumerate() {
+            materialize(&ctx, &r);
             let op = &step["op"];
             let ty = op["type"].as_str().expect("op type");
             let got_returns: Option<String> = match ty {
@@ -587,6 +680,26 @@ mod async_flavor {
             };
 
             let expected = &step["expected"];
+
+            // `invalidates` BEFORE any read — reading revalidates. `closed` is a
+            // source rather than a derive, so it is asserted by value below.
+            if let Some(inv) = expected.get("invalidates") {
+                for (key, node_valid) in [
+                    ("head", ctx.is_set(&r.head)),
+                    ("len", ctx.is_set(&r.len)),
+                    ("is_empty", ctx.is_set(&r.is_empty)),
+                    ("is_full", ctx.is_set(&r.is_full)),
+                ] {
+                    if let Some(want) = inv.get(key).and_then(|v| v.as_bool()) {
+                        assert_eq!(
+                            !node_valid, want,
+                            "{name} step {i}: invalidates.{key} — async flavor \
+                             disagrees with the canonical fixture"
+                        );
+                    }
+                }
+            }
+
             if let Some(want) = step.get("returns").and_then(|v| v.as_str()) {
                 let got = got_returns.as_deref().unwrap_or("");
                 assert!(
@@ -654,5 +767,1258 @@ mod async_flavor {
         q.try_pop(&ctx).expect("pop");
         assert!(!q.is_full(&ctx), "pop must take it off capacity");
         assert_eq!(q.head(&ctx).as_deref(), Some("b"), "head follows the pop");
+    }
+}
+
+// -- TopicCell: the canonical corpus, replayed against all three flavors -------
+//
+// Before this module lazily-rs never opened `topiccell_*.json` at all.
+// `topic_conformance.rs` hand-transcribes the same scenarios as Rust asserts,
+// which reads as coverage and is not: a fixture nobody loads cannot detect drift
+// from the other eight bindings, and the transcription can quietly disagree with
+// the JSON it was copied from.
+//
+// The flavor axis lives in the runner, not the corpus: one `TopicModel` trait,
+// one replay, three implementations. The fixtures carry no execution-model field
+// and should not — that is the same shape zig's `Engine(comptime Model)` uses for
+// the reactive-graph corpus.
+mod topic_flavors {
+    use super::{SPEC_DIR, TOPIC_FIXTURES, spec_fixtures_present};
+    use lazily::{TopicDurability, TopicSnapshot, TopicSubscriptionSnapshot};
+    use serde_json::Value;
+    use std::collections::{BTreeSet, HashMap};
+    use std::fs;
+
+    /// The Core surface every flavor must present. Nothing here is async-coloured:
+    /// a subscription cursor is monotone and per-subscriber, and the unread suffix
+    /// derives from a retained log the graph does not own, so there is nothing to
+    /// await and no `settle` method on this trait.
+    pub trait TopicModel: Sized {
+        /// A restart is a fresh graph over preserved durable state, so this both
+        /// constructs and re-mints readers.
+        fn from_snapshot(snapshot: TopicSnapshot<String>) -> Self;
+        fn subscribe(&self, id: &str, durability: TopicDurability);
+        fn reconnect(&self, id: &str);
+        fn disconnect(&self, id: &str) -> bool;
+        fn publish(&self, value: String) -> u64;
+        fn advance(&self, id: &str) -> Option<String>;
+        fn gc(&self) -> usize;
+        /// Reactive read; also materializes the reader.
+        fn read_stream(&self, id: &str) -> Vec<String>;
+        /// `false` when the reader is invalidated **or absent** — an absent reader
+        /// has no valid cached value, which is what the fixture means by `true`.
+        fn is_reader_valid(&self, id: &str) -> bool;
+        fn base_offset(&self) -> u64;
+        fn elements(&self) -> Vec<String>;
+        fn subscription(&self, id: &str) -> Option<TopicSubscriptionSnapshot>;
+        fn snapshot(&self) -> TopicSnapshot<String>;
+    }
+
+    fn durability_of(value: &Value) -> TopicDurability {
+        match value.as_str().expect("durability string") {
+            "durable" => TopicDurability::Durable,
+            "ephemeral" => TopicDurability::Ephemeral,
+            other => panic!("unknown durability `{other}`"),
+        }
+    }
+
+    fn snapshot_from(initial: &Value) -> TopicSnapshot<String> {
+        let mut subscriptions = HashMap::new();
+        if let Some(map) = initial["subscriptions"].as_object() {
+            for (id, sub) in map {
+                subscriptions.insert(
+                    id.clone(),
+                    TopicSubscriptionSnapshot {
+                        cursor: sub["cursor"].as_u64().expect("cursor"),
+                        durability: durability_of(&sub["durability"]),
+                        connected: sub["connected"].as_bool().expect("connected"),
+                    },
+                );
+            }
+        }
+        TopicSnapshot {
+            base_offset: initial["base_offset"].as_u64().unwrap_or(0),
+            elements: initial["elements"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .map(|v| v.as_str().expect("element string").to_owned())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            subscriptions,
+        }
+    }
+
+    fn strings(value: &Value) -> Vec<String> {
+        value
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|v| v.as_str().expect("string").to_owned())
+            .collect()
+    }
+
+    /// Returns the number of steps replayed, so the caller can prove it ran.
+    pub fn replay<M: TopicModel>(name: &str, flavor: &str) -> usize {
+        let text = fs::read_to_string(format!("{SPEC_DIR}/{name}"))
+            .unwrap_or_else(|e| panic!("canonical fixture {name} unreadable: {e}"));
+        let fixture: Value = serde_json::from_str(&text).expect("fixture parses");
+
+        let initial = snapshot_from(&fixture["initial"]);
+        let mut known: BTreeSet<String> = initial.subscriptions.keys().cloned().collect();
+        let mut topic = M::from_snapshot(initial);
+
+        let steps = fixture["steps"].as_array().expect("steps array");
+        assert!(!steps.is_empty(), "a replay of zero steps is not a replay");
+
+        for (i, step) in steps.iter().enumerate() {
+            // Every known reader is materialized BEFORE the op, so a post-op
+            // `is_reader_valid` of false means this op cleared it — not that it
+            // was never read.
+            for id in &known {
+                let _ = topic.read_stream(id);
+            }
+
+            let op = &step["op"];
+            let ty = op["type"].as_str().expect("op type");
+            if let Some(subscriber) = op.get("subscriber").and_then(|v| v.as_str()) {
+                known.insert(subscriber.to_owned());
+            }
+
+            let returns: Option<Value> = match ty {
+                "publish" => {
+                    let v = op["value"].as_str().expect("publish value").to_owned();
+                    Some(Value::from(topic.publish(v)))
+                }
+                "subscribe" => {
+                    topic.subscribe(
+                        op["subscriber"].as_str().expect("subscriber"),
+                        durability_of(&op["durability"]),
+                    );
+                    None
+                }
+                "reconnect" => {
+                    topic.reconnect(op["subscriber"].as_str().expect("subscriber"));
+                    None
+                }
+                "disconnect" => {
+                    topic.disconnect(op["subscriber"].as_str().expect("subscriber"));
+                    None
+                }
+                "advance" => topic
+                    .advance(op["subscriber"].as_str().expect("subscriber"))
+                    .map(Value::from),
+                "gc" => Some(Value::from(topic.gc() as u64)),
+                "restart" => {
+                    // A restart rebuilds the graph from durable state. Its fixture
+                    // expectation is `invalidates: false` everywhere, which a fresh
+                    // set of unread nodes could never satisfy — so materializing
+                    // them is part of the op, exactly as construction materializes
+                    // before step 0. What actually discriminates a restart that
+                    // LOST a cursor is `reads` and `subscriptions` below, both of
+                    // which are asserted on this same step.
+                    topic = M::from_snapshot(topic.snapshot());
+                    for id in &known {
+                        let _ = topic.read_stream(id);
+                    }
+                    None
+                }
+                other => panic!("{flavor} {name} step {i}: unhandled op `{other}`"),
+            };
+
+            let expected = &step["expected"];
+
+            // `invalidates` BEFORE any read — a read revalidates the node.
+            if let Some(inv) = expected.get("invalidates").and_then(|v| v.as_object()) {
+                for (id, want) in inv {
+                    let want = want.as_bool().expect("invalidates flag");
+                    assert_eq!(
+                        !topic.is_reader_valid(id),
+                        want,
+                        "{flavor} {name} step {i}: invalidates.{id} disagrees with \
+                         the canonical fixture"
+                    );
+                }
+            }
+            assert!(
+                step.get("invalidates").is_none(),
+                "{name} step {i}: `invalidates` at STEP level would be silently \
+                 ignored; the runner reads expected.invalidates"
+            );
+
+            match (step.get("returns"), returns) {
+                (Some(Value::Null) | None, _) => {}
+                (Some(want), Some(got)) => assert_eq!(
+                    &got, want,
+                    "{flavor} {name} step {i}: returns disagrees with the fixture"
+                ),
+                (Some(want), None) => {
+                    panic!(
+                        "{flavor} {name} step {i}: fixture expects `{want}`, op returned nothing"
+                    )
+                }
+            }
+
+            if let Some(want) = expected.get("base_offset").and_then(|v| v.as_u64()) {
+                assert_eq!(
+                    topic.base_offset(),
+                    want,
+                    "{flavor} {name} step {i}: base_offset"
+                );
+            }
+            if let Some(want) = expected.get("elements") {
+                assert_eq!(
+                    topic.elements(),
+                    strings(want),
+                    "{flavor} {name} step {i}: retained elements"
+                );
+            }
+            if let Some(subs) = expected.get("subscriptions").and_then(|v| v.as_object()) {
+                for (id, want) in subs {
+                    let got = topic.subscription(id).unwrap_or_else(|| {
+                        panic!("{flavor} {name} step {i}: no subscription {id}")
+                    });
+                    assert_eq!(
+                        got.cursor,
+                        want["cursor"].as_u64().expect("cursor"),
+                        "{flavor} {name} step {i}: {id}.cursor"
+                    );
+                    assert_eq!(
+                        got.connected,
+                        want["connected"].as_bool().expect("connected"),
+                        "{flavor} {name} step {i}: {id}.connected"
+                    );
+                    assert_eq!(
+                        got.durability,
+                        durability_of(&want["durability"]),
+                        "{flavor} {name} step {i}: {id}.durability"
+                    );
+                }
+                // A subscription the fixture dropped must really be gone —
+                // otherwise an ephemeral disconnect that forgot to remove the
+                // record would still pass every positive assertion above.
+                for id in &known {
+                    if !subs.contains_key(id) {
+                        assert!(
+                            topic.subscription(id).is_none(),
+                            "{flavor} {name} step {i}: subscription {id} survived a \
+                             step whose fixture no longer lists it"
+                        );
+                    }
+                }
+            }
+            if let Some(reads) = expected.get("reads").and_then(|v| v.as_object()) {
+                for (id, want) in reads {
+                    assert_eq!(
+                        topic.read_stream(id),
+                        strings(want),
+                        "{flavor} {name} step {i}: {id} read stream"
+                    );
+                }
+            }
+        }
+        steps.len()
+    }
+
+    /// The corpus, once per flavor. Returns the total replayed steps so each
+    /// flavor's test can assert it is non-zero and plausible.
+    pub fn replay_corpus<M: TopicModel>(flavor: &str) -> usize {
+        TOPIC_FIXTURES
+            .iter()
+            .map(|name| replay::<M>(name, flavor))
+            .sum()
+    }
+
+    /// Every flavor must clear this bar, so "the async one ran two steps" cannot
+    /// hide behind a green summary line.
+    pub const MIN_STEPS: usize = 29;
+
+    pub fn fixtures_present() -> bool {
+        spec_fixtures_present()
+    }
+}
+
+/// Single-threaded `TopicCell` — the reference the other two flavors mirror.
+mod topic_sync {
+    use super::topic_flavors::{MIN_STEPS, TopicModel, fixtures_present, replay_corpus};
+    use lazily::{Context, TopicCell, TopicDurability, TopicSnapshot, TopicSubscriptionSnapshot};
+
+    struct Model {
+        ctx: Context,
+        cell: TopicCell<String>,
+    }
+
+    impl TopicModel for Model {
+        fn from_snapshot(snapshot: TopicSnapshot<String>) -> Self {
+            let ctx = Context::new();
+            let cell = TopicCell::<String>::from_snapshot(&ctx, snapshot);
+            Self { ctx, cell }
+        }
+        fn subscribe(&self, id: &str, durability: TopicDurability) {
+            self.cell.subscribe(&self.ctx, id.to_owned(), durability);
+        }
+        fn reconnect(&self, id: &str) {
+            self.cell.reconnect(&self.ctx, id.to_owned());
+        }
+        fn disconnect(&self, id: &str) -> bool {
+            self.cell.disconnect(&self.ctx, &id.to_owned())
+        }
+        fn publish(&self, value: String) -> u64 {
+            self.cell.publish(&self.ctx, value)
+        }
+        fn advance(&self, id: &str) -> Option<String> {
+            self.cell.advance(&self.ctx, &id.to_owned())
+        }
+        fn gc(&self) -> usize {
+            self.cell.gc()
+        }
+        fn read_stream(&self, id: &str) -> Vec<String> {
+            self.cell.read_stream(&self.ctx, &id.to_owned())
+        }
+        fn is_reader_valid(&self, id: &str) -> bool {
+            self.cell
+                .reader_handle(&id.to_owned())
+                .is_some_and(|handle| self.ctx.is_set(&handle))
+        }
+        fn base_offset(&self) -> u64 {
+            self.cell.base_offset()
+        }
+        fn elements(&self) -> Vec<String> {
+            self.cell.elements()
+        }
+        fn subscription(&self, id: &str) -> Option<TopicSubscriptionSnapshot> {
+            self.cell.subscription(&id.to_owned())
+        }
+        fn snapshot(&self) -> TopicSnapshot<String> {
+            self.cell.snapshot()
+        }
+    }
+
+    #[test]
+    fn single_threaded_topic_replays_the_canonical_corpus() {
+        if !fixtures_present() {
+            eprintln!("SKIP: lazily-spec sibling missing");
+            return;
+        }
+        let total = replay_corpus::<Model>("single-threaded");
+        assert!(
+            total >= MIN_STEPS,
+            "single-threaded topic replayed only {total} steps — too few to be the \
+             real corpus"
+        );
+    }
+}
+
+/// `ThreadSafeTopicCell` — same corpus, same trait, `ThreadSafeContext` graph.
+#[cfg(feature = "thread-safe")]
+mod topic_thread_safe {
+    use super::topic_flavors::{MIN_STEPS, TopicModel, fixtures_present, replay_corpus};
+    use lazily::{
+        ThreadSafeContext, ThreadSafeTopicCell, TopicDurability, TopicSnapshot,
+        TopicSubscriptionSnapshot,
+    };
+
+    struct Model {
+        ctx: ThreadSafeContext,
+        cell: ThreadSafeTopicCell<String>,
+    }
+
+    impl TopicModel for Model {
+        fn from_snapshot(snapshot: TopicSnapshot<String>) -> Self {
+            let ctx = ThreadSafeContext::new();
+            let cell = ThreadSafeTopicCell::<String>::from_snapshot(&ctx, snapshot);
+            Self { ctx, cell }
+        }
+        fn subscribe(&self, id: &str, durability: TopicDurability) {
+            self.cell.subscribe(&self.ctx, id.to_owned(), durability);
+        }
+        fn reconnect(&self, id: &str) {
+            self.cell.reconnect(&self.ctx, id.to_owned());
+        }
+        fn disconnect(&self, id: &str) -> bool {
+            self.cell.disconnect(&self.ctx, &id.to_owned())
+        }
+        fn publish(&self, value: String) -> u64 {
+            self.cell.publish(&self.ctx, value)
+        }
+        fn advance(&self, id: &str) -> Option<String> {
+            self.cell.advance(&self.ctx, &id.to_owned())
+        }
+        fn gc(&self) -> usize {
+            self.cell.gc()
+        }
+        fn read_stream(&self, id: &str) -> Vec<String> {
+            self.cell.read_stream(&self.ctx, &id.to_owned())
+        }
+        fn is_reader_valid(&self, id: &str) -> bool {
+            self.cell
+                .reader_handle(&id.to_owned())
+                .is_some_and(|handle| self.ctx.is_set(&handle))
+        }
+        fn base_offset(&self) -> u64 {
+            self.cell.base_offset()
+        }
+        fn elements(&self) -> Vec<String> {
+            self.cell.elements()
+        }
+        fn subscription(&self, id: &str) -> Option<TopicSubscriptionSnapshot> {
+            self.cell.subscription(&id.to_owned())
+        }
+        fn snapshot(&self) -> TopicSnapshot<String> {
+            self.cell.snapshot()
+        }
+    }
+
+    #[test]
+    fn thread_safe_topic_replays_the_canonical_corpus() {
+        if !fixtures_present() {
+            eprintln!("SKIP: lazily-spec sibling missing");
+            return;
+        }
+        let total = replay_corpus::<Model>("thread-safe");
+        assert!(
+            total >= MIN_STEPS,
+            "thread-safe topic replayed only {total} steps — too few to be the real \
+             corpus"
+        );
+    }
+
+    // A publish fans out to N subscribers. Clearing them one at a time is N
+    // frontier walks, and a subscriber watching two cursors can rerun twice for one
+    // publish — the glitch. The step replay above cannot see this: both readers end
+    // up cleared either way, so only an observer that runs DURING the op
+    // discriminates.
+    #[test]
+    fn one_publish_invalidates_every_subscriber_atomically() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let ctx = ThreadSafeContext::new();
+        let topic = ThreadSafeTopicCell::<String>::new(&ctx);
+        topic.subscribe(&ctx, "alpha".into(), TopicDurability::Durable);
+        topic.subscribe(&ctx, "beta".into(), TopicDurability::Durable);
+
+        let runs = Arc::new(AtomicUsize::new(0));
+        {
+            let (topic, runs) = (topic.clone(), Arc::clone(&runs));
+            ctx.effect(move |cx| {
+                runs.fetch_add(1, Ordering::SeqCst);
+                let _ = topic.read_stream(cx, &"alpha".to_owned());
+                let _ = topic.read_stream(cx, &"beta".to_owned());
+            });
+        }
+        let baseline = runs.load(Ordering::SeqCst);
+        assert!(baseline >= 1, "effect must run once on creation");
+
+        topic.publish(&ctx, "x".into());
+
+        assert_eq!(
+            runs.load(Ordering::SeqCst) - baseline,
+            1,
+            "one publish must rerun a two-subscriber observer exactly ONCE; more \
+             means the per-subscriber readers were cleared in separate frontier \
+             walks and a subscriber can observe a half-delivered broadcast"
+        );
+        assert_eq!(topic.read_stream(&ctx, &"alpha".to_owned()), ["x"]);
+        assert_eq!(topic.read_stream(&ctx, &"beta".to_owned()), ["x"]);
+    }
+
+    // A lock-order inversion between the core mutex and the context lock is
+    // invisible single-threaded and manifests as a HANG. Publishers take core then
+    // release it; readers take the context then core. If publish ever invalidated
+    // while still holding core, this deadlocks.
+    #[test]
+    fn concurrent_publish_and_read_do_not_deadlock() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let ctx = Arc::new(ThreadSafeContext::new());
+        let topic = ThreadSafeTopicCell::<String>::new(&ctx);
+        for id in ["a", "b", "c", "d"] {
+            topic.subscribe(&ctx, id.to_owned(), TopicDurability::Durable);
+        }
+
+        let writers: Vec<_> = (0..4)
+            .map(|w| {
+                let (ctx, topic) = (Arc::clone(&ctx), topic.clone());
+                thread::spawn(move || {
+                    for i in 0..50 {
+                        topic.publish(&ctx, format!("w{w}-{i}"));
+                    }
+                })
+            })
+            .collect();
+        let readers: Vec<_> = ["a", "b", "c", "d"]
+            .map(|id| {
+                let (ctx, topic) = (Arc::clone(&ctx), topic.clone());
+                let id = id.to_owned();
+                thread::spawn(move || {
+                    for _ in 0..50 {
+                        let _ = topic.read_stream(&ctx, &id);
+                    }
+                })
+            })
+            .into_iter()
+            .collect();
+
+        for t in writers.into_iter().chain(readers) {
+            t.join().expect("no thread panicked or deadlocked");
+        }
+        assert_eq!(
+            topic.read_stream(&ctx, &"a".to_owned()).len(),
+            200,
+            "every publish must be visible to every subscriber after joining"
+        );
+    }
+}
+
+/// `AsyncTopicCell` — same corpus, `AsyncContext` graph. Note the absence of a
+/// settle step: cursors are not async-coloured.
+#[cfg(feature = "async")]
+mod topic_async {
+    use super::topic_flavors::{MIN_STEPS, TopicModel, fixtures_present, replay_corpus};
+    use lazily::{
+        AsyncContext, AsyncTopicCell, TopicDurability, TopicSnapshot, TopicSubscriptionSnapshot,
+    };
+
+    struct Model {
+        ctx: AsyncContext,
+        cell: AsyncTopicCell<String>,
+    }
+
+    impl TopicModel for Model {
+        fn from_snapshot(snapshot: TopicSnapshot<String>) -> Self {
+            let ctx = AsyncContext::new();
+            let cell = AsyncTopicCell::<String>::from_snapshot(&ctx, snapshot);
+            Self { ctx, cell }
+        }
+        fn subscribe(&self, id: &str, durability: TopicDurability) {
+            self.cell.subscribe(&self.ctx, id.to_owned(), durability);
+        }
+        fn reconnect(&self, id: &str) {
+            self.cell.reconnect(&self.ctx, id.to_owned());
+        }
+        fn disconnect(&self, id: &str) -> bool {
+            self.cell.disconnect(&self.ctx, &id.to_owned())
+        }
+        fn publish(&self, value: String) -> u64 {
+            self.cell.publish(&self.ctx, value)
+        }
+        fn advance(&self, id: &str) -> Option<String> {
+            self.cell.advance(&self.ctx, &id.to_owned())
+        }
+        fn gc(&self) -> usize {
+            self.cell.gc()
+        }
+        fn read_stream(&self, id: &str) -> Vec<String> {
+            self.cell.read_stream(&self.ctx, &id.to_owned())
+        }
+        fn is_reader_valid(&self, id: &str) -> bool {
+            self.cell
+                .reader_handle(&id.to_owned())
+                .is_some_and(|handle| self.ctx.is_set(&handle))
+        }
+        fn base_offset(&self) -> u64 {
+            self.cell.base_offset()
+        }
+        fn elements(&self) -> Vec<String> {
+            self.cell.elements()
+        }
+        fn subscription(&self, id: &str) -> Option<TopicSubscriptionSnapshot> {
+            self.cell.subscription(&id.to_owned())
+        }
+        fn snapshot(&self) -> TopicSnapshot<String> {
+            self.cell.snapshot()
+        }
+    }
+
+    #[test]
+    fn async_topic_replays_the_canonical_corpus() {
+        if !fixtures_present() {
+            eprintln!("SKIP: lazily-spec sibling missing");
+            return;
+        }
+        let total = replay_corpus::<Model>("async");
+        assert!(
+            total >= MIN_STEPS,
+            "async topic replayed only {total} steps — too few to be the real corpus"
+        );
+    }
+
+    // The claim that a cursor is not async-coloured, made falsifiable: every read
+    // yields a value with nothing driven and nothing awaited.
+    #[test]
+    fn cursor_reads_resolve_without_being_driven() {
+        let ctx = AsyncContext::new();
+        let topic = AsyncTopicCell::<String>::new(&ctx);
+        topic.subscribe(&ctx, "alpha".into(), TopicDurability::Durable);
+        topic.publish(&ctx, "a".into());
+
+        assert_eq!(topic.read_stream(&ctx, &"alpha".to_owned()), ["a"]);
+        assert_eq!(topic.read(&ctx, &"alpha".to_owned()).as_deref(), Some("a"));
+        assert_eq!(
+            topic.advance(&ctx, &"alpha".to_owned()).as_deref(),
+            Some("a")
+        );
+        assert!(topic.read_stream(&ctx, &"alpha".to_owned()).is_empty());
+    }
+}
+
+// -- WorkQueueCell: the canonical corpus, replayed against all three flavors ---
+//
+// `work_queue_conformance.rs` drives the single-threaded flavor only. This module
+// drives all three through one `WorkQueueModel` trait, so the thread-safe and
+// async shells cannot diverge from the lifecycle the fixtures pin.
+//
+// Nothing here awaits, and `now` is a caller argument on every flavor: lease
+// expiry is time-driven but the clock seam is not flavor-specific, and a flavor
+// that owned a timer could not replay these fixtures deterministically at all.
+mod work_queue_flavors {
+    use super::{SPEC_DIR, WORK_QUEUE_FIXTURES, spec_fixtures_present};
+    use lazily::{
+        WorkQueueDeadLetter, WorkQueueDeadLetterReason, WorkQueueDelivery, WorkQueueItem,
+    };
+    use serde_json::Value;
+    use std::fs;
+
+    /// Reader-kind validity, in a fixed order so the replay can name them.
+    pub const READER_KINDS: [&str; 4] = [
+        "pending_len",
+        "is_empty",
+        "in_flight_len",
+        "dead_letter_len",
+    ];
+
+    pub trait WorkQueueModel: Sized {
+        fn new(visibility_timeout: u64, max_deliveries: u32) -> Self;
+        fn push(&self, value: String) -> u64;
+        fn claim(&self, worker: &str, now: u64) -> Option<WorkQueueDelivery<String>>;
+        fn ack(&self, worker: &str, delivery_id: u64) -> bool;
+        fn nack(&self, worker: &str, delivery_id: u64) -> bool;
+        fn reap_expired(&self, now: u64) -> usize;
+        /// Read every reader kind, so a post-op invalidation is attributable to
+        /// the op rather than to never having been read.
+        fn materialize(&self);
+        /// `[pending_len, is_empty, in_flight_len, dead_letter_len]`, `true` when
+        /// the node still holds a valid memo.
+        fn reader_validity(&self) -> [bool; 4];
+        /// `[pending_len, is_empty(as 0/1), in_flight_len, dead_letter_len]` read
+        /// reactively — the values the fixture's `reads` block pins.
+        fn reads(&self) -> (u64, bool, u64, u64);
+        fn pending(&self) -> Vec<WorkQueueItem<String>>;
+        fn in_flight(&self) -> Vec<WorkQueueDelivery<String>>;
+        fn dead_letters(&self) -> Vec<WorkQueueDeadLetter<String>>;
+    }
+
+    fn as_u64(value: &Value, label: &str) -> u64 {
+        value
+            .as_u64()
+            .unwrap_or_else(|| panic!("{label} must be u64"))
+    }
+
+    fn assert_delivery(actual: &WorkQueueDelivery<String>, expected: &Value, label: &str) {
+        assert_eq!(
+            actual.delivery_id,
+            as_u64(&expected["delivery_id"], "delivery_id"),
+            "{label}: delivery_id"
+        );
+        assert_eq!(
+            actual.item_id,
+            as_u64(&expected["item_id"], "item_id"),
+            "{label}: item_id"
+        );
+        assert_eq!(
+            actual.value,
+            expected["value"].as_str().expect("value"),
+            "{label}: value"
+        );
+        assert_eq!(
+            actual.worker,
+            expected["worker"].as_str().expect("worker"),
+            "{label}: worker"
+        );
+        assert_eq!(
+            u64::from(actual.attempt),
+            as_u64(&expected["attempt"], "attempt"),
+            "{label}: attempt"
+        );
+        assert_eq!(
+            actual.deadline,
+            as_u64(&expected["deadline"], "deadline"),
+            "{label}: deadline"
+        );
+    }
+
+    pub fn replay<M: WorkQueueModel>(name: &str, flavor: &str) -> usize {
+        let text = fs::read_to_string(format!("{SPEC_DIR}/{name}"))
+            .unwrap_or_else(|e| panic!("canonical fixture {name} unreadable: {e}"));
+        let fixture: Value = serde_json::from_str(&text).expect("fixture parses");
+        let config = &fixture["config"];
+        let queue = M::new(
+            as_u64(&config["visibility_timeout"], "visibility_timeout"),
+            as_u64(&config["max_deliveries"], "max_deliveries") as u32,
+        );
+        assert!(
+            fixture["initial"]["pending"]
+                .as_array()
+                .expect("initial pending")
+                .is_empty(),
+            "this runner does not seed initial.pending; a fixture needing it must \
+             extend the runner rather than be skipped"
+        );
+
+        let steps = fixture["steps"].as_array().expect("steps array");
+        assert!(!steps.is_empty(), "a replay of zero steps is not a replay");
+
+        for (i, step) in steps.iter().enumerate() {
+            queue.materialize();
+
+            let op = &step["op"];
+            match op["type"].as_str().expect("op type") {
+                "push" => {
+                    let got = queue.push(op["value"].as_str().expect("value").to_owned());
+                    assert_eq!(got, as_u64(&step["returns"], "push return"));
+                }
+                "claim" => {
+                    let got = queue.claim(
+                        op["worker"].as_str().expect("worker"),
+                        as_u64(&op["now"], "now"),
+                    );
+                    if step["returns"].is_null() {
+                        assert!(got.is_none(), "{flavor} {name} step {i}: expected no claim");
+                    } else {
+                        assert_delivery(
+                            &got.expect("delivery"),
+                            &step["returns"],
+                            &format!("{flavor} {name} step {i}"),
+                        );
+                    }
+                }
+                "ack" => {
+                    let got = queue.ack(
+                        op["worker"].as_str().expect("worker"),
+                        as_u64(&op["delivery_id"], "delivery_id"),
+                    );
+                    assert_eq!(got, step["returns"].as_bool().expect("ack return"));
+                }
+                "nack" => {
+                    let got = queue.nack(
+                        op["worker"].as_str().expect("worker"),
+                        as_u64(&op["delivery_id"], "delivery_id"),
+                    );
+                    assert_eq!(got, step["returns"].as_bool().expect("nack return"));
+                }
+                "reap_expired" => {
+                    let got = queue.reap_expired(as_u64(&op["now"], "now"));
+                    assert_eq!(got as u64, as_u64(&step["returns"], "reap return"));
+                }
+                other => panic!("{flavor} {name} step {i}: unknown op `{other}`"),
+            }
+
+            let expected = &step["expected"];
+            assert!(
+                step.get("invalidates").is_none(),
+                "{name} step {i}: `invalidates` at STEP level would be silently \
+                 ignored; the runner reads expected.invalidates"
+            );
+
+            // Invalidation BEFORE the value reads below, which revalidate.
+            let invalidates = &expected["invalidates"];
+            let validity = queue.reader_validity();
+            for (kind, valid) in READER_KINDS.iter().zip(validity) {
+                let want = invalidates[*kind]
+                    .as_bool()
+                    .unwrap_or_else(|| panic!("{name} step {i}: no invalidates.{kind}"));
+                assert_eq!(
+                    !valid, want,
+                    "{flavor} {name} step {i}: invalidates.{kind} disagrees with the \
+                     canonical fixture"
+                );
+            }
+
+            let pending = queue.pending();
+            let want_pending = expected["pending"].as_array().expect("pending array");
+            assert_eq!(
+                pending.len(),
+                want_pending.len(),
+                "{flavor} {name} step {i}: pending length"
+            );
+            for (actual, want) in pending.iter().zip(want_pending) {
+                assert_eq!(actual.item_id, as_u64(&want["item_id"], "item_id"));
+                assert_eq!(actual.value, want["value"].as_str().expect("value"));
+                assert_eq!(
+                    u64::from(actual.attempts),
+                    as_u64(&want["attempts"], "attempts")
+                );
+            }
+
+            let in_flight = queue.in_flight();
+            let want_in_flight = expected["in_flight"].as_array().expect("in_flight array");
+            assert_eq!(
+                in_flight.len(),
+                want_in_flight.len(),
+                "{flavor} {name} step {i}: in_flight length"
+            );
+            for (actual, want) in in_flight.iter().zip(want_in_flight) {
+                assert_delivery(actual, want, &format!("{flavor} {name} step {i} in_flight"));
+            }
+
+            let dead_letters = queue.dead_letters();
+            let want_dead = expected["dead_letters"]
+                .as_array()
+                .expect("dead_letters array");
+            assert_eq!(
+                dead_letters.len(),
+                want_dead.len(),
+                "{flavor} {name} step {i}: dead_letters length"
+            );
+            for (actual, want) in dead_letters.iter().zip(want_dead) {
+                assert_eq!(actual.item_id, as_u64(&want["item_id"], "item_id"));
+                assert_eq!(actual.value, want["value"].as_str().expect("value"));
+                assert_eq!(
+                    u64::from(actual.attempts),
+                    as_u64(&want["attempts"], "attempts")
+                );
+                let reason = match actual.reason {
+                    WorkQueueDeadLetterReason::Nack => "nack",
+                    WorkQueueDeadLetterReason::Expired => "expired",
+                };
+                assert_eq!(reason, want["reason"].as_str().expect("reason"));
+            }
+
+            let want_reads = &expected["reads"];
+            let (pending_len, is_empty, in_flight_len, dead_letter_len) = queue.reads();
+            assert_eq!(
+                pending_len,
+                as_u64(&want_reads["pending_len"], "pending_len"),
+                "{flavor} {name} step {i}: reads.pending_len"
+            );
+            assert_eq!(
+                is_empty,
+                want_reads["is_empty"].as_bool().expect("is_empty"),
+                "{flavor} {name} step {i}: reads.is_empty"
+            );
+            assert_eq!(
+                in_flight_len,
+                as_u64(&want_reads["in_flight_len"], "in_flight_len"),
+                "{flavor} {name} step {i}: reads.in_flight_len"
+            );
+            assert_eq!(
+                dead_letter_len,
+                as_u64(&want_reads["dead_letter_len"], "dead_letter_len"),
+                "{flavor} {name} step {i}: reads.dead_letter_len"
+            );
+        }
+        steps.len()
+    }
+
+    pub fn replay_corpus<M: WorkQueueModel>(flavor: &str) -> usize {
+        WORK_QUEUE_FIXTURES
+            .iter()
+            .map(|name| replay::<M>(name, flavor))
+            .sum()
+    }
+
+    pub const MIN_STEPS: usize = 14;
+
+    pub fn fixtures_present() -> bool {
+        spec_fixtures_present()
+    }
+
+    /// **Found by mutation check, not by review.** Reversing `reap_expired`'s
+    /// delivery-id sort left the whole corpus green: no fixture step ever expires
+    /// more than one lease at a time, so the ordering clause the spec states —
+    /// "in delivery-id order", which is what makes redelivery deterministic — was
+    /// asserted nowhere. A probe that passes with and without the defect is not a
+    /// gate, so the corpus gap gets a direct drive here rather than a new fixture
+    /// (which would turn the other eight bindings red for a rule they already
+    /// obey).
+    ///
+    /// Flavor-generic on purpose: the ordering lives in the shared core, so all
+    /// three shells must show it.
+    pub fn multi_expiry_requeues_in_delivery_order<M: WorkQueueModel>(flavor: &str) {
+        let q = M::new(5, 3);
+        q.push("a".into());
+        q.push("b".into());
+        let first = q.claim("w0", 0).expect("first claim");
+        let second = q.claim("w1", 0).expect("second claim");
+        assert!(
+            first.delivery_id < second.delivery_id,
+            "{flavor}: delivery ids must be monotone"
+        );
+
+        assert_eq!(
+            q.reap_expired(6),
+            2,
+            "{flavor}: both leases are past their deadline"
+        );
+        let pending: Vec<_> = q.pending().into_iter().map(|item| item.value).collect();
+        assert_eq!(
+            pending,
+            vec!["a".to_owned(), "b".to_owned()],
+            "{flavor}: a multi-lease expiry must requeue in delivery-id order, so \
+             redelivery is deterministic rather than HashMap-iteration order"
+        );
+        assert_eq!(q.in_flight().len(), 0, "{flavor}: no lease survives expiry");
+    }
+}
+
+/// Single-threaded `WorkQueueCell` — the reference the other two flavors mirror.
+mod work_queue_sync {
+    use super::work_queue_flavors::{MIN_STEPS, WorkQueueModel, fixtures_present, replay_corpus};
+    use lazily::{Context, WorkQueueCell, WorkQueueDeadLetter, WorkQueueDelivery, WorkQueueItem};
+
+    struct Model {
+        ctx: Context,
+        cell: WorkQueueCell<String>,
+    }
+
+    impl WorkQueueModel for Model {
+        fn new(visibility_timeout: u64, max_deliveries: u32) -> Self {
+            let ctx = Context::new();
+            let cell = WorkQueueCell::<String>::new(&ctx, visibility_timeout, max_deliveries);
+            Self { ctx, cell }
+        }
+        fn push(&self, value: String) -> u64 {
+            self.cell.push(&self.ctx, value)
+        }
+        fn claim(&self, worker: &str, now: u64) -> Option<WorkQueueDelivery<String>> {
+            self.cell.claim(&self.ctx, worker.to_owned(), now)
+        }
+        fn ack(&self, worker: &str, delivery_id: u64) -> bool {
+            self.cell.ack(&self.ctx, &worker.to_owned(), delivery_id)
+        }
+        fn nack(&self, worker: &str, delivery_id: u64) -> bool {
+            self.cell.nack(&self.ctx, &worker.to_owned(), delivery_id)
+        }
+        fn reap_expired(&self, now: u64) -> usize {
+            self.cell.reap_expired(&self.ctx, now)
+        }
+        fn materialize(&self) {
+            let _ = self.reads();
+        }
+        fn reader_validity(&self) -> [bool; 4] {
+            let h = self.cell.reader_handles();
+            [
+                self.ctx.is_set(&h.pending_len),
+                self.ctx.is_set(&h.is_empty),
+                self.ctx.is_set(&h.in_flight_len),
+                self.ctx.is_set(&h.dead_letter_len),
+            ]
+        }
+        fn reads(&self) -> (u64, bool, u64, u64) {
+            (
+                self.cell.pending_len(&self.ctx) as u64,
+                self.cell.is_empty(&self.ctx),
+                self.cell.in_flight_len(&self.ctx) as u64,
+                self.cell.dead_letter_len(&self.ctx) as u64,
+            )
+        }
+        fn pending(&self) -> Vec<WorkQueueItem<String>> {
+            self.cell.pending()
+        }
+        fn in_flight(&self) -> Vec<WorkQueueDelivery<String>> {
+            self.cell.in_flight()
+        }
+        fn dead_letters(&self) -> Vec<WorkQueueDeadLetter<String>> {
+            self.cell.dead_letters()
+        }
+    }
+
+    #[test]
+    fn multi_expiry_requeues_in_delivery_order() {
+        super::work_queue_flavors::multi_expiry_requeues_in_delivery_order::<Model>(
+            "single-threaded",
+        );
+    }
+
+    #[test]
+    fn single_threaded_work_queue_replays_the_canonical_corpus() {
+        if !fixtures_present() {
+            eprintln!("SKIP: lazily-spec sibling missing");
+            return;
+        }
+        let total = replay_corpus::<Model>("single-threaded");
+        assert!(
+            total >= MIN_STEPS,
+            "single-threaded work queue replayed only {total} steps"
+        );
+    }
+}
+
+/// `ThreadSafeWorkQueueCell` — the flavor with a real use case: N workers on N
+/// threads competing for exclusive delivery.
+#[cfg(feature = "thread-safe")]
+mod work_queue_thread_safe {
+    use super::work_queue_flavors::{MIN_STEPS, WorkQueueModel, fixtures_present, replay_corpus};
+    use lazily::{
+        ThreadSafeContext, ThreadSafeWorkQueueCell, WorkQueueDeadLetter, WorkQueueDelivery,
+        WorkQueueItem,
+    };
+
+    struct Model {
+        ctx: ThreadSafeContext,
+        cell: ThreadSafeWorkQueueCell<String>,
+    }
+
+    impl WorkQueueModel for Model {
+        fn new(visibility_timeout: u64, max_deliveries: u32) -> Self {
+            let ctx = ThreadSafeContext::new();
+            let cell =
+                ThreadSafeWorkQueueCell::<String>::new(&ctx, visibility_timeout, max_deliveries);
+            Self { ctx, cell }
+        }
+        fn push(&self, value: String) -> u64 {
+            self.cell.push(&self.ctx, value)
+        }
+        fn claim(&self, worker: &str, now: u64) -> Option<WorkQueueDelivery<String>> {
+            self.cell.claim(&self.ctx, worker.to_owned(), now)
+        }
+        fn ack(&self, worker: &str, delivery_id: u64) -> bool {
+            self.cell.ack(&self.ctx, &worker.to_owned(), delivery_id)
+        }
+        fn nack(&self, worker: &str, delivery_id: u64) -> bool {
+            self.cell.nack(&self.ctx, &worker.to_owned(), delivery_id)
+        }
+        fn reap_expired(&self, now: u64) -> usize {
+            self.cell.reap_expired(&self.ctx, now)
+        }
+        fn materialize(&self) {
+            let _ = self.reads();
+        }
+        fn reader_validity(&self) -> [bool; 4] {
+            let h = self.cell.reader_handles();
+            [
+                self.ctx.is_set(&h.pending_len),
+                self.ctx.is_set(&h.is_empty),
+                self.ctx.is_set(&h.in_flight_len),
+                self.ctx.is_set(&h.dead_letter_len),
+            ]
+        }
+        fn reads(&self) -> (u64, bool, u64, u64) {
+            (
+                self.cell.pending_len(&self.ctx) as u64,
+                self.cell.is_empty(&self.ctx),
+                self.cell.in_flight_len(&self.ctx) as u64,
+                self.cell.dead_letter_len(&self.ctx) as u64,
+            )
+        }
+        fn pending(&self) -> Vec<WorkQueueItem<String>> {
+            self.cell.pending()
+        }
+        fn in_flight(&self) -> Vec<WorkQueueDelivery<String>> {
+            self.cell.in_flight()
+        }
+        fn dead_letters(&self) -> Vec<WorkQueueDeadLetter<String>> {
+            self.cell.dead_letters()
+        }
+    }
+
+    #[test]
+    fn multi_expiry_requeues_in_delivery_order() {
+        super::work_queue_flavors::multi_expiry_requeues_in_delivery_order::<Model>("thread-safe");
+    }
+
+    #[test]
+    fn thread_safe_work_queue_replays_the_canonical_corpus() {
+        if !fixtures_present() {
+            eprintln!("SKIP: lazily-spec sibling missing");
+            return;
+        }
+        let total = replay_corpus::<Model>("thread-safe");
+        assert!(
+            total >= MIN_STEPS,
+            "thread-safe work queue replayed only {total} steps"
+        );
+    }
+
+    // A push moves pending_len AND (from empty) is_empty. Clearing them in two
+    // frontier walks lets an observer of both rerun twice for one push and, in
+    // between, read pending_len == 1 while is_empty still says true.
+    #[test]
+    fn one_push_invalidates_reader_kinds_atomically() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let ctx = ThreadSafeContext::new();
+        let q = ThreadSafeWorkQueueCell::<String>::new(&ctx, 10, 2);
+
+        let runs = Arc::new(AtomicUsize::new(0));
+        {
+            let (q, runs) = (q.clone(), Arc::clone(&runs));
+            ctx.effect(move |cx| {
+                runs.fetch_add(1, Ordering::SeqCst);
+                let _ = q.pending_len(cx);
+                let _ = q.is_empty(cx);
+            });
+        }
+        let baseline = runs.load(Ordering::SeqCst);
+        assert!(baseline >= 1, "effect must run once on creation");
+
+        q.push(&ctx, "job".into());
+
+        assert_eq!(
+            runs.load(Ordering::SeqCst) - baseline,
+            1,
+            "one push must rerun a two-kind subscriber exactly ONCE; more means \
+             pending_len and is_empty were cleared in separate frontier walks"
+        );
+        assert_eq!(q.pending_len(&ctx), 1);
+        assert!(!q.is_empty(&ctx));
+    }
+
+    // The reason this flavor exists: competing consumers on real threads. Each
+    // item must be delivered to exactly one worker, and the run must not deadlock
+    // against readers taking the context lock then the core lock.
+    #[test]
+    fn competing_workers_never_share_a_delivery() {
+        use std::collections::HashSet;
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        let ctx = Arc::new(ThreadSafeContext::new());
+        let q = ThreadSafeWorkQueueCell::<String>::new(&ctx, 1_000, 3);
+        for i in 0..200 {
+            q.push(&ctx, format!("job-{i}"));
+        }
+
+        let claimed: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let workers: Vec<_> = (0..8)
+            .map(|w| {
+                let (ctx, q, claimed) = (Arc::clone(&ctx), q.clone(), Arc::clone(&claimed));
+                thread::spawn(move || {
+                    while let Some(delivery) = q.claim(&ctx, format!("w{w}"), 0) {
+                        claimed.lock().expect("claimed").push(delivery.item_id);
+                        let _ = q.pending_len(&ctx);
+                        assert!(q.ack(&ctx, &format!("w{w}"), delivery.delivery_id));
+                    }
+                })
+            })
+            .collect();
+        for t in workers {
+            t.join().expect("no worker panicked or deadlocked");
+        }
+
+        let claimed = claimed.lock().expect("claimed");
+        assert_eq!(claimed.len(), 200, "every item must be delivered once");
+        let unique: HashSet<_> = claimed.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            200,
+            "an item delivered to two workers means `claim` is not exclusive"
+        );
+        assert_eq!(q.pending_len(&ctx), 0);
+        assert_eq!(q.in_flight_len(&ctx), 0);
+    }
+}
+
+/// `AsyncWorkQueueCell` — same corpus, `AsyncContext` graph, caller-driven clock.
+#[cfg(feature = "async")]
+mod work_queue_async {
+    use super::work_queue_flavors::{MIN_STEPS, WorkQueueModel, fixtures_present, replay_corpus};
+    use lazily::{
+        AsyncContext, AsyncWorkQueueCell, WorkQueueDeadLetter, WorkQueueDelivery, WorkQueueItem,
+    };
+
+    struct Model {
+        ctx: AsyncContext,
+        cell: AsyncWorkQueueCell<String>,
+    }
+
+    impl WorkQueueModel for Model {
+        fn new(visibility_timeout: u64, max_deliveries: u32) -> Self {
+            let ctx = AsyncContext::new();
+            let cell = AsyncWorkQueueCell::<String>::new(&ctx, visibility_timeout, max_deliveries);
+            Self { ctx, cell }
+        }
+        fn push(&self, value: String) -> u64 {
+            self.cell.push(&self.ctx, value)
+        }
+        fn claim(&self, worker: &str, now: u64) -> Option<WorkQueueDelivery<String>> {
+            self.cell.claim(&self.ctx, worker.to_owned(), now)
+        }
+        fn ack(&self, worker: &str, delivery_id: u64) -> bool {
+            self.cell.ack(&self.ctx, &worker.to_owned(), delivery_id)
+        }
+        fn nack(&self, worker: &str, delivery_id: u64) -> bool {
+            self.cell.nack(&self.ctx, &worker.to_owned(), delivery_id)
+        }
+        fn reap_expired(&self, now: u64) -> usize {
+            self.cell.reap_expired(&self.ctx, now)
+        }
+        fn materialize(&self) {
+            let _ = self.reads();
+        }
+        fn reader_validity(&self) -> [bool; 4] {
+            let h = self.cell.reader_handles();
+            [
+                self.ctx.is_set(&h.pending_len),
+                self.ctx.is_set(&h.is_empty),
+                self.ctx.is_set(&h.in_flight_len),
+                self.ctx.is_set(&h.dead_letter_len),
+            ]
+        }
+        fn reads(&self) -> (u64, bool, u64, u64) {
+            (
+                self.cell.pending_len(&self.ctx) as u64,
+                self.cell.is_empty(&self.ctx),
+                self.cell.in_flight_len(&self.ctx) as u64,
+                self.cell.dead_letter_len(&self.ctx) as u64,
+            )
+        }
+        fn pending(&self) -> Vec<WorkQueueItem<String>> {
+            self.cell.pending()
+        }
+        fn in_flight(&self) -> Vec<WorkQueueDelivery<String>> {
+            self.cell.in_flight()
+        }
+        fn dead_letters(&self) -> Vec<WorkQueueDeadLetter<String>> {
+            self.cell.dead_letters()
+        }
+    }
+
+    #[test]
+    fn multi_expiry_requeues_in_delivery_order() {
+        super::work_queue_flavors::multi_expiry_requeues_in_delivery_order::<Model>("async");
+    }
+
+    #[test]
+    fn async_work_queue_replays_the_canonical_corpus() {
+        if !fixtures_present() {
+            eprintln!("SKIP: lazily-spec sibling missing");
+            return;
+        }
+        let total = replay_corpus::<Model>("async");
+        assert!(
+            total >= MIN_STEPS,
+            "async work queue replayed only {total} steps"
+        );
+    }
+
+    // Neither the lease nor the clock is async-coloured: a claim returns a
+    // delivery, not a future, and `reap_expired` takes the caller's `now`.
+    #[test]
+    fn lease_lifecycle_resolves_without_being_driven() {
+        let ctx = AsyncContext::new();
+        let q = AsyncWorkQueueCell::<String>::new(&ctx, 5, 1);
+        q.push(&ctx, "job".into());
+        assert_eq!(q.pending_len(&ctx), 1);
+        assert!(!q.is_empty(&ctx));
+
+        let delivery = q.claim(&ctx, "w0".into(), 0).expect("claim");
+        assert_eq!(q.in_flight_len(&ctx), 1);
+        assert_eq!(q.pending_len(&ctx), 0);
+
+        // Deadline is 0 + 5; nothing expires before it.
+        assert_eq!(q.reap_expired(&ctx, 5), 0);
+        assert_eq!(q.reap_expired(&ctx, 6), 1);
+        assert_eq!(q.in_flight_len(&ctx), 0);
+        assert_eq!(
+            q.dead_letter_len(&ctx),
+            1,
+            "max_deliveries is 1, so the first expiry is terminal"
+        );
+        assert!(!q.ack(&ctx, &"w0".to_owned(), delivery.delivery_id));
     }
 }
