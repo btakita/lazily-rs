@@ -35,8 +35,6 @@ KNOWN_UNCOVERED=(
   "receipts/causal_receipts.json"
   "reliable-sync/coalesce_bounds_outbox.json"
   "reliable-sync/liveness_lease_eviction.json"
-  "signaling/anti_spoof_session.json"
-  "signaling/frames.json"
 )
 
 MANIFEST="${LAZILY_CONFORMANCE_MANIFEST:-build/conformance-fixtures-loaded.txt}"
@@ -76,6 +74,19 @@ while IFS= read -r fixture; do
     missing=$((missing + 1))
   fi
 done < <(cd "$SPEC_DIR" && find . -name '*.json' | sed 's|^\./||' | sort)
+
+# The evidence channel guards itself. Every recorded id must resolve against the
+# corpus root; otherwise the manifest was truncated or interleaved in transit,
+# and coverage computed from it cannot be trusted.
+while IFS= read -r id; do
+  [ -n "$id" ] || continue
+  if [ ! -f "$SPEC_DIR/$id" ]; then
+    echo "ERROR: manifest records '$id', which names no file in $SPEC_DIR." >&2
+    echo "       The recorder is dropping or interleaving writes; coverage computed" >&2
+    echo "       from this manifest cannot be trusted." >&2
+    missing=$((missing + 1))
+  fi
+done <<< "$OPENED"
 
 # A stale allowlist is its own drift: an entry naming a fixture that no longer
 # exists means the corpus moved and nobody updated the excuse.
