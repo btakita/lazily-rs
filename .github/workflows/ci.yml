@@ -106,10 +106,21 @@ jobs:
           # runner rather than at this guard. Deriving keeps the assertion exact
           # (not a >=N floor, which would let a silently-skipped fixture pass)
           # while surviving upstream additions.
+          #
+          # Every fixture must be ACCOUNTED FOR, which is not the same as replayed:
+          # a model may declare a runner limitation in the MODEL_SKIPS ledger, and
+          # the runner prints one `SKIP reactive-graph[<model>] <fixture>` line per
+          # entry. Those are named and asserted in both directions by the test, so
+          # they are the opposite of the silent skip this guard exists to catch —
+          # but they are not replays, so they are counted separately. What must
+          # hold exactly is replayed + declared-skips == corpus.
           expected=$(ls ../lazily-spec/conformance/reactive-graph/*.json | wc -l)
           test "$expected" -gt 0 || { echo "::error::no reactive-graph fixtures found — the corpus is empty or the path is wrong"; exit 1; }
           for model in Context ThreadSafeContext AsyncContext; do
-            grep -q "reactive-graph\[$model\]: $expected fixtures" /tmp/rg.log || { echo "::error::reactive-graph corpus replayed fewer than $expected fixtures against $model"; exit 1; }
+            replayed=$(sed -n "s/^reactive-graph\[$model\]: \([0-9]\+\) fixtures.*/\1/p" /tmp/rg.log | tail -1)
+            test -n "$replayed" || { echo "::error::reactive-graph corpus did not report a summary line for $model — the model never ran"; exit 1; }
+            skipped=$(grep -c "^SKIP reactive-graph\[$model\] " /tmp/rg.log || true)
+            test "$((replayed + skipped))" -eq "$expected" || { echo "::error::reactive-graph corpus accounted for $replayed replayed + $skipped declared-skipped = $((replayed + skipped)) of $expected fixtures against $model"; exit 1; }
           done
 
       - name: Test SeqCrdt conformance against canonical spec fixtures (#lzseqcrdt)
