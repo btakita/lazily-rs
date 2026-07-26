@@ -98,6 +98,7 @@ fn anti_entropy_converge_conformance() {
 
     let mut checked_counts = 0usize;
     let mut checked_redeliver = 0usize;
+    let mut checked_converged = 0usize;
 
     for sc in scenarios {
         let name = sc["name"].as_str().expect("name");
@@ -134,24 +135,107 @@ fn anti_entropy_converge_conformance() {
             checked_redeliver += 1;
         }
 
-        // NOT asserted here, deliberately, and the reason is recorded rather than
-        // left as a silent gap: the fixture's `converged` view is the winning op's
-        // raw `Inline` bytes per (node, key). lazily-rs's plane is typed-cell
-        // oriented — it merges SERIALIZED CRDT state into registered
-        // `ReplicatedCell`s and reads back through `value::<C>()` — and exposes no
-        // accessor for the raw winning payload. A byte-valued `LwwRegister<Vec<u8>>`
-        // does not bridge it: `merge_state` deserializes, so the cells stay empty.
-        //
-        // Asserting the counts while quietly skipping `converged` and then calling
-        // the fixture covered is the marker-only failure this suite exists to
-        // prevent, so `distributed/crdt_sync_frames.json` stays in the coverage
-        // allowlist and the converged half is filed as follow-up work.
+        // The converged view, now assertable: `CrdtPlaneRuntime::converged()` folds
+        // the op log into the winning payload per (node, key), which is the shape
+        // the fixture states convergence in. Before that accessor existed this half
+        // was skipped, and a runner that asserts counts while silently dropping
+        // `converged` is the marker-only failure this suite exists to prevent.
+        if let Some(want_entries) = sc["expect"]["converged"].as_array() {
+            let got = rt.converged();
+            for entry in want_entries {
+                let node = NodeId(entry["node"].as_u64().expect("node"));
+                let want_bytes: Vec<u8> = entry["state"]["Inline"]
+                    .as_array()
+                    .expect("Inline")
+                    .iter()
+                    .map(|b| b.as_u64().expect("byte") as u8)
+                    .collect();
+                let found = got
+                    .iter()
+                    .find(|e| e.node == node)
+                    .unwrap_or_else(|| panic!("{name}: no converged entry for {node:?}"));
+                let IpcValue::Inline(got_bytes) = &found.state else {
+                    panic!("{name}: converged state for {node:?} is not Inline");
+                };
+                assert_eq!(
+                    got_bytes, &want_bytes,
+                    "{name}: converged state for {node:?} — the winner is the \
+                     greatest stamp, with peer as the final tiebreak"
+                );
+                checked_converged += 1;
+            }
+        }
     }
 
     // Positive proof, not an absence guard: a runner that silently skipped every
     // scenario body would otherwise pass.
     assert!(
-        checked_counts >= 3 && checked_redeliver >= 1,
-        "too little asserted: counts={checked_counts} redeliver={checked_redeliver}"
+        checked_counts >= 3 && checked_redeliver >= 1 && checked_converged >= 4,
+        "too little asserted: counts={checked_counts} redeliver={checked_redeliver} \
+         converged={checked_converged}"
     );
+}
+
+/// `crdt_sync_frames.json` is a WIRE fixture, not a plane-behaviour one: each frame
+/// carries a `CrdtSync` payload plus assertions about its shape. It pins the codec
+/// boundary — that a frame deserializes to the frontier and op counts the spec says
+/// it has — which is a different contract from `anti_entropy_converge.json` and was
+/// equally unreplayed here.
+#[test]
+fn crdt_sync_frames_conformance() {
+    let Some(fixture) = load("crdt_sync_frames.json") else {
+        eprintln!("SKIP: lazily-spec sibling missing");
+        return;
+    };
+    let frames = fixture["frames"].as_array().expect("frames");
+    assert!(
+        !frames.is_empty(),
+        "a replay of zero frames is not a replay"
+    );
+
+    let mut checked = 0usize;
+    for frame in frames {
+        let label = frame["label"].as_str().expect("label");
+        let wire = &frame["wire"]["CrdtSync"];
+
+        // Deserialize through the real wire type rather than reading the JSON
+        // fields directly — otherwise this asserts the fixture against itself.
+        let sync: lazily::CrdtSync =
+            serde_json::from_value(wire.clone()).unwrap_or_else(|e| panic!("{label}: {e}"));
+
+        let assertions = &frame["assertions"];
+        if let Some(want) = assertions["frontier_len"].as_u64() {
+            assert_eq!(
+                sync.frontier.len() as u64,
+                want,
+                "{label}: frontier_len after wire round-trip"
+            );
+            checked += 1;
+        }
+        if let Some(want) = assertions["op_count"].as_u64() {
+            assert_eq!(
+                sync.ops.len() as u64,
+                want,
+                "{label}: op_count after wire round-trip"
+            );
+            checked += 1;
+        }
+
+        // Re-serializing must preserve those counts: a codec that drops ops on the
+        // way out would still satisfy the checks above.
+        let round_tripped: lazily::CrdtSync =
+            serde_json::from_value(serde_json::to_value(&sync).expect("serialize"))
+                .expect("re-deserialize");
+        assert_eq!(
+            round_tripped.ops.len(),
+            sync.ops.len(),
+            "{label}: ops survive round-trip"
+        );
+        assert_eq!(
+            round_tripped.frontier.len(),
+            sync.frontier.len(),
+            "{label}: frontier survives round-trip"
+        );
+    }
+    assert!(checked >= 4, "too little asserted across frames: {checked}");
 }

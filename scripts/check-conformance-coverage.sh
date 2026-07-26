@@ -38,7 +38,6 @@ KNOWN_UNCOVERED=(
   "collections/topiccell_durable_replay_gc.json"
   "collections/topiccell_ephemeral_lifecycle.json"
   "collections/topiccell_offline_tail_bounds.json"
-  "distributed/crdt_sync_frames.json"
   "receipts/causal_receipts.json"
   "reliable-sync/coalesce_bounds_outbox.json"
   "reliable-sync/liveness_lease_eviction.json"

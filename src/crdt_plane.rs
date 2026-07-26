@@ -159,6 +159,20 @@ pub struct CrdtPlaneRuntime {
     next_family_node: u64,
 }
 
+/// One address's converged state — the winning op's payload for `(node, key)`.
+///
+/// Mirrors the `converged` shape in `distributed/anti_entropy_converge.json` and
+/// the equivalent accessors in lazily-py and lazily-go.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConvergedEntry {
+    /// The addressed node.
+    pub node: NodeId,
+    /// The wire-stable key, when the producer assigned one.
+    pub key: Option<NodeKey>,
+    /// The winning op's state.
+    pub state: IpcValue,
+}
+
 impl CrdtPlaneRuntime {
     /// Create a runtime for the local `peer`.
     pub fn new(peer: PeerId) -> Self {
@@ -511,6 +525,37 @@ impl CrdtPlaneRuntime {
                 ctx.set(epoch, current.wrapping_add(1));
             }
         })
+    }
+
+    /// The converged view: the winning op's state per `(node, key)` address.
+    ///
+    /// The canonical `distributed/anti_entropy_converge.json` fixture expresses
+    /// convergence this way — raw winning payload per address — and the other
+    /// bindings (`plane.converged()` in lazily-py, `convergedFor` in lazily-go)
+    /// expose the same shape. lazily-rs previously exposed only the TYPED read
+    /// (`value::<C>()`), which cannot answer it: registered cells hold
+    /// deserialized CRDT state, so a conformance runner had no way to compare
+    /// against the fixture and simply skipped that half.
+    ///
+    /// The fold is the log, not a second source of truth: ops arrive from
+    /// `missing_since` in ascending stamp order, so writing each into a map keyed
+    /// by `(node, key)` leaves the greatest stamp per address — and `HlcStamp`
+    /// already orders by `(wall_time, logical, peer)`, so the peer tiebreak the
+    /// fixture exercises falls out rather than being reimplemented here.
+    pub fn converged(&self) -> Vec<ConvergedEntry> {
+        let mut winners: BTreeMap<(NodeId, Option<NodeKey>), ConvergedEntry> = BTreeMap::new();
+        for (_, op) in self.log.missing_since(&StampFrontier::new()) {
+            let addr = (op.node, op.key.clone());
+            winners.insert(
+                addr,
+                ConvergedEntry {
+                    node: op.node,
+                    key: op.key.clone(),
+                    state: op.state.clone(),
+                },
+            );
+        }
+        winners.into_values().collect()
     }
 
     /// This replica's stamp frontier in wire form — the per-peer highest observed
