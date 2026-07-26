@@ -22,7 +22,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 /// A message the client sends to the signaling server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ClientMessage {
     /// Join the session as `peer`, optionally advertising capabilities.
     Join {
@@ -44,7 +44,7 @@ pub enum ClientMessage {
 
 /// A message the signaling server sends to the client.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ServerMessage {
     /// Sent on join: this peer's id and the current roster (excluding self).
     Welcome { peer: PeerId, peers: Vec<PeerId> },
@@ -95,6 +95,26 @@ impl From<tokio_tungstenite::tungstenite::Error> for SignalingError {
 impl From<serde_json::Error> for SignalingError {
     fn from(e: serde_json::Error) -> Self {
         SignalingError::Protocol(e)
+    }
+}
+
+impl ServerMessage {
+    /// Decode and validate an untrusted server frame.
+    ///
+    /// Serde enforces the closed tagged union and exact per-variant fields;
+    /// this method additionally enforces semantic constraints that JSON Schema
+    /// cannot express, such as a welcome roster excluding the joining peer.
+    pub fn from_json_slice(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        let message: Self = serde_json::from_slice(bytes)?;
+        if let Self::Welcome { peer, peers } = &message
+            && peers.contains(peer)
+        {
+            return Err(serde_json::Error::io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "welcome roster must exclude the joining peer",
+            )));
+        }
+        Ok(message)
     }
 }
 
@@ -222,10 +242,15 @@ impl SignalingClient {
         loop {
             match self.ws.next().await? {
                 Ok(Message::Text(text)) => {
-                    return Some(serde_json::from_str(text.as_str()).map_err(SignalingError::from));
+                    return Some(
+                        ServerMessage::from_json_slice(text.as_bytes())
+                            .map_err(SignalingError::from),
+                    );
                 }
                 Ok(Message::Binary(bytes)) => {
-                    return Some(serde_json::from_slice(&bytes).map_err(SignalingError::from));
+                    return Some(
+                        ServerMessage::from_json_slice(&bytes).map_err(SignalingError::from),
+                    );
                 }
                 Ok(Message::Close(_)) => return None,
                 // Ping/Pong/frame: keep waiting for an application frame.

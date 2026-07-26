@@ -65,6 +65,7 @@ export function parseClientMessage(value: unknown): ClientMessage | null {
   const msg = value as Record<string, unknown>;
   switch (msg.type) {
     case "join":
+      if (!hasOnlyKeys(msg, ["type", "peer", "capabilities"])) return null;
       if (!isPeerId(msg.peer)) return null;
       if (msg.capabilities !== undefined && !isStringArray(msg.capabilities)) {
         return null;
@@ -78,15 +79,19 @@ export function parseClientMessage(value: unknown): ClientMessage | null {
       };
     case "offer":
     case "answer":
+      if (!hasOnlyKeys(msg, ["type", "to", "sdp"])) return null;
       if (!isPeerId(msg.to) || typeof msg.sdp !== "string") return null;
       return { type: msg.type, to: msg.to, sdp: msg.sdp };
     case "ice":
+      if (!hasOnlyKeys(msg, ["type", "to", "candidate"])) return null;
       if (!isPeerId(msg.to) || typeof msg.candidate !== "string") return null;
       return { type: "ice", to: msg.to, candidate: msg.candidate };
     case "relay":
+      if (!hasOnlyKeys(msg, ["type", "to", "payload"])) return null;
       if (!isPeerId(msg.to) || !("payload" in msg)) return null;
       return { type: "relay", to: msg.to, payload: msg.payload };
     case "leave":
+      if (!hasOnlyKeys(msg, ["type"])) return null;
       return { type: "leave" };
     default:
       return null;
@@ -115,22 +120,89 @@ export function encodeClientMessage(message: ClientMessage): string {
 }
 
 /**
- * Parse a raw server frame into a `ServerMessage`. The server is trusted, so
- * this only guards against non-JSON / non-object frames rather than validating
- * every field.
+ * Parse and fully validate a raw server frame into a `ServerMessage`.
  */
 export function decodeServerFrame(data: string): ServerMessage | null {
   try {
     const parsed: unknown = JSON.parse(data);
-    if (typeof parsed === "object" && parsed !== null && "type" in parsed) {
-      return parsed as ServerMessage;
-    }
-    return null;
+    return parseServerMessage(parsed);
   } catch {
     return null;
   }
 }
 
+function parseServerMessage(value: unknown): ServerMessage | null {
+  if (typeof value !== "object" || value === null) return null;
+  const msg = value as Record<string, unknown>;
+  switch (msg.type) {
+    case "welcome":
+      if (
+        !hasOnlyKeys(msg, ["type", "peer", "peers"]) ||
+        !isPeerId(msg.peer) ||
+        !Array.isArray(msg.peers) ||
+        !msg.peers.every(isPeerId) ||
+        msg.peers.includes(msg.peer)
+      ) {
+        return null;
+      }
+      return { type: "welcome", peer: msg.peer, peers: msg.peers as PeerId[] };
+    case "peer-joined":
+    case "peer-left":
+      return hasOnlyKeys(msg, ["type", "peer"]) && isPeerId(msg.peer)
+        ? { type: msg.type, peer: msg.peer }
+        : null;
+    case "offer":
+    case "answer":
+      return hasOnlyKeys(msg, ["type", "from", "sdp"]) &&
+        isPeerId(msg.from) &&
+        typeof msg.sdp === "string"
+        ? { type: msg.type, from: msg.from, sdp: msg.sdp }
+        : null;
+    case "ice":
+      return hasOnlyKeys(msg, ["type", "from", "candidate"]) &&
+        isPeerId(msg.from) &&
+        typeof msg.candidate === "string"
+        ? { type: "ice", from: msg.from, candidate: msg.candidate }
+        : null;
+    case "relay":
+      return hasOnlyKeys(msg, ["type", "from", "payload"]) &&
+        isPeerId(msg.from) &&
+        "payload" in msg
+        ? { type: "relay", from: msg.from, payload: msg.payload }
+        : null;
+    case "error":
+      return hasOnlyKeys(msg, ["type", "code", "message"]) &&
+        isErrorCode(msg.code) &&
+        typeof msg.message === "string"
+        ? { type: "error", code: msg.code, message: msg.message }
+        : null;
+    default:
+      return null;
+  }
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((v) => typeof v === "string");
+}
+
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+): boolean {
+  const keys = new Set(allowed);
+  return Object.keys(value).every((key) => keys.has(key));
+}
+
+function isErrorCode(value: unknown): value is ErrorCode {
+  return (
+    typeof value === "string" &&
+    [
+      "bad_message",
+      "not_joined",
+      "already_joined",
+      "duplicate_peer",
+      "unknown_target",
+      "permission_denied",
+    ].includes(value)
+  );
 }

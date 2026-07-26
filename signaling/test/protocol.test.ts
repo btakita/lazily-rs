@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+import antiSpoofFixture from "../../../lazily-spec/conformance/signaling/anti_spoof_session.json";
+import framesFixture from "../../../lazily-spec/conformance/signaling/frames.json";
 import {
   decodeClientFrame,
+  decodeServerFrame,
   encodeServerMessage,
   isPeerId,
   parseClientMessage,
@@ -77,5 +80,30 @@ describe("frame codec", () => {
   it("round-trips through encode + JSON.parse", () => {
     const msg: ServerMessage = { type: "welcome", peer: 1, peers: [2, 3] };
     expect(JSON.parse(encodeServerMessage(msg))).toEqual(msg);
+  });
+
+  it("replays canonical positive and rejection fixtures", () => {
+    for (const entry of framesFixture.frames) {
+      const decoded =
+        entry.direction === "client"
+          ? decodeClientFrame(JSON.stringify(entry.wire))
+          : decodeServerFrame(JSON.stringify(entry.wire));
+      expect(decoded, entry.label).toEqual(entry.wire);
+    }
+
+    for (const entry of framesFixture.rejects) {
+      const decoded =
+        entry.direction === "client"
+          ? decodeClientFrame(JSON.stringify(entry.wire))
+          : decodeServerFrame(JSON.stringify(entry.wire));
+      expect(decoded, entry.label).toBeNull();
+    }
+
+    for (const entry of antiSpoofFixture.rejects) {
+      expect(
+        decodeClientFrame(JSON.stringify(entry.input.recv)),
+        entry.label,
+      ).toBeNull();
+    }
   });
 });
