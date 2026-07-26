@@ -508,6 +508,26 @@ impl<T> Clone for AsyncComputed<T> {
 }
 impl<T> Copy for AsyncComputed<T> {}
 
+// Node identity, matching the single-threaded `Computed`. Without these, the
+// `handle_stable` half of the collections contract — "an atomic move keeps the
+// entry's node, it does not remove + re-mint" — is not even expressible against
+// the async flavor.
+impl<T> PartialEq for AsyncComputed<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl<T> Eq for AsyncComputed<T> {}
+
+impl<T> fmt::Debug for AsyncComputed<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AsyncComputed")
+            .field("id", &self.id)
+            .finish()
+    }
+}
+
 /// Compatibility name for [`AsyncComputed`].
 #[deprecated(note = "use `AsyncComputed`")]
 pub type AsyncSlotHandle<T> = AsyncComputed<T>;
@@ -523,6 +543,21 @@ impl<T> Clone for AsyncSource<T> {
     }
 }
 impl<T> Copy for AsyncSource<T> {}
+
+// Node identity, matching the single-threaded `Source`. See `AsyncComputed`.
+impl<T> PartialEq for AsyncSource<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl<T> Eq for AsyncSource<T> {}
+
+impl<T> fmt::Debug for AsyncSource<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AsyncSource").field("id", &self.id).finish()
+    }
+}
 
 /// Compatibility name for [`AsyncSource`].
 #[deprecated(note = "use `AsyncSource`")]
@@ -972,6 +1007,19 @@ impl AsyncContext {
         self.set(handle, merged);
     }
 
+    /// Whether an async computed cell currently holds a cached, resolved value.
+    ///
+    /// The async analog of `Context::is_set` / `ThreadSafeContext::is_set`.
+    /// Invalidation drops the cell out of `Resolved`, so this is the probe the
+    /// reader-class independence fixtures use to tell "recomputed" from "stayed
+    /// cached" on this flavor.
+    pub fn is_set<T>(&self, handle: &AsyncComputed<T>) -> bool
+    where
+        T: Send + Sync + 'static,
+    {
+        matches!(self.get_slot_state(handle.id), AsyncSlotStateView::Resolved)
+    }
+
     pub(crate) fn get_slot_state(&self, id: SlotId) -> AsyncSlotStateView {
         let inner = self.inner.lock();
         match inner.get_node(id) {
@@ -1121,6 +1169,25 @@ impl AsyncContext {
         }
     }
 
+    /// Evaluate `f` once, **detached** from any recompute: reads through the
+    /// supplied [`AsyncComputeContext`] register no dependency edge, because it
+    /// is bound to the `SlotId::DETACHED` sentinel, which resolves to no node.
+    ///
+    /// The async analog of `Context::eval_detached`. Used to produce a value
+    /// under the unified view-taking closure type when there is no owning node
+    /// yet — e.g. a source cell's seed value in the keyed-map family, which is
+    /// evaluated once and is not a dependency edge.
+    pub(crate) fn eval_detached<T>(&self, f: impl FnOnce(&AsyncComputeContext) -> T) -> T {
+        let context_id = self.inner.lock().context_id;
+        let ctx = AsyncComputeContext {
+            _context_id: context_id,
+            _node_id: SlotId::DETACHED,
+            _node_gen: 0,
+            inner: self.inner.clone(),
+            dependencies: Arc::new(Mutex::new(HashSet::new())),
+        };
+        f(&ctx)
+    }
     /// Create a **guarded async computed cell** (`#lzcellkernel`): an equal
     /// recompute suppresses downstream invalidation, so `T: PartialEq`. This is
     /// the primary async derived constructor; the former `memo_async`

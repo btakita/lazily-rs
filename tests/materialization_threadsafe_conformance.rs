@@ -51,8 +51,13 @@ fn as_set(keys: &[String]) -> HashSet<String> {
     keys.iter().cloned().collect()
 }
 
-fn lookup_fn(entries: Vec<(String, V)>) -> impl Fn(&String) -> V + Clone + Send + Sync + 'static {
-    move |k: &String| -> V {
+fn lookup_fn(
+    entries: Vec<(String, V)>,
+) -> impl Fn(&lazily::ThreadSafeContext, &String) -> V + Clone + Send + Sync + 'static {
+    // The tracking view is available to the factory but this fixture's values are
+    // constants per key, so it goes unused here. What matters is that the map no
+    // longer *severs* it.
+    move |_ctx: &lazily::ThreadSafeContext, k: &String| -> V {
         entries
             .iter()
             .find(|(key, _)| key == k)

@@ -62,7 +62,6 @@
 //! ```
 
 use std::cell::{Cell as StdCell, RefCell};
-use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -71,6 +70,7 @@ use crate::Context;
 use crate::cell::Computed;
 use crate::cell::Source;
 use crate::context::{Compute, ComputeOps};
+use crate::keyed_order::{KeyedOrder, Move, Mutation};
 
 /// Which kind of reactive node a [`ReactiveMap`] entry is — the handle-kind axis
 /// the map abstracts over.
@@ -199,10 +199,10 @@ pub struct ReactiveMap<K, V, H> {
 }
 
 struct ReactiveMapInner<K, H> {
-    /// Per-key reactive nodes. Each entry is its own reactive node.
-    entries: RefCell<HashMap<K, H>>,
-    /// Insertion-ordered authoritative key list (snapshot returned by `keys`).
-    order: RefCell<Vec<K>>,
+    /// Present set + authoritative key order + the move algebra, shared verbatim
+    /// with the thread-safe and async flavors. Graph-agnostic and closure-free;
+    /// this flavor's only contribution is the `RefCell` around it.
+    core: RefCell<KeyedOrder<K, H>>,
     /// Reactive *set-membership* signal. Holds a monotonic version bumped only
     /// when the **set** of keys changes (add/remove). Reading it (in
     /// `len`/`contains_key`/`is_empty`) subscribes the caller to membership
@@ -239,8 +239,7 @@ where
     pub fn new(ctx: &Context) -> Self {
         Self {
             inner: Rc::new(ReactiveMapInner {
-                entries: RefCell::new(HashMap::new()),
-                order: RefCell::new(Vec::new()),
+                core: RefCell::new(KeyedOrder::new()),
                 membership: ctx.source(0u64),
                 version: StdCell::new(0),
                 order_signal: ctx.source(0u64),
@@ -274,19 +273,26 @@ where
     /// canonical value producer) on first access, caching the handle and bumping
     /// reactive membership. Re-minting an existing key returns the cached handle.
     fn mint_with(&self, ctx: &Context, key: K, compute: impl Fn(&Compute) -> V + 'static) -> H {
-        if let Some(handle) = self.inner.entries.borrow().get(&key).copied() {
+        if let Some(handle) = self.inner.core.borrow().get(&key) {
             return handle; // warm: already allocated.
         }
         let handle = H::materialize(ctx, compute);
-        self.inner.entries.borrow_mut().insert(key.clone(), handle);
-        self.inner.order.borrow_mut().push(key);
-        self.bump_membership(ctx);
+        let (handle, mutation) = self.inner.core.borrow_mut().insert(key, handle);
+        if mutation == Mutation::Changed {
+            self.bump_membership(ctx);
+        }
         handle
     }
 
-    /// Get the value at `key`, minting the entry via `factory(&key)` first if the
-    /// key is absent — the mint-on-access recipe. For a [`ComputedMap`] this is the
-    /// **lazy materialization** pull; for a [`SourceMap`] it seeds an input cell.
+    /// Get the value at `key`, minting the entry via `factory(compute, &key)`
+    /// first if the key is absent — the mint-on-access recipe. For a
+    /// [`ComputedMap`] this is the **lazy materialization** pull; for a
+    /// [`SourceMap`] it seeds an input cell.
+    ///
+    /// The factory's first parameter is the entry's own tracking view: reads of
+    /// other reactives through it register dependency edges *on this entry*, so a
+    /// derived entry can be genuinely derived. Ignore it (`|_, key| …`) for a
+    /// constant-per-key factory.
     ///
     /// Bumps reactive membership only on insert; an existing key returns its
     /// current value without re-running the factory.
@@ -294,26 +300,26 @@ where
         &self,
         ctx: &Context,
         key: K,
-        factory: impl Fn(&K) -> V + 'static,
+        factory: impl Fn(&Compute, &K) -> V + 'static,
     ) -> V {
-        if let Some(handle) = self.inner.entries.borrow().get(&key).copied() {
+        if let Some(handle) = self.inner.core.borrow().get(&key) {
             return handle.observe(ctx);
         }
         let k = key.clone();
-        let handle = self.mint_with(ctx, key, move |_ctx| factory(&k));
+        let handle = self.mint_with(ctx, key, move |ctx| factory(ctx, &k));
         handle.observe(ctx)
     }
 
     /// Return the existing entry handle for `key`, or `None`. Non-reactive: this
     /// does not subscribe the caller to membership.
     pub fn handle(&self, key: &K) -> Option<H> {
-        self.inner.entries.borrow().get(key).copied()
+        self.inner.core.borrow().get(key)
     }
 
     /// Read the value at `key` if present. Reactive on that entry only (a reader
     /// is invalidated when this entry changes, not when siblings change).
     pub fn get<C: ComputeOps>(&self, ctx: &C, key: &K) -> Option<V> {
-        let handle = self.inner.entries.borrow().get(key).copied();
+        let handle = self.inner.core.borrow().get(key);
         handle.map(|h| h.observe(ctx))
     }
 
@@ -323,13 +329,14 @@ where
     /// Note: the underlying node id is not recycled (the runtime exposes no
     /// node-free API yet); the orphaned node stops driving any dependents.
     pub fn remove(&self, ctx: &Context, key: &K) -> bool {
-        let removed = self.inner.entries.borrow_mut().remove(key);
+        let (removed, mutation) = self.inner.core.borrow_mut().remove(key);
         let Some(handle) = removed else {
             return false;
         };
-        self.inner.order.borrow_mut().retain(|k| k != key);
         handle.clear_dependents(ctx);
-        self.bump_membership(ctx);
+        if mutation == Mutation::Changed {
+            self.bump_membership(ctx);
+        }
         true
     }
 
@@ -338,30 +345,30 @@ where
     /// per-entry value changes.
     pub fn keys<C: ComputeOps>(&self, ctx: &C) -> Vec<K> {
         let _ = self.inner.order_signal.get(ctx);
-        self.inner.order.borrow().clone()
+        self.inner.core.borrow().keys()
     }
 
     /// The currently-materialized (present) keys, in first-materialization order.
     /// Non-reactive; the present set only grows (deferral, not de-allocation).
     pub fn present_keys(&self) -> Vec<K> {
-        self.inner.order.borrow().clone()
+        self.inner.core.borrow().keys()
     }
 
     /// Number of currently-materialized (present) entries. Non-reactive.
     pub fn present_count(&self) -> usize {
-        self.inner.order.borrow().len()
+        self.inner.core.borrow().len()
     }
 
     /// Whether `key` is currently materialized (present in the allocated set).
     /// Non-reactive.
     pub fn is_present(&self, key: &K) -> bool {
-        self.inner.entries.borrow().contains_key(key)
+        self.inner.core.borrow().contains(key)
     }
 
     /// Current 0-based position of `key` in the order, or `None` if absent.
     /// Non-reactive.
     pub fn position(&self, key: &K) -> Option<usize> {
-        self.inner.order.borrow().iter().position(|k| k == key)
+        self.inner.core.borrow().position(key)
     }
 
     /// Atomically move `key` to `index` in the order (`#lzcellmove`).
@@ -375,62 +382,37 @@ where
     ///
     /// `index` is clamped to `[0, len)`. Returns whether `key` was present.
     pub fn move_to(&self, ctx: &Context, key: &K, index: usize) -> bool {
-        let mut order = self.inner.order.borrow_mut();
-        let Some(from) = order.iter().position(|k| k == key) else {
-            return false;
-        };
-        let to = index.min(order.len().saturating_sub(1));
-        if from == to {
-            return true; // no-op: do not invalidate readers needlessly.
+        let outcome = self.inner.core.borrow_mut().move_to(key, index);
+        self.settle_move(ctx, outcome)
+    }
+
+    /// Bump the order signal iff the order actually changed, and report whether
+    /// the move could be expressed. Shared by all three `move_*` entry points.
+    fn settle_move(&self, ctx: &Context, outcome: Move) -> bool {
+        if outcome.changed() {
+            self.bump_order(ctx);
         }
-        let k = order.remove(from);
-        order.insert(to, k);
-        drop(order);
-        self.bump_order(ctx);
-        true
+        outcome.is_present()
     }
 
     /// Atomically move `key` to just before `anchor` in the order
     /// (`#lzcellmove`). No-op if either key is absent or already adjacent in the
     /// requested position. Returns whether the move could be expressed.
     pub fn move_before(&self, ctx: &Context, key: &K, anchor: &K) -> bool {
-        let Some(anchor_idx) = self.position(anchor) else {
-            return false;
-        };
-        let from = match self.position(key) {
-            Some(i) => i,
-            None => return false,
-        };
-        // Removing `key` first shifts `anchor` left by one when key precedes it.
-        let target = if from < anchor_idx {
-            anchor_idx - 1
-        } else {
-            anchor_idx
-        };
-        self.move_to(ctx, key, target)
+        let outcome = self.inner.core.borrow_mut().move_before(key, anchor);
+        self.settle_move(ctx, outcome)
     }
 
     /// Atomically move `key` to just after `anchor` in the order (`#lzcellmove`).
     pub fn move_after(&self, ctx: &Context, key: &K, anchor: &K) -> bool {
-        let Some(anchor_idx) = self.position(anchor) else {
-            return false;
-        };
-        let from = match self.position(key) {
-            Some(i) => i,
-            None => return false,
-        };
-        let target = if from <= anchor_idx {
-            anchor_idx
-        } else {
-            anchor_idx + 1
-        };
-        self.move_to(ctx, key, target)
+        let outcome = self.inner.core.borrow_mut().move_after(key, anchor);
+        self.settle_move(ctx, outcome)
     }
 
     /// Reactive entry count. Subscribes the caller to membership changes only.
     pub fn len<C: ComputeOps>(&self, ctx: &C) -> usize {
         let _ = self.inner.membership.get(ctx);
-        self.inner.order.borrow().len()
+        self.inner.core.borrow().len()
     }
 
     /// Reactive emptiness check. Subscribes the caller to membership changes.
@@ -442,12 +424,12 @@ where
     /// changes (add/remove of any key), not to value changes.
     pub fn contains_key<C: ComputeOps>(&self, ctx: &C, key: &K) -> bool {
         let _ = self.inner.membership.get(ctx);
-        self.inner.entries.borrow().contains_key(key)
+        self.inner.core.borrow().contains(key)
     }
 
     /// Non-reactive count. Does not subscribe the caller to anything.
     pub fn len_untracked(&self) -> usize {
-        self.inner.order.borrow().len()
+        self.inner.core.borrow().len()
     }
 
     /// This map's entry kind ([`EntryKind::Source`] for a [`SourceMap`],
@@ -491,7 +473,7 @@ where
     /// Adding a new key bumps reactive membership; re-fetching an existing key
     /// does not. Cell-only: eager value-minting has no derived-slot analog.
     pub fn entry_with(&self, ctx: &Context, key: K, default: impl FnOnce() -> V) -> Source<V> {
-        if let Some(handle) = self.inner.entries.borrow().get(&key).copied() {
+        if let Some(handle) = self.inner.core.borrow().get(&key) {
             return handle;
         }
         let value = default();
@@ -510,7 +492,7 @@ where
     ///
     /// Cell-only: an input is settable; a derived [`ComputedMap`] slot is not.
     pub fn set(&self, ctx: &Context, key: K, value: V) {
-        if let Some(handle) = self.inner.entries.borrow().get(&key).copied() {
+        if let Some(handle) = self.inner.core.borrow().get(&key) {
             handle.set(ctx, value);
             return;
         }
@@ -528,16 +510,21 @@ where
     /// **Eager materialization**: pre-mint a derived slot for every key in
     /// `keys` via `factory`, up front. Observationally identical to minting each
     /// key lazily on first read — it only changes *when* the nodes are allocated.
+    ///
+    /// `factory` takes the entry's own tracking view, exactly as
+    /// [`get_or_insert_with`](ReactiveMap::get_or_insert_with) does; eager and
+    /// lazy differ in timing only, so they must not differ in what the factory
+    /// can depend on.
     pub fn materialize_all(
         &self,
         ctx: &Context,
         keys: impl IntoIterator<Item = K>,
-        factory: impl Fn(&K) -> V + 'static,
+        factory: impl Fn(&Compute, &K) -> V + 'static,
     ) {
         let factory = Rc::new(factory);
         for key in keys {
             let f = Rc::clone(&factory);
-            self.get_or_insert_with(ctx, key, move |k| f(k));
+            self.get_or_insert_with(ctx, key, move |ctx, k| f(ctx, k));
         }
     }
 }
@@ -567,7 +554,7 @@ mod tests {
         assert_eq!(
             map.get_or_insert_with(&ctx, "a", {
                 let calls = Rc::clone(&calls);
-                move |_| {
+                move |_, _| {
                     calls.set(calls.get() + 1);
                     7
                 }
@@ -579,7 +566,7 @@ mod tests {
         assert_eq!(
             map.get_or_insert_with(&ctx, "a", {
                 let calls = Rc::clone(&calls);
-                move |_| {
+                move |_, _| {
                     calls.set(calls.get() + 1);
                     999
                 }
@@ -589,7 +576,7 @@ mod tests {
         assert_eq!(calls.get(), 1);
         // An explicit set is observed by a subsequent get_or_insert_with.
         map.set(&ctx, "a", 42);
-        assert_eq!(map.get_or_insert_with(&ctx, "a", |_| 0), 42);
+        assert_eq!(map.get_or_insert_with(&ctx, "a", |_, _| 0), 42);
     }
 
     #[test]
@@ -649,20 +636,20 @@ mod tests {
         let fam: ComputedMap<u32, u32> = ComputedMap::new(&ctx);
         // Nothing present until first access.
         assert_eq!(fam.present_count(), 0);
-        assert_eq!(fam.get_or_insert_with(&ctx, 7, |&k| k * 2), 14);
+        assert_eq!(fam.get_or_insert_with(&ctx, 7, |_, &k| k * 2), 14);
         assert_eq!(fam.present_count(), 1);
         assert!(fam.is_present(&7));
         // Same key -> same derived slot (value preserved, factory not re-run).
         let h = fam.handle(&7).unwrap();
         assert_eq!(h.get(&ctx), 14);
-        assert_eq!(fam.get_or_insert_with(&ctx, 7, |&k| k * 999), 14);
+        assert_eq!(fam.get_or_insert_with(&ctx, 7, |_, &k| k * 999), 14);
     }
 
     #[test]
     fn computed_map_materialize_all_is_eager() {
         let ctx = Context::new();
         let fam: ComputedMap<u32, u32> = ComputedMap::new(&ctx);
-        fam.materialize_all(&ctx, [0u32, 1, 2, 5, 9], |&k| k * 3);
+        fam.materialize_all(&ctx, [0u32, 1, 2, 5, 9], |_, &k| k * 3);
         assert_eq!(fam.present_count(), 5);
         for k in [0u32, 1, 2, 5, 9] {
             assert!(fam.is_present(&k));

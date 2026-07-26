@@ -63,8 +63,13 @@ fn parse_val_spec(fixture: &Value) -> Vec<(String, V)> {
 }
 
 /// A `Fn(&String) -> V + 'static` lookup over the fixture's `spec.val` table.
-fn lookup_fn(entries: Vec<(String, V)>) -> impl Fn(&String) -> V + Clone + 'static {
-    move |k: &String| -> V {
+fn lookup_fn(
+    entries: Vec<(String, V)>,
+) -> impl Fn(&lazily::Compute<'_>, &String) -> V + Clone + 'static {
+    // The tracking view is available to the factory but this fixture's values are
+    // constants per key, so it goes unused here. What matters is that the map no
+    // longer *severs* it.
+    move |_ctx: &lazily::Compute<'_>, k: &String| -> V {
         entries
             .iter()
             .find(|(key, _)| key == k)
@@ -272,14 +277,22 @@ fn entry_kind_orthogonal_to_mode() {
             EntryKind::Computed => slot_keys.push(key.clone()),
         }
     }
-    let lookup = lookup_fn(vals);
+    let lookup = lookup_fn(vals.clone());
+    // `SourceMap::entry` takes a plain value, not a factory, so these sites need
+    // the bare lookup rather than the view-taking one.
+    let value_of = |k: &String| -> V {
+        vals.iter()
+            .find(|(key, _)| key == k)
+            .map(|(_, v)| *v)
+            .unwrap_or_else(|| panic!("no val for {k}"))
+    };
 
     let ctx = Context::new();
 
     // Eager build: every entry present (cells + slots).
     let eager_cells: SourceMap<String, V> = SourceMap::new(&ctx);
     for k in &cell_keys {
-        eager_cells.entry(&ctx, k.clone(), lookup(k));
+        eager_cells.entry(&ctx, k.clone(), value_of(k));
     }
     let eager_slots: ComputedMap<String, V> = ComputedMap::new(&ctx);
     eager_slots.materialize_all(&ctx, slot_keys.clone(), lookup.clone());
@@ -293,7 +306,7 @@ fn entry_kind_orthogonal_to_mode() {
     // slots deferred until read.
     let lazy_cells: SourceMap<String, V> = SourceMap::new(&ctx);
     for k in &cell_keys {
-        lazy_cells.entry(&ctx, k.clone(), lookup(k));
+        lazy_cells.entry(&ctx, k.clone(), value_of(k));
     }
     let lazy_slots: ComputedMap<String, V> = ComputedMap::new(&ctx);
     let present_at_build = as_set(&lazy_cells.present_keys());

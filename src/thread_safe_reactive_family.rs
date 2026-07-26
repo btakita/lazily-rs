@@ -24,13 +24,13 @@
 //! conformance case in lazily-spec and the `Materialization` proofs (plus
 //! **confluence**) in lazily-formal.
 
-use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::cell_family::EntryKind;
+use crate::keyed_order::{KeyedOrder, Move, Mutation};
 use crate::{Computed, Source, ThreadSafeContext};
 
 mod sealed {
@@ -61,6 +61,15 @@ pub trait ThreadSafeMapHandle<V>: sealed::Sealed + Copy + Send + Sync + 'static 
     fn observe(self, ctx: &ThreadSafeContext) -> V
     where
         V: Clone + Send + Sync + 'static;
+
+    /// Detach this entry's node from the graph on removal.
+    ///
+    /// The single-threaded flavor only clears the cached value and dependents,
+    /// because its runtime exposes no node-free API. This context does, so the
+    /// node is disposed outright: downstream edges are detached, dependents are
+    /// invalidated, and the id is recycled. Observably the same to a reader —
+    /// the removed entry stops driving anything.
+    fn clear_dependents(self, ctx: &ThreadSafeContext);
 }
 
 impl<V> sealed::Sealed for Source<V> {}
@@ -83,6 +92,10 @@ impl<V: Send + Sync + 'static> ThreadSafeMapHandle<V> for Source<V> {
         V: Clone + Send + Sync + 'static,
     {
         ctx.get(&self)
+    }
+
+    fn clear_dependents(self, ctx: &ThreadSafeContext) {
+        ctx.dispose_cell(&self);
     }
 }
 
@@ -107,19 +120,17 @@ impl<V: Send + Sync + 'static> ThreadSafeMapHandle<V> for Computed<V> {
     {
         ctx.get(&self)
     }
-}
 
-/// Present-set state, guarded by the map's `Mutex`.
-struct MapState<K, H> {
-    /// Currently-allocated entries (the "present" set). Grows on materialize,
-    /// never shrinks silently — deferral, not de-allocation.
-    materialized: HashMap<K, H>,
-    /// Insertion order of the present set (stable snapshot for `present_keys`).
-    order: Vec<K>,
+    fn clear_dependents(self, ctx: &ThreadSafeContext) {
+        ctx.dispose_slot(&self);
+    }
 }
 
 struct MapInner<K, H> {
-    state: Mutex<MapState<K, H>>,
+    /// Present set + authoritative key order + the move algebra, shared verbatim
+    /// with the single-threaded and async flavors. Graph-agnostic and
+    /// closure-free; this flavor's only contribution is the `Mutex` around it.
+    state: Mutex<KeyedOrder<K, H>>,
     /// Reactive *set-membership* signal, minted on the owning
     /// [`ThreadSafeContext`]. Holds a monotonic version bumped only when the
     /// **set** of keys changes. Reading it (in `len`/`contains_key`/`is_empty`)
@@ -176,10 +187,7 @@ where
     pub fn new(ctx: &ThreadSafeContext) -> Self {
         Self {
             inner: Arc::new(MapInner {
-                state: Mutex::new(MapState {
-                    materialized: HashMap::new(),
-                    order: Vec::new(),
-                }),
+                state: Mutex::new(KeyedOrder::new()),
                 membership: ctx.source(0u64),
                 version: AtomicU64::new(0),
                 order_signal: ctx.source(0u64),
@@ -187,6 +195,15 @@ where
             }),
             _marker: PhantomData,
         }
+    }
+
+    /// Guard on the bookkeeping core.
+    ///
+    /// Callers must drop the guard before touching `ctx`: a `ctx.set` can drive a
+    /// dependent recompute that re-enters this map and would deadlock on a
+    /// still-held lock.
+    fn lock(&self) -> MutexGuard<'_, KeyedOrder<K, H>> {
+        self.inner.state.lock().expect("map state mutex poisoned")
     }
 
     /// Bump the *order* signal (invalidates `keys` readers).
@@ -210,15 +227,13 @@ where
     /// caller to **order** changes, not to per-entry value changes.
     pub fn keys(&self, ctx: &ThreadSafeContext) -> Vec<K> {
         let _ = ctx.get(&self.inner.order_signal);
-        let state = self.inner.state.lock().expect("map state mutex poisoned");
-        state.order.clone()
+        self.lock().keys()
     }
 
     /// Reactive entry count. Subscribes the caller to membership changes only.
     pub fn len(&self, ctx: &ThreadSafeContext) -> usize {
         let _ = ctx.get(&self.inner.membership);
-        let state = self.inner.state.lock().expect("map state mutex poisoned");
-        state.order.len()
+        self.lock().len()
     }
 
     /// Reactive emptiness check. Subscribes the caller to membership changes.
@@ -230,8 +245,7 @@ where
     /// changes (add/remove of any key), not to value changes.
     pub fn contains_key(&self, ctx: &ThreadSafeContext, key: &K) -> bool {
         let _ = ctx.get(&self.inner.membership);
-        let state = self.inner.state.lock().expect("map state mutex poisoned");
-        state.materialized.contains_key(key)
+        self.lock().contains(key)
     }
 
     fn mint_with(
@@ -242,102 +256,139 @@ where
     ) -> H {
         // Fast path: already allocated. Release the lock before touching `ctx` so a
         // slot recompute triggered by materialization can never re-enter this lock.
-        {
-            let state = self.inner.state.lock().expect("map state mutex poisoned");
-            if let Some(handle) = state.materialized.get(&key) {
-                return *handle; // warm: already allocated.
-            }
+        if let Some(handle) = self.lock().get(&key) {
+            return handle; // warm: already allocated.
         }
         let handle = H::materialize(ctx, compute);
-        let mut state = self.inner.state.lock().expect("map state mutex poisoned");
-        // Lost a materialization race for this key: first writer wins so the key keeps
-        // a stable handle (cell-identity). Our freshly-allocated node is orphaned in
-        // `ctx` (unreferenced, never observed) — a rare, harmless cost.
-        if let Some(existing) = state.materialized.get(&key) {
-            return *existing;
+        // Lost a materialization race for this key: first writer wins, so the core
+        // keeps the existing handle and reports `Unchanged`. Our freshly-allocated
+        // node is orphaned in `ctx` (unreferenced, never observed) — a rare,
+        // harmless cost.
+        let (handle, mutation) = self.lock().insert(key, handle);
+        if mutation == Mutation::Changed {
+            // Lock released first: `ctx.set` can drive a dependent recompute that
+            // re-enters this map.
+            self.bump_membership(ctx);
         }
-        state.materialized.insert(key.clone(), handle);
-        state.order.push(key);
-        drop(state);
-        // Lock released first: `ctx.set` can drive a dependent recompute that
-        // re-enters this map.
-        self.bump_membership(ctx);
         handle
     }
 
-    /// Get the entry handle for `key`, minting it via `factory(&key)` on first
-    /// access (the lazy pull) and caching it. Returns the same handle on repeat.
+    /// Get the entry handle for `key`, minting it via `factory(compute, &key)` on
+    /// first access (the lazy pull) and caching it. Returns the same handle on
+    /// repeat.
+    ///
+    /// The factory's first parameter is the entry's own tracking view: reads of
+    /// other reactives through it register dependency edges *on this entry*, so a
+    /// derived entry can be genuinely derived. Ignore it (`|_, key| …`) for a
+    /// constant-per-key factory.
     pub fn get_or_insert_handle(
         &self,
         ctx: &ThreadSafeContext,
         key: K,
-        factory: impl Fn(&K) -> V + Send + Sync + 'static,
+        factory: impl Fn(&ThreadSafeContext, &K) -> V + Send + Sync + 'static,
     ) -> H {
         let k = key.clone();
-        self.mint_with(ctx, key, move |_ctx| factory(&k))
+        self.mint_with(ctx, key, move |ctx| factory(ctx, &k))
     }
 
-    /// Get the value at `key`, minting the entry via `factory(&key)` first if
-    /// absent. For a [`ThreadSafeComputedMap`] this is the lazy materialization pull.
+    /// Get the value at `key`, minting the entry via `factory(compute, &key)`
+    /// first if absent. For a [`ThreadSafeComputedMap`] this is the lazy
+    /// materialization pull.
     pub fn get_or_insert_with(
         &self,
         ctx: &ThreadSafeContext,
         key: K,
-        factory: impl Fn(&K) -> V + Send + Sync + 'static,
+        factory: impl Fn(&ThreadSafeContext, &K) -> V + Send + Sync + 'static,
     ) -> V {
         self.get_or_insert_handle(ctx, key, factory).observe(ctx)
     }
 
     /// Observe `key`'s value if the entry is present, else `None`. Non-minting.
     pub fn observe(&self, ctx: &ThreadSafeContext, key: &K) -> Option<V> {
-        let handle = {
-            let state = self.inner.state.lock().expect("map state mutex poisoned");
-            state.materialized.get(key).copied()
-        };
+        let handle = self.lock().get(key);
         handle.map(|h| h.observe(ctx))
     }
 
     /// Return the existing entry handle for `key`, or `None`. Non-minting.
     pub fn handle(&self, key: &K) -> Option<H> {
-        self.inner
-            .state
-            .lock()
-            .expect("map state mutex poisoned")
-            .materialized
-            .get(key)
-            .copied()
+        self.lock().get(key)
     }
 
     /// Whether `key` is currently materialized (present in the allocated set).
     /// Non-reactive.
     pub fn is_present(&self, key: &K) -> bool {
-        self.inner
-            .state
-            .lock()
-            .expect("map state mutex poisoned")
-            .materialized
-            .contains_key(key)
+        self.lock().contains(key)
     }
 
     /// The currently-materialized keys, in first-materialization order. The present
     /// set only grows (deferral, not de-allocation).
     pub fn present_keys(&self) -> Vec<K> {
-        self.inner
-            .state
-            .lock()
-            .expect("map state mutex poisoned")
-            .order
-            .clone()
+        self.lock().keys()
     }
 
     /// Number of currently-materialized entries.
     pub fn present_count(&self) -> usize {
-        self.inner
-            .state
-            .lock()
-            .expect("map state mutex poisoned")
-            .order
-            .len()
+        self.lock().len()
+    }
+
+    /// Remove `key`'s entry. Bumps reactive membership and detaches the removed
+    /// entry's node. Returns whether the key was present.
+    pub fn remove(&self, ctx: &ThreadSafeContext, key: &K) -> bool {
+        let (removed, mutation) = self.lock().remove(key);
+        let Some(handle) = removed else {
+            return false;
+        };
+        // Lock released first: disposal invalidates dependents, which can drive a
+        // recompute that re-enters this map.
+        handle.clear_dependents(ctx);
+        if mutation == Mutation::Changed {
+            self.bump_membership(ctx);
+        }
+        true
+    }
+
+    /// Current 0-based position of `key` in the order, or `None` if absent.
+    /// Non-reactive.
+    pub fn position(&self, key: &K) -> Option<usize> {
+        self.lock().position(key)
+    }
+
+    /// Atomically move `key` to `index` in the order.
+    ///
+    /// The entry keeps the **same** node, the same dependents, and its lineage —
+    /// unlike a naive `remove` + re-mint, which reallocates the node and bumps
+    /// membership twice. Only the order signal is bumped (once), so `keys`
+    /// readers recompute while `len`/`contains_key` readers — which track set
+    /// identity, not order — stay cached.
+    ///
+    /// `index` is clamped to `[0, len)`. Returns whether `key` was present.
+    pub fn move_to(&self, ctx: &ThreadSafeContext, key: &K, index: usize) -> bool {
+        let outcome = self.lock().move_to(key, index);
+        self.settle_move(ctx, outcome)
+    }
+
+    /// Atomically move `key` to just before `anchor`. Returns `false` if either
+    /// key is absent.
+    pub fn move_before(&self, ctx: &ThreadSafeContext, key: &K, anchor: &K) -> bool {
+        let outcome = self.lock().move_before(key, anchor);
+        self.settle_move(ctx, outcome)
+    }
+
+    /// Atomically move `key` to just after `anchor`. Returns `false` if either
+    /// key is absent.
+    pub fn move_after(&self, ctx: &ThreadSafeContext, key: &K, anchor: &K) -> bool {
+        let outcome = self.lock().move_after(key, anchor);
+        self.settle_move(ctx, outcome)
+    }
+
+    /// Bump the order signal iff the order actually changed, and report whether
+    /// the move could be expressed. The lock is already released by the time this
+    /// runs — see [`lock`](Self::lock).
+    fn settle_move(&self, ctx: &ThreadSafeContext, outcome: Move) -> bool {
+        if outcome.changed() {
+            self.bump_order(ctx);
+        }
+        outcome.is_present()
     }
 
     /// This map's entry kind ([`EntryKind::Source`] for a cell map,
@@ -355,15 +406,12 @@ where
 {
     /// Set the value at `key`, inserting a new input cell if absent. Cell-only.
     pub fn set(&self, ctx: &ThreadSafeContext, key: K, value: V) {
-        let existing = {
-            let state = self.inner.state.lock().expect("map state mutex poisoned");
-            state.materialized.get(&key).copied()
-        };
+        let existing = self.lock().get(&key);
         if let Some(handle) = existing {
             ctx.set(&handle, value);
             return;
         }
-        self.get_or_insert_handle(ctx, key, move |_| value.clone());
+        self.get_or_insert_handle(ctx, key, move |_, _| value.clone());
     }
 }
 
@@ -375,16 +423,19 @@ where
 {
     /// **Eager materialization**: pre-mint a derived slot for every key in `keys`.
     /// Observationally identical to minting each lazily on first read.
+    ///
+    /// `factory` takes the entry's own tracking view, exactly as
+    /// [`get_or_insert_with`](ThreadSafeReactiveMap::get_or_insert_with) does.
     pub fn materialize_all(
         &self,
         ctx: &ThreadSafeContext,
         keys: impl IntoIterator<Item = K>,
-        factory: impl Fn(&K) -> V + Send + Sync + 'static,
+        factory: impl Fn(&ThreadSafeContext, &K) -> V + Send + Sync + 'static,
     ) {
         let factory = Arc::new(factory);
         for key in keys {
             let f = Arc::clone(&factory);
-            self.get_or_insert_handle(ctx, key, move |k| f(k));
+            self.get_or_insert_handle(ctx, key, move |ctx, k| f(ctx, k));
         }
     }
 }
@@ -501,7 +552,10 @@ mod tests {
         let fam: ThreadSafeComputedMap<u64, usize> = ThreadSafeComputedMap::new(&ctx);
         assert_eq!(fam.present_count(), 0);
         assert!(!fam.is_present(&2));
-        assert_eq!(fam.get_or_insert_with(&ctx, 2, |k| (*k as usize) * 10), 20);
+        assert_eq!(
+            fam.get_or_insert_with(&ctx, 2, |_, k| (*k as usize) * 10),
+            20
+        );
         assert!(fam.is_present(&2));
         assert_eq!(fam.present_count(), 1);
     }
@@ -510,7 +564,7 @@ mod tests {
     fn eager_computed_map_materializes_all_up_front() {
         let ctx = ThreadSafeContext::new();
         let fam: ThreadSafeComputedMap<u64, usize> = ThreadSafeComputedMap::new(&ctx);
-        fam.materialize_all(&ctx, [7, 8], |k| *k as usize);
+        fam.materialize_all(&ctx, [7, 8], |_, k| *k as usize);
         assert_eq!(fam.present_count(), 2);
     }
 
@@ -518,12 +572,12 @@ mod tests {
     fn observational_transparency_eager_equals_lazy() {
         let ctx_e = ThreadSafeContext::new();
         let eager: ThreadSafeComputedMap<u64, usize> = ThreadSafeComputedMap::new(&ctx_e);
-        eager.materialize_all(&ctx_e, [1, 2, 3], |k| (*k as usize) * 2);
+        eager.materialize_all(&ctx_e, [1, 2, 3], |_, k| (*k as usize) * 2);
         let ctx_l = ThreadSafeContext::new();
         let lazy: ThreadSafeComputedMap<u64, usize> = ThreadSafeComputedMap::new(&ctx_l);
         for k in [1u64, 2, 3] {
             let ve = eager.observe(&ctx_e, &k).unwrap();
-            let vl = lazy.get_or_insert_with(&ctx_l, k, |k| (*k as usize) * 2);
+            let vl = lazy.get_or_insert_with(&ctx_l, k, |_, k| (*k as usize) * 2);
             assert_eq!(ve, vl);
         }
     }
@@ -532,9 +586,9 @@ mod tests {
     fn present_set_grows_monotonically() {
         let ctx = ThreadSafeContext::new();
         let fam: ThreadSafeComputedMap<u64, usize> = ThreadSafeComputedMap::new(&ctx);
-        let _ = fam.get_or_insert_with(&ctx, 5, |k| *k as usize);
-        let _ = fam.get_or_insert_with(&ctx, 5, |k| *k as usize); // repeat: no growth
-        let _ = fam.get_or_insert_with(&ctx, 9, |k| *k as usize);
+        let _ = fam.get_or_insert_with(&ctx, 5, |_, k| *k as usize);
+        let _ = fam.get_or_insert_with(&ctx, 5, |_, k| *k as usize); // repeat: no growth
+        let _ = fam.get_or_insert_with(&ctx, 9, |_, k| *k as usize);
         assert_eq!(fam.present_count(), 2);
         assert_eq!(fam.present_keys(), vec![5, 9]);
     }

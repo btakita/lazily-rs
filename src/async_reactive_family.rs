@@ -21,18 +21,28 @@
 //! (derived slots). Mirrors the async materialization case in lazily-spec and the
 //! `AsyncMaterialization` proofs (eventual transparency) in lazily-formal.
 
-use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::cell_family::EntryKind;
-use crate::{AsyncComputed, AsyncContext, AsyncSource, Read};
+use crate::keyed_order::{KeyedOrder, Move, Mutation};
+use crate::{AsyncComputeContext, AsyncComputed, AsyncContext, AsyncSource, Read};
 
 mod sealed {
     pub trait Sealed {}
 }
+
+/// The per-entry value producer an async map hands to
+/// [`AsyncMapHandle::materialize`].
+///
+/// Boxed rather than a generic `impl Fn` because the map stores it across the
+/// `materialize` call and it must be `Send + Sync` to run on any task the
+/// context is driven from. The `&AsyncComputeContext` parameter is the entry's
+/// tracking view — the thing the nullary `Fn() -> V` this replaced could not
+/// carry.
+pub type AsyncEntryCompute<V> = Arc<dyn Fn(&AsyncComputeContext) -> V + Send + Sync>;
 
 /// The node kinds an async map entry can take — the [`AsyncContext`] analog of
 /// [`MapHandle`](crate::MapHandle). Sealed to [`AsyncSource`] (input cells)
@@ -46,7 +56,13 @@ pub trait AsyncMapHandle<V>: sealed::Sealed + Copy + Send + Sync + 'static {
     /// Allocate the node for one entry on `ctx`. `compute` is the per-key value
     /// producer; a cell sets the value directly, a derived slot wraps it in a ready
     /// future as its async recomputation.
-    fn materialize(ctx: &AsyncContext, compute: Arc<dyn Fn() -> V + Send + Sync>) -> Self
+    ///
+    /// `compute` receives the entry's own [`AsyncComputeContext`] — a genuine
+    /// value-threaded tracking view carrying the node id, its generation stamp,
+    /// and the edge set. Reads through it register dependency edges on this
+    /// entry, so a derived entry can be genuinely derived. Previously this was a
+    /// nullary `Fn() -> V`, which severed the view before it could reach the map.
+    fn materialize(ctx: &AsyncContext, compute: AsyncEntryCompute<V>) -> Self
     where
         V: PartialEq + Clone + Send + Sync + 'static;
 
@@ -56,17 +72,27 @@ pub trait AsyncMapHandle<V>: sealed::Sealed + Copy + Send + Sync + 'static {
     fn observe(self, ctx: &AsyncContext) -> Option<V>
     where
         V: Clone + Send + Sync + 'static;
+
+    /// Detach this entry's node from the graph on removal.
+    ///
+    /// The single-threaded flavor only clears the cached value and dependents,
+    /// because its runtime exposes no node-free API. This context does, so the
+    /// node is disposed outright: any in-flight compute is aborted, downstream
+    /// edges are detached, dependents are invalidated, and the id is recycled.
+    fn clear_dependents(self, ctx: &AsyncContext);
 }
 
 impl<V> sealed::Sealed for AsyncSource<V> {}
 impl<V: Send + Sync + 'static> AsyncMapHandle<V> for AsyncSource<V> {
     const KIND: EntryKind = EntryKind::Source;
 
-    fn materialize(ctx: &AsyncContext, compute: Arc<dyn Fn() -> V + Send + Sync>) -> Self
+    fn materialize(ctx: &AsyncContext, compute: AsyncEntryCompute<V>) -> Self
     where
         V: PartialEq + Clone + Send + Sync + 'static,
     {
-        ctx.source(compute())
+        // An input has no derivation: materialize by setting its value directly.
+        // Evaluated once, detached — a source cell's seed value is not an edge.
+        ctx.source(ctx.eval_detached(|actx| compute(actx)))
     }
 
     fn observe(self, ctx: &AsyncContext) -> Option<V>
@@ -75,19 +101,29 @@ impl<V: Send + Sync + 'static> AsyncMapHandle<V> for AsyncSource<V> {
     {
         Some(ctx.get(&self))
     }
+
+    fn clear_dependents(self, ctx: &AsyncContext) {
+        ctx.dispose_cell(&self);
+    }
 }
 
 impl<V> sealed::Sealed for AsyncComputed<V> {}
 impl<V: Send + Sync + 'static> AsyncMapHandle<V> for AsyncComputed<V> {
     const KIND: EntryKind = EntryKind::Computed;
 
-    fn materialize(ctx: &AsyncContext, compute: Arc<dyn Fn() -> V + Send + Sync>) -> Self
+    fn materialize(ctx: &AsyncContext, compute: AsyncEntryCompute<V>) -> Self
     where
         V: PartialEq + Clone + Send + Sync + 'static,
     {
-        // A derived node whose async recompute is a ready future of the sync value.
-        ctx.computed_async(move |_actx| {
-            let v = compute();
+        // A derived node whose async recompute is a ready future of the value.
+        // The tracking view is *threaded into* `compute` rather than bound and
+        // dropped: the entry's reads of other reactives register real edges.
+        //
+        // The future is still ready-by-construction, so a derived entry can
+        // track but cannot yet `await`. Those are separable concerns and only
+        // the first is needed for dependency edges.
+        ctx.computed_async(move |actx| {
+            let v = compute(&actx);
             async move { v }
         })
     }
@@ -98,16 +134,17 @@ impl<V: Send + Sync + 'static> AsyncMapHandle<V> for AsyncComputed<V> {
     {
         ctx.get(&self)
     }
-}
 
-/// Present-set state, guarded by the map's `Mutex`.
-struct MapState<K, H> {
-    materialized: HashMap<K, H>,
-    order: Vec<K>,
+    fn clear_dependents(self, ctx: &AsyncContext) {
+        ctx.dispose_slot(&self);
+    }
 }
 
 struct MapInner<K, H> {
-    state: Mutex<MapState<K, H>>,
+    /// Present set + authoritative key order + the move algebra, shared verbatim
+    /// with the single-threaded and thread-safe flavors. Graph-agnostic and
+    /// closure-free; this flavor's only contribution is the `Mutex` around it.
+    state: Mutex<KeyedOrder<K, H>>,
     /// Reactive *set-membership* signal, minted on the owning [`AsyncContext`].
     /// Bumped only when the **set** of keys changes, so `len`/`contains_key`
     /// readers are invalidated without coupling to entry values or to pure
@@ -157,10 +194,7 @@ where
     pub fn new(ctx: &AsyncContext) -> Self {
         Self {
             inner: Arc::new(MapInner {
-                state: Mutex::new(MapState {
-                    materialized: HashMap::new(),
-                    order: Vec::new(),
-                }),
+                state: Mutex::new(KeyedOrder::new()),
                 membership: ctx.source(0u64),
                 version: AtomicU64::new(0),
                 order_signal: ctx.source(0u64),
@@ -168,6 +202,15 @@ where
             }),
             _marker: PhantomData,
         }
+    }
+
+    /// Guard on the bookkeeping core.
+    ///
+    /// Callers must drop the guard before touching `ctx`: a `ctx.set` can drive a
+    /// dependent recompute that re-enters this map and would deadlock on a
+    /// still-held lock.
+    fn lock(&self) -> MutexGuard<'_, KeyedOrder<K, H>> {
+        self.inner.state.lock().expect("map state mutex poisoned")
     }
 
     /// Bump the *order* signal (invalidates `keys` readers).
@@ -199,8 +242,7 @@ where
         AsyncSource<u64>: Read<C, Output = u64>,
     {
         let _ = self.inner.order_signal.read(ctx);
-        let state = self.inner.state.lock().expect("map state mutex poisoned");
-        state.order.clone()
+        self.lock().keys()
     }
 
     /// Reactive entry count. Subscribes the caller to membership changes only.
@@ -210,8 +252,7 @@ where
         AsyncSource<u64>: Read<C, Output = u64>,
     {
         let _ = self.inner.membership.read(ctx);
-        let state = self.inner.state.lock().expect("map state mutex poisoned");
-        state.order.len()
+        self.lock().len()
     }
 
     /// Reactive emptiness check. Subscribes the caller to membership changes.
@@ -229,100 +270,130 @@ where
         AsyncSource<u64>: Read<C, Output = u64>,
     {
         let _ = self.inner.membership.read(ctx);
-        let state = self.inner.state.lock().expect("map state mutex poisoned");
-        state.materialized.contains_key(key)
+        self.lock().contains(key)
     }
 
-    fn mint_with(
-        &self,
-        ctx: &AsyncContext,
-        key: K,
-        compute: Arc<dyn Fn() -> V + Send + Sync>,
-    ) -> H {
+    fn mint_with(&self, ctx: &AsyncContext, key: K, compute: AsyncEntryCompute<V>) -> H {
         // Fast path under the lock; release before touching `ctx`.
-        {
-            let state = self.inner.state.lock().expect("map state mutex poisoned");
-            if let Some(handle) = state.materialized.get(&key) {
-                return *handle;
-            }
+        if let Some(handle) = self.lock().get(&key) {
+            return handle;
         }
         let handle = H::materialize(ctx, compute);
-        let mut state = self.inner.state.lock().expect("map state mutex poisoned");
-        // First writer wins on a race so the key keeps a stable handle.
-        if let Some(existing) = state.materialized.get(&key) {
-            return *existing;
+        // First writer wins on a race, so the core keeps the existing handle and
+        // reports `Unchanged`; the freshly-allocated node is orphaned.
+        let (handle, mutation) = self.lock().insert(key, handle);
+        if mutation == Mutation::Changed {
+            // Lock released first: `ctx.set` can drive a dependent recompute.
+            self.bump_membership(ctx);
         }
-        state.materialized.insert(key.clone(), handle);
-        state.order.push(key);
-        drop(state);
-        // Lock released first: `ctx.set` can drive a dependent recompute.
-        self.bump_membership(ctx);
         handle
     }
 
-    /// Get the entry handle for `key`, minting it via `factory(&key)` on first
-    /// access and caching it. For a slot map this is the [`AsyncComputed`] to
-    /// drive with [`AsyncContext::get_async`].
+    /// Get the entry handle for `key`, minting it via `factory(compute, &key)` on
+    /// first access and caching it. For a slot map this is the
+    /// [`AsyncComputed`] to drive with [`AsyncContext::get_async`].
+    ///
+    /// The factory's first parameter is the entry's own tracking view: reads of
+    /// other reactives through it register dependency edges *on this entry*.
+    /// Ignore it (`|_, key| …`) for a constant-per-key factory.
     pub fn get_or_insert_handle(
         &self,
         ctx: &AsyncContext,
         key: K,
-        factory: impl Fn(&K) -> V + Send + Sync + 'static,
+        factory: impl Fn(&AsyncComputeContext, &K) -> V + Send + Sync + 'static,
     ) -> H {
         let k = key.clone();
-        let compute: Arc<dyn Fn() -> V + Send + Sync> = Arc::new(move || factory(&k));
+        let compute: AsyncEntryCompute<V> = Arc::new(move |actx| factory(actx, &k));
         self.mint_with(ctx, key, compute)
     }
 
     /// Non-blocking observe of an existing entry: `Some(value)` for a cell or
     /// resolved slot, `None` for a pending slot or an absent key. Non-minting.
     pub fn observe(&self, ctx: &AsyncContext, key: &K) -> Option<V> {
-        let handle = {
-            let state = self.inner.state.lock().expect("map state mutex poisoned");
-            state.materialized.get(key).copied()
-        };
+        let handle = self.lock().get(key);
         handle.and_then(|h| h.observe(ctx))
     }
 
     /// Return the existing entry handle for `key`, or `None`. Non-minting.
     pub fn handle(&self, key: &K) -> Option<H> {
-        self.inner
-            .state
-            .lock()
-            .expect("map state mutex poisoned")
-            .materialized
-            .get(key)
-            .copied()
+        self.lock().get(key)
     }
 
     /// Whether `key` is currently materialized (present). Non-reactive.
     pub fn is_present(&self, key: &K) -> bool {
-        self.inner
-            .state
-            .lock()
-            .expect("map state mutex poisoned")
-            .materialized
-            .contains_key(key)
+        self.lock().contains(key)
     }
 
     /// The currently-materialized keys, in first-materialization order.
     pub fn present_keys(&self) -> Vec<K> {
-        self.inner
-            .state
-            .lock()
-            .expect("map state mutex poisoned")
-            .order
-            .clone()
+        self.lock().keys()
     }
 
     /// Number of currently-materialized entries.
     pub fn present_count(&self) -> usize {
-        self.inner
-            .state
-            .lock()
-            .expect("map state mutex poisoned")
-            .order
-            .len()
+        self.lock().len()
+    }
+
+    /// Remove `key`'s entry. Bumps reactive membership and detaches the removed
+    /// entry's node. Returns whether the key was present.
+    pub fn remove(&self, ctx: &AsyncContext, key: &K) -> bool {
+        let (removed, mutation) = self.lock().remove(key);
+        let Some(handle) = removed else {
+            return false;
+        };
+        // Lock released first: disposal invalidates dependents, which can drive a
+        // recompute that re-enters this map.
+        handle.clear_dependents(ctx);
+        if mutation == Mutation::Changed {
+            self.bump_membership(ctx);
+        }
+        true
+    }
+
+    /// Current 0-based position of `key` in the order, or `None` if absent.
+    /// Non-reactive.
+    pub fn position(&self, key: &K) -> Option<usize> {
+        self.lock().position(key)
+    }
+
+    /// Atomically move `key` to `index` in the order.
+    ///
+    /// The entry keeps the **same** node, the same dependents, and its lineage —
+    /// unlike a naive `remove` + re-mint. Only the order signal is bumped
+    /// (once), so `keys` readers recompute while `len`/`contains_key` readers
+    /// stay cached.
+    ///
+    /// Ordering is not async-coloured: it touches no entry handle and awaits
+    /// nothing, so it is the same algebra the other two flavors run.
+    ///
+    /// `index` is clamped to `[0, len)`. Returns whether `key` was present.
+    pub fn move_to(&self, ctx: &AsyncContext, key: &K, index: usize) -> bool {
+        let outcome = self.lock().move_to(key, index);
+        self.settle_move(ctx, outcome)
+    }
+
+    /// Atomically move `key` to just before `anchor`. Returns `false` if either
+    /// key is absent.
+    pub fn move_before(&self, ctx: &AsyncContext, key: &K, anchor: &K) -> bool {
+        let outcome = self.lock().move_before(key, anchor);
+        self.settle_move(ctx, outcome)
+    }
+
+    /// Atomically move `key` to just after `anchor`. Returns `false` if either
+    /// key is absent.
+    pub fn move_after(&self, ctx: &AsyncContext, key: &K, anchor: &K) -> bool {
+        let outcome = self.lock().move_after(key, anchor);
+        self.settle_move(ctx, outcome)
+    }
+
+    /// Bump the order signal iff the order actually changed, and report whether
+    /// the move could be expressed. The lock is already released by the time
+    /// this runs — see [`lock`](Self::lock).
+    fn settle_move(&self, ctx: &AsyncContext, outcome: Move) -> bool {
+        if outcome.changed() {
+            self.bump_order(ctx);
+        }
+        outcome.is_present()
     }
 
     /// This map's entry kind.
@@ -339,15 +410,12 @@ where
 {
     /// Set the value at `key`, inserting a new input cell if absent. Cell-only.
     pub fn set(&self, ctx: &AsyncContext, key: K, value: V) {
-        let existing = {
-            let state = self.inner.state.lock().expect("map state mutex poisoned");
-            state.materialized.get(&key).copied()
-        };
+        let existing = self.lock().get(&key);
         if let Some(handle) = existing {
             ctx.set(&handle, value);
             return;
         }
-        self.get_or_insert_handle(ctx, key, move |_| value.clone());
+        self.get_or_insert_handle(ctx, key, move |_, _| value.clone());
     }
 }
 
@@ -358,16 +426,19 @@ where
     V: PartialEq + Clone + Send + Sync + 'static,
 {
     /// **Eager materialization**: pre-mint a derived slot for every key in `keys`.
+    ///
+    /// `factory` takes the entry's own tracking view, exactly as
+    /// [`get_or_insert_handle`](AsyncReactiveMap::get_or_insert_handle) does.
     pub fn materialize_all(
         &self,
         ctx: &AsyncContext,
         keys: impl IntoIterator<Item = K>,
-        factory: impl Fn(&K) -> V + Send + Sync + 'static,
+        factory: impl Fn(&AsyncComputeContext, &K) -> V + Send + Sync + 'static,
     ) {
         let factory = Arc::new(factory);
         for key in keys {
             let f = Arc::clone(&factory);
-            self.get_or_insert_handle(ctx, key, move |k| f(k));
+            self.get_or_insert_handle(ctx, key, move |actx, k| f(actx, k));
         }
     }
 }
@@ -478,7 +549,7 @@ mod tests {
         let fam: AsyncComputedMap<u64, usize> = AsyncComputedMap::new(&ctx);
         assert_eq!(fam.present_count(), 0);
         // Materialize + drive to resolution.
-        let handle = fam.get_or_insert_handle(&ctx, 4, |k| (*k as usize) * 10);
+        let handle = fam.get_or_insert_handle(&ctx, 4, |_, k| (*k as usize) * 10);
         assert!(fam.is_present(&4));
         assert_eq!(fam.present_count(), 1);
         assert_eq!(ctx.get_async(&handle).await, 40);
@@ -488,13 +559,13 @@ mod tests {
     async fn eventual_transparency_eager_equals_lazy() {
         let ctx_e = AsyncContext::new();
         let eager: AsyncComputedMap<u64, usize> = AsyncComputedMap::new(&ctx_e);
-        eager.materialize_all(&ctx_e, [1, 2, 3], |k| (*k as usize) * 2);
+        eager.materialize_all(&ctx_e, [1, 2, 3], |_, k| (*k as usize) * 2);
         let ctx_l = AsyncContext::new();
         let lazy: AsyncComputedMap<u64, usize> = AsyncComputedMap::new(&ctx_l);
         for k in [1u64, 2, 3] {
             let ve = ctx_e.get_async(&eager.handle(&k).unwrap()).await;
             let vl = ctx_l
-                .get_async(&lazy.get_or_insert_handle(&ctx_l, k, |k| (*k as usize) * 2))
+                .get_async(&lazy.get_or_insert_handle(&ctx_l, k, |_, k| (*k as usize) * 2))
                 .await;
             assert_eq!(ve, vl);
         }
@@ -504,9 +575,9 @@ mod tests {
     async fn present_set_grows_monotonically() {
         let ctx = AsyncContext::new();
         let fam: AsyncComputedMap<u64, usize> = AsyncComputedMap::new(&ctx);
-        let _ = fam.get_or_insert_handle(&ctx, 5, |k| *k as usize);
-        let _ = fam.get_or_insert_handle(&ctx, 5, |k| *k as usize);
-        let _ = fam.get_or_insert_handle(&ctx, 9, |k| *k as usize);
+        let _ = fam.get_or_insert_handle(&ctx, 5, |_, k| *k as usize);
+        let _ = fam.get_or_insert_handle(&ctx, 5, |_, k| *k as usize);
+        let _ = fam.get_or_insert_handle(&ctx, 9, |_, k| *k as usize);
         assert_eq!(fam.present_count(), 2);
         assert_eq!(fam.present_keys(), vec![5, 9]);
     }

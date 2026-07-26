@@ -302,22 +302,21 @@ fn run_steps_fixture(name: &str) {
 
         let survivors: HashSet<String> = map.keys(&ctx).into_iter().collect();
 
-        if let Some(invalidates) = step.get("invalidates") {
-            assert_invalidation(
-                &ctx,
-                &value_readers,
-                &membership_reader,
-                &order_reader,
-                invalidates,
-                &survivors,
-            );
-        }
+        // `invalidates` lives under `expected`, not on the step. Reading it off
+        // the step silently skipped the whole reader-class independence contract.
+        let invalidates = expected.get("invalidates").unwrap_or_else(|| {
+            panic!("step {i}: expected.invalidates missing from fixture {name}")
+        });
+        assert_invalidation(
+            &ctx,
+            &value_readers,
+            &membership_reader,
+            &order_reader,
+            invalidates,
+            &survivors,
+        );
         assert_handle_stable(&map, expected, &handle_before);
         assert_state(&ctx, &map, expected);
-
-        // Readers are rebuilt next iteration; touch the reactive values so the
-        // graph settles before the following step's prime.
-        let _ = i;
     }
 }
 

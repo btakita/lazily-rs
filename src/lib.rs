@@ -88,6 +88,7 @@ pub mod ffi;
 mod instrumentation;
 #[cfg(feature = "ipc")]
 mod ipc;
+mod keyed_order;
 #[cfg(feature = "lossless-tree")]
 mod lossless_tree_crdt;
 mod membership;
