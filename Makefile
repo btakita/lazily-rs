@@ -28,6 +28,7 @@ LEAN_FORMAL_DIR ?= ../lazily-formal
 	test-reliable-sync-conformance \
 	test-collections-conformance \
 	test-collections-family-conformance \
+	test-queue-family-conformance \
 	test-queue-conformance \
 	test-queue-demand-driven \
 	test-seqcrdt-conformance \
@@ -44,7 +45,7 @@ LEAN_FORMAL_DIR ?= ../lazily-formal
 	benchmark-update \
 	instrumentation-profile
 
-	check: fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-reliable-sync-conformance test-shm test-collections-conformance test-collections-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-check
+	check: fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-reliable-sync-conformance test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-check
 
 fmt:
 >$(CARGO) fmt --all --check
@@ -147,6 +148,14 @@ test-collections-conformance:
 # rather than riding on someone else's feature set.
 test-collections-family-conformance:
 >$(CARGO) test --locked --all-features --test collections_family_conformance
+
+# The queue-family flavor ledger (#lzqffx). Enforced, not advisory: it greps src/
+# for each unshipped flavor's type name, so the moment a ThreadSafeQueueCell or
+# AsyncQueueCell appears this goes red and names the runner to extend. Wired into
+# `check` on purpose — the collections gate spent its whole life compiling to
+# "running 0 tests" because no target ran it.
+test-queue-family-conformance:
+>$(CARGO) test --locked --test queue_family_conformance
 
 # Reactive queue conformance (#lzqueue): lazily-rs replays the canonical compute
 # fixtures in lazily-spec/conformance/collections/ `queuecell_*.json` — SPSC
