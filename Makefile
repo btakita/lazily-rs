@@ -7,6 +7,7 @@ LEAN_SPEC_DIR ?= ../lazily-spec/formal/lean
 LEAN_FORMAL_DIR ?= ../lazily-formal
 
 .PHONY: \
+	conformance-coverage \
 	check \
 	fmt \
 	clippy \
@@ -46,7 +47,7 @@ LEAN_FORMAL_DIR ?= ../lazily-formal
 	benchmark-update \
 	instrumentation-profile
 
-	check: fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-reliable-sync-conformance test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-check
+	check: fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-reliable-sync-conformance test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-check conformance-coverage
 
 fmt:
 >$(CARGO) fmt --all --check
@@ -256,3 +257,9 @@ benchmark-update:
 
 instrumentation-profile:
 >$(CARGO) run --example instrumentation_profile --features "instrumentation thread-safe" --quiet
+
+# Conformance-coverage guard (#portconformancecoverage). Static: fails when the
+# canonical corpus grows a fixture no test in this repo even names. Naming is not
+# replaying — see the script header for what this does and does not prove.
+conformance-coverage:
+>./scripts/check-conformance-coverage.sh
