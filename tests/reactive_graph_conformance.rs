@@ -39,6 +39,8 @@
 //! exactly, (b) every fixture was replayed, and (c) a non-zero number of ops and
 //! assertions actually executed, per fixture and in total.
 
+mod common;
+
 #[path = "reactive_graph/engine.rs"]
 mod engine;
 #[path = "reactive_graph/model.rs"]
@@ -139,8 +141,8 @@ const KNOWN_DIVERGENCES: &[&str] = &[
 
 fn load(name: &str) -> Value {
     let path = format!("{SPEC_DIR}/{name}");
-    let raw =
-        fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read fixture {path}: {e}"));
+    let raw = crate::common::spec_read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read fixture {path}: {e}"));
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("failed to parse fixture {path}: {e}"))
 }
 

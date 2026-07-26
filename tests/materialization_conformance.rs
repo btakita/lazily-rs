@@ -15,8 +15,9 @@
 //!   materialized in every strategy; derived **slot** entries defer under lazy
 //!   (`cell_entries_materialized_in_every_mode` / `slot_entries_deferred_under_lazy`).
 
+mod common;
+
 use std::collections::HashSet;
-use std::fs;
 
 use lazily::{ComputedMap, Context, EntryKind, SourceMap};
 use serde_json::Value;
@@ -31,8 +32,8 @@ fn spec_fixtures_present() -> bool {
 
 fn load_fixture(name: &str) -> Value {
     let path = format!("{SPEC_DIR}/{name}");
-    let raw =
-        fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read fixture {path}: {e}"));
+    let raw = crate::common::spec_read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read fixture {path}: {e}"));
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("failed to parse fixture {path}: {e}"))
 }
 

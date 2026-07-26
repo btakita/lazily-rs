@@ -9,6 +9,8 @@
 //! terminal-only resolution rule. This proves lazily-rs agrees with the spec and
 //! (fixture-by-fixture) with the Kotlin and JS bindings.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 
 use lazily::{
@@ -25,8 +27,8 @@ fn fixtures_present() -> bool {
 
 fn load(name: &str) -> Value {
     let path = PathBuf::from(FIXTURE_DIR).join(name);
-    let raw =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let raw = crate::common::spec_read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 

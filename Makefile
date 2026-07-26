@@ -6,8 +6,19 @@ LAKE ?= lake
 LEAN_SPEC_DIR ?= ../lazily-spec/formal/lean
 LEAN_FORMAL_DIR ?= ../lazily-formal
 
+# Runtime conformance manifest (#lazilyupgradeconformance). The path is ABSOLUTE
+# and EXPORTED to every recipe: `check` runs a dozen separate `cargo test`
+# invocations over different feature sets, each spawning several test binaries,
+# and a relative path would scatter partial manifests instead of accumulating one
+# union. Each recorded read APPENDS (tests/common/mod.rs); the file is truncated
+# exactly once, by `conformance-manifest-reset`, which `check` runs FIRST. That
+# ordering is a serial-make assumption — do not run `make check -j`.
+CONFORMANCE_MANIFEST ?= $(CURDIR)/build/conformance-fixtures-loaded.txt
+export LAZILY_CONFORMANCE_MANIFEST = $(CONFORMANCE_MANIFEST)
+
 .PHONY: \
 	conformance-coverage \
+	conformance-manifest-reset \
 	check \
 	fmt \
 	clippy \
@@ -49,7 +60,7 @@ LEAN_FORMAL_DIR ?= ../lazily-formal
 	benchmark-update \
 	instrumentation-profile
 
-	check: fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-reliable-sync-conformance test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-check conformance-coverage
+	check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-reliable-sync-conformance test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-check conformance-coverage
 
 fmt:
 >$(CARGO) fmt --all --check
@@ -204,8 +215,16 @@ test-seqcrdt-conformance:
 # convergence property tests, plus schema compliance of the `TreeUpdate` /
 # frontier serde output against lazily-spec's lossless-tree schemas (needs
 # `serde`). Feature-gated behind `lossless-tree` (which implies `distributed`).
+#
+# `crdt_tree_laws` is named here because it was named NOWHERE: it is
+# `#![cfg(feature = "lossless-tree")]`, no other target enables that feature, and
+# this target enumerates its test binaries explicitly — so the whole file
+# compiled to nothing under `make check` and its replay of
+# `crdt-tree/algebra.json` never happened. The static coverage grep could not see
+# that (the filename was right there in the source); the runtime manifest named
+# it on the first run (#lazilyupgradeconformance).
 test-lossless-tree:
->$(CARGO) test --locked --features "lossless-tree serde" --test lossless_tree_conformance --test lossless_tree_proptest --test lossless_tree_schema
+>$(CARGO) test --locked --features "lossless-tree serde" --test lossless_tree_conformance --test lossless_tree_proptest --test lossless_tree_schema --test crdt_tree_laws
 
 # JSON Schema compliance: lazily-rs's own serde output (Snapshot/Delta/CrdtSync,
 # incl. NodeKey) validates against the sibling lazily-spec/schemas, and every IPC
@@ -271,8 +290,16 @@ benchmark-update:
 instrumentation-profile:
 >$(CARGO) run --example instrumentation_profile --features "instrumentation thread-safe" --quiet
 
-# Conformance-coverage guard (#portconformancecoverage). Static: fails when the
-# canonical corpus grows a fixture no test in this repo even names. Naming is not
-# replaying — see the script header for what this does and does not prove.
+# Truncate the manifest before the suite. Run FIRST by `check`; every recorded
+# read appends, so without this the file would union across runs and a fixture
+# that stopped being replayed would stay "covered" forever.
+conformance-manifest-reset:
+>@mkdir -p $(dir $(CONFORMANCE_MANIFEST))
+>@: > $(CONFORMANCE_MANIFEST)
+
+# Conformance-coverage guard (#portconformancecoverage). RUNTIME
+# (#lazilyupgradeconformance): fails when a canonical fixture was not OPENED by
+# the suite, and fails when the manifest is absent, because that is missing
+# evidence rather than evidence of absence. See the script header.
 conformance-coverage:
 >./scripts/check-conformance-coverage.sh

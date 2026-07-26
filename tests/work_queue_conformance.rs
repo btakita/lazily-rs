@@ -1,6 +1,7 @@
 //! Canonical WorkQueueCell competing-delivery lifecycle fixtures (`#lzworkqueue`).
 
-use std::fs;
+mod common;
+
 use std::path::Path;
 
 use lazily::{Context, WorkQueueCell, WorkQueueDeadLetterReason};
@@ -14,7 +15,8 @@ fn load_fixture(name: &str) -> Option<Value> {
         eprintln!("skipping: {path} is absent");
         return None;
     }
-    let raw = fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+    let raw = crate::common::spec_read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
     Some(serde_json::from_str(&raw).unwrap_or_else(|e| panic!("failed to parse {path}: {e}")))
 }
 

@@ -1,10 +1,14 @@
 #![cfg(feature = "lossless-tree")]
 
+mod common;
+
 use lazily::{CrdtTree, TextCrdt, TextVersionVector};
 use serde_json::Value;
 
 fn fixture() -> Option<Value> {
-    let text = std::fs::read_to_string("../lazily-spec/conformance/crdt-tree/algebra.json").ok()?;
+    let text =
+        crate::common::spec_read_to_string("../lazily-spec/conformance/crdt-tree/algebra.json")
+            .ok()?;
     Some(serde_json::from_str(&text).expect("CrdtTree fixture JSON"))
 }
 

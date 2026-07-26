@@ -6,8 +6,9 @@
 //! `alive_set` (the reactive `PeerSet`), and that the `PeerSet` reader
 //! invalidates exactly when the alive set changes (via `ctx.is_set`).
 
+mod common;
+
 use std::collections::BTreeSet;
-use std::fs;
 
 use lazily::{Context, MembershipCell, MembershipConfig, PeerState};
 use serde_json::Value;
@@ -16,8 +17,8 @@ const SPEC_DIR: &str = "../lazily-spec/conformance/membership";
 
 fn load(name: &str) -> Value {
     let path = format!("{SPEC_DIR}/{name}");
-    let raw =
-        fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read fixture {path}: {e}"));
+    let raw = crate::common::spec_read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read fixture {path}: {e}"));
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("failed to parse fixture {path}: {e}"))
 }
 

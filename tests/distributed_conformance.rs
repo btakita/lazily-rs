@@ -16,17 +16,18 @@
 
 #![cfg(all(feature = "distributed", feature = "webrtc"))]
 
+mod common;
+
 use lazily::{
     Context, CrdtOp, CrdtPlaneRuntime, HlcStamp, IpcValue, LwwRegister, NodeId, NodeKey, PeerId,
     ReplicatedCell, WireStamp,
 };
 use serde_json::Value;
-use std::fs;
 
 const SPEC: &str = "../lazily-spec/conformance/distributed";
 
 fn load(name: &str) -> Option<Value> {
-    let text = fs::read_to_string(format!("{SPEC}/{name}")).ok()?;
+    let text = crate::common::spec_read_to_string(format!("{SPEC}/{name}")).ok()?;
     Some(serde_json::from_str(&text).expect("fixture parses"))
 }
 

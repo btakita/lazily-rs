@@ -9,6 +9,8 @@
 //! through json (+ msgpack under `ipc-msgpack`). Other bindings (kt/js) replay
 //! the same fixtures. Correctness backstop: `lazily-formal` `ReliableSync.lean`.
 
+mod common;
+
 use lazily::{
     DurableOutbox, InMemoryOutbox, IpcMessage, OrSet, OutboxAck, ResyncAction, ResyncCoordinator,
     ResyncRequest, WireLwwRegister, WireStamp,
@@ -20,7 +22,8 @@ const SPEC_DIR: &str = "../lazily-spec/conformance/reliable-sync";
 
 fn load(name: &str) -> serde_json::Value {
     let path = format!("{SPEC_DIR}/{name}");
-    let raw = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let raw =
+        crate::common::spec_read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {path}: {e}"))
 }
 

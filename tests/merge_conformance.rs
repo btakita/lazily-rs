@@ -7,8 +7,9 @@
 //! suppresses the effect rerun). See `reactive-graph.md` § MergeCell and the merge
 //! algebra.
 
+mod common;
+
 use std::cell::Cell as StdCell;
-use std::fs;
 use std::rc::Rc;
 
 use lazily::{Context, KeepLatest, Max, MergePolicy, Source, Sum};
@@ -18,8 +19,8 @@ const SPEC_DIR: &str = "../lazily-spec/conformance/collections";
 
 fn load_fixture(name: &str) -> Value {
     let path = format!("{SPEC_DIR}/{name}");
-    let raw =
-        fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read fixture {path}: {e}"));
+    let raw = crate::common::spec_read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read fixture {path}: {e}"));
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("failed to parse fixture {path}: {e}"))
 }
 

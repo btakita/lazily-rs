@@ -16,7 +16,7 @@
 //! replayed by `make test-crdt-plane`.
 #![cfg(all(feature = "distributed", feature = "webrtc"))]
 
-use std::fs;
+mod common;
 
 use lazily::{Context, CrdtPlaneRuntime, PeerId};
 use serde_json::Value;
@@ -39,7 +39,7 @@ fn family_sync_materialize_on_ingest_conformance() {
         eprintln!("skipping: spec fixture {FIXTURE} not present");
         return;
     }
-    let raw = fs::read_to_string(FIXTURE).expect("read fixture");
+    let raw = crate::common::spec_read_to_string(FIXTURE).expect("read fixture");
     let fixture: Value = serde_json::from_str(&raw).expect("parse fixture");
     let namespace = fixture["namespace"].as_str().expect("namespace");
     assert_eq!(

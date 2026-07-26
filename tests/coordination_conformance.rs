@@ -5,7 +5,7 @@
 //! Replays each primitive's op sequence, asserting the returned value, the
 //! projected readers, and reader invalidation (via `ctx.is_set`).
 
-use std::fs;
+mod common;
 
 use lazily::{BarrierCell, Context, LeaderCell, LeaderRole, LeaseCell, LockCell, SemaphoreCell};
 use serde_json::Value;
@@ -14,8 +14,8 @@ const SPEC_DIR: &str = "../lazily-spec/conformance/coordination";
 
 fn load(name: &str) -> Value {
     let path = format!("{SPEC_DIR}/{name}");
-    let raw =
-        fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read fixture {path}: {e}"));
+    let raw = crate::common::spec_read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read fixture {path}: {e}"));
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("failed to parse fixture {path}: {e}"))
 }
 

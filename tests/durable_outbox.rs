@@ -1,10 +1,12 @@
 #![cfg(feature = "ipc")]
 
+mod common;
+
 use lazily::{Delta, DurableOutbox, InMemoryOutbox, IpcMessage};
 use serde_json::Value;
 
 fn fixture() -> Option<Value> {
-    let text = std::fs::read_to_string(
+    let text = crate::common::spec_read_to_string(
         "../lazily-spec/conformance/reliable-sync/outbox_store_protocol.json",
     )
     .ok()?;

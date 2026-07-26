@@ -42,6 +42,8 @@
 //! Mirrors the shape of `collections_family_conformance.rs`, which closed the
 //! same gap for `ReactiveMap`.
 
+mod common;
+
 use std::fs;
 use std::path::Path;
 
@@ -166,7 +168,7 @@ fn crate_sources() -> String {
             if path.is_dir() {
                 stack.push(path);
             } else if path.extension().is_some_and(|e| e == "rs")
-                && let Ok(text) = fs::read_to_string(&path)
+                && let Ok(text) = crate::common::spec_read_to_string(&path)
             {
                 out.push_str(&text);
             }
@@ -255,7 +257,7 @@ fn shipped_flavor_replays_the_corpus() {
     let declared = all_fixtures();
 
     for name in &declared {
-        let text = fs::read_to_string(format!("{SPEC_DIR}/{name}"))
+        let text = crate::common::spec_read_to_string(format!("{SPEC_DIR}/{name}"))
             .unwrap_or_else(|e| panic!("read {name}: {e}"));
         let fixture: serde_json::Value =
             serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {name}: {e}"));
@@ -328,7 +330,6 @@ mod thread_safe_flavor {
     use super::{QUEUE_FIXTURES, SPEC_DIR, spec_fixtures_present};
     use lazily::{ThreadSafeContext, ThreadSafeQueueCell};
     use serde_json::Value;
-    use std::fs;
 
     type V = String;
 
@@ -362,7 +363,7 @@ mod thread_safe_flavor {
     }
 
     fn replay(name: &str) -> usize {
-        let text = fs::read_to_string(format!("{SPEC_DIR}/{name}"))
+        let text = crate::common::spec_read_to_string(format!("{SPEC_DIR}/{name}"))
             .unwrap_or_else(|e| panic!("canonical fixture {name} unreadable: {e}"));
         let fixture: Value = serde_json::from_str(&text).expect("fixture parses");
         let initial = &fixture["initial"];
@@ -610,7 +611,6 @@ mod async_flavor {
     use super::{QUEUE_FIXTURES, SPEC_DIR, spec_fixtures_present};
     use lazily::{AsyncContext, AsyncQueueCell};
     use serde_json::Value;
-    use std::fs;
 
     type V = String;
 
@@ -625,7 +625,7 @@ mod async_flavor {
     }
 
     fn replay(name: &str) -> usize {
-        let text = fs::read_to_string(format!("{SPEC_DIR}/{name}"))
+        let text = crate::common::spec_read_to_string(format!("{SPEC_DIR}/{name}"))
             .unwrap_or_else(|e| panic!("canonical fixture {name} unreadable: {e}"));
         let fixture: Value = serde_json::from_str(&text).expect("fixture parses");
         let initial = &fixture["initial"];
@@ -787,7 +787,6 @@ mod topic_flavors {
     use lazily::{TopicDurability, TopicSnapshot, TopicSubscriptionSnapshot};
     use serde_json::Value;
     use std::collections::{BTreeSet, HashMap};
-    use std::fs;
 
     /// The Core surface every flavor must present. Nothing here is async-coloured:
     /// a subscription cursor is monotone and per-subscriber, and the unread suffix
@@ -861,7 +860,7 @@ mod topic_flavors {
 
     /// Returns the number of steps replayed, so the caller can prove it ran.
     pub fn replay<M: TopicModel>(name: &str, flavor: &str) -> usize {
-        let text = fs::read_to_string(format!("{SPEC_DIR}/{name}"))
+        let text = crate::common::spec_read_to_string(format!("{SPEC_DIR}/{name}"))
             .unwrap_or_else(|e| panic!("canonical fixture {name} unreadable: {e}"));
         let fixture: Value = serde_json::from_str(&text).expect("fixture parses");
 
@@ -1380,7 +1379,6 @@ mod work_queue_flavors {
         WorkQueueDeadLetter, WorkQueueDeadLetterReason, WorkQueueDelivery, WorkQueueItem,
     };
     use serde_json::Value;
-    use std::fs;
 
     /// Reader-kind validity, in a fixed order so the replay can name them.
     pub const READER_KINDS: [&str; 4] = [
@@ -1451,7 +1449,7 @@ mod work_queue_flavors {
     }
 
     pub fn replay<M: WorkQueueModel>(name: &str, flavor: &str) -> usize {
-        let text = fs::read_to_string(format!("{SPEC_DIR}/{name}"))
+        let text = crate::common::spec_read_to_string(format!("{SPEC_DIR}/{name}"))
             .unwrap_or_else(|e| panic!("canonical fixture {name} unreadable: {e}"));
         let fixture: Value = serde_json::from_str(&text).expect("fixture parses");
         let config = &fixture["config"];

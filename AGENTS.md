@@ -73,6 +73,16 @@ this repo.
 - `src/crdt_tree.rs` — `CrdtTree` lossless document contract (`#lzcrdttree`): merge, frontier, delta, empty-frontier snapshot, and materialized value; implemented by `TextCrdt`
 - `src/outbox.rs` — storage-independent durable outbox (`#lzdurableoutbox`): `OutboxStore` ordered-byte boundary, shared `Outbox<S>` append/ack/prune/replay protocol, in-memory backend, and `durable-sqlite` adapter
 - `tests/temporal_conformance.rs` — temporal sources (`#lztime`) compute fixtures (lazily-spec/conformance/temporal/`*.json`); timer single-shot idempotent fire, interval boundary counting under clock jumps, cron pattern matching, deadline expiry preserving value, edge-only reader invalidation
+- `tests/common/mod.rs` — the runtime conformance manifest recorder
+  (`#lazilyupgradeconformance`). Rust integration tests are separate crates, so
+  the seam is a shared `mod common;` rather than a Go-style package-wide helper;
+  `common::spec_read_to_string` wraps every fixture read in `tests/` and appends
+  the corpus-relative id to `$LAZILY_CONFORMANCE_MANIFEST` (absolute, truncated
+  once by `make check`, appended by every test binary). Unset ⇒ no-op, so a bare
+  `cargo test` is unaffected. `scripts/check-conformance-coverage.sh` then fails
+  on any canonical fixture the suite did not OPEN — and on a missing manifest,
+  which is missing evidence rather than evidence of absence. The static grep it
+  replaced could not tell a replayed fixture from a hand-transcribed one
 - `tests/integration.rs` — 13 integration tests
 - `tests/spec_compliance.rs` — 68 spec compliance tests
 - `tests/conformance.rs` — cross-language IPC fixture round-trip tests (lazily-spec/conformance)

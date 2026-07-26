@@ -16,6 +16,8 @@
 //! time and the external refs rewritten to local ones, yielding a single
 //! self-contained schema per validation.
 
+mod common;
+
 use std::collections::HashSet;
 
 use lazily::{
@@ -297,7 +299,7 @@ fn every_ipc_conformance_fixture_wire_is_schema_valid() {
             if !checked.insert(name.to_string()) {
                 continue;
             }
-            let raw = std::fs::read_to_string(&path)
+            let raw = crate::common::spec_read_to_string(&path)
                 .unwrap_or_else(|e| panic!("read fixture {path:?}: {e}"));
             let fixture: Value = serde_json::from_str(&raw)
                 .unwrap_or_else(|e| panic!("parse fixture {path:?}: {e}"));

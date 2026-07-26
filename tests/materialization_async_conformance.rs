@@ -8,8 +8,9 @@
 //! (lazy).
 #![cfg(feature = "async")]
 
+mod common;
+
 use std::collections::HashSet;
-use std::fs;
 
 use lazily::{AsyncComputedMap, AsyncContext};
 use serde_json::Value;
@@ -23,8 +24,10 @@ fn present() -> bool {
 
 fn load(name: &str) -> Value {
     let path = format!("{SPEC_DIR}/{name}");
-    serde_json::from_str(&fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}")))
-        .unwrap_or_else(|e| panic!("parse {path}: {e}"))
+    serde_json::from_str(
+        &crate::common::spec_read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}")),
+    )
+    .unwrap_or_else(|e| panic!("parse {path}: {e}"))
 }
 
 fn val_entries(fixture: &Value) -> Vec<(String, V)> {

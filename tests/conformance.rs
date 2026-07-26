@@ -18,13 +18,14 @@
 //! }
 //! ```
 
+mod common;
+
 use lazily::{
     Delta, DeltaApplyStatus, DeltaOp, EdgeSnapshot, IpcMessage, NodeId, NodeSnapshot, NodeState,
     PeerId, PeerPermissions, SHM_BLOB_HEADER_LEN, ShmBlobArena, Snapshot,
 };
 use serde::Deserialize;
 use std::collections::HashSet;
-use std::fs;
 
 const FIXTURES_DIR: &str = "tests/conformance";
 const SPEC_FIXTURES_DIR: &str = "../lazily-spec/conformance";
@@ -46,8 +47,8 @@ fn load_fixture(name: &str) -> Fixture {
     } else {
         local_path
     };
-    let raw =
-        fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read fixture {path}: {e}"));
+    let raw = crate::common::spec_read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read fixture {path}: {e}"));
     let fixture: Fixture = serde_json::from_str(&raw)
         .unwrap_or_else(|e| panic!("failed to parse fixture {path}: {e}"));
     assert_eq!(
@@ -145,8 +146,8 @@ fn load_arena_fixture(name: &str) -> ArenaFixture {
     } else {
         local_path
     };
-    let raw =
-        fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read fixture {path}: {e}"));
+    let raw = crate::common::spec_read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read fixture {path}: {e}"));
     serde_json::from_str(&raw)
         .unwrap_or_else(|e| panic!("failed to parse arena fixture {path}: {e}"))
 }
