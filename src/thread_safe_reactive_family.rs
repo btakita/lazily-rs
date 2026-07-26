@@ -40,8 +40,8 @@ mod sealed {
 /// [`MapHandle`](crate::MapHandle). Sealed to [`Source`] (input cells) and
 /// [`Computed`] (derived slots); bindings do not add new kinds.
 pub trait ThreadSafeMapHandle<V>: sealed::Sealed + Copy + Send + Sync + 'static {
-    /// This handle's entry kind. `Source` is [`EntryKind::Cell`]; `Computed`
-    /// is [`EntryKind::Slot`].
+    /// This handle's entry kind. `Source` is [`EntryKind::Source`]; `Computed`
+    /// is [`EntryKind::Computed`].
     const KIND: EntryKind;
 
     /// Allocate the node for one entry on `ctx`, with `compute` producing its
@@ -64,7 +64,7 @@ pub trait ThreadSafeMapHandle<V>: sealed::Sealed + Copy + Send + Sync + 'static 
 
 impl<V> sealed::Sealed for Source<V> {}
 impl<V: Send + Sync + 'static> ThreadSafeMapHandle<V> for Source<V> {
-    const KIND: EntryKind = EntryKind::Cell;
+    const KIND: EntryKind = EntryKind::Source;
 
     fn materialize(
         ctx: &ThreadSafeContext,
@@ -87,7 +87,7 @@ impl<V: Send + Sync + 'static> ThreadSafeMapHandle<V> for Source<V> {
 
 impl<V> sealed::Sealed for Computed<V> {}
 impl<V: Send + Sync + 'static> ThreadSafeMapHandle<V> for Computed<V> {
-    const KIND: EntryKind = EntryKind::Slot;
+    const KIND: EntryKind = EntryKind::Computed;
 
     fn materialize(
         ctx: &ThreadSafeContext,
@@ -266,8 +266,8 @@ where
             .len()
     }
 
-    /// This map's entry kind ([`EntryKind::Cell`] for a cell map,
-    /// [`EntryKind::Slot`] for a slot map).
+    /// This map's entry kind ([`EntryKind::Source`] for a cell map,
+    /// [`EntryKind::Computed`] for a slot map).
     pub fn entry_kind(&self) -> EntryKind {
         H::KIND
     }
@@ -351,7 +351,7 @@ mod tests {
         for k in [1u64, 2, 3] {
             fam.set(&ctx, k, true);
         }
-        assert_eq!(fam.entry_kind(), EntryKind::Cell);
+        assert_eq!(fam.entry_kind(), EntryKind::Source);
         assert_eq!(fam.present_count(), 3);
         assert!(fam.is_present(&1) && fam.is_present(&2) && fam.is_present(&3));
         assert_eq!(fam.present_keys(), vec![1, 2, 3]);

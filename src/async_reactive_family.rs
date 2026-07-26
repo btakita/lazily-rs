@@ -37,8 +37,9 @@ mod sealed {
 /// [`MapHandle`](crate::MapHandle). Sealed to [`AsyncSource`] (input cells)
 /// and [`AsyncComputed`] (derived slots).
 pub trait AsyncMapHandle<V>: sealed::Sealed + Copy + Send + Sync + 'static {
-    /// This handle's entry kind. `AsyncSource` is [`EntryKind::Cell`] (always
-    /// resolved); `AsyncComputed` is [`EntryKind::Slot`] (resolves asynchronously).
+    /// This handle's entry kind. `AsyncSource` is [`EntryKind::Source`] (always
+    /// resolved); `AsyncComputed` is [`EntryKind::Computed`] (resolves
+    /// asynchronously).
     const KIND: EntryKind;
 
     /// Allocate the node for one entry on `ctx`. `compute` is the per-key value
@@ -58,7 +59,7 @@ pub trait AsyncMapHandle<V>: sealed::Sealed + Copy + Send + Sync + 'static {
 
 impl<V> sealed::Sealed for AsyncSource<V> {}
 impl<V: Send + Sync + 'static> AsyncMapHandle<V> for AsyncSource<V> {
-    const KIND: EntryKind = EntryKind::Cell;
+    const KIND: EntryKind = EntryKind::Source;
 
     fn materialize(ctx: &AsyncContext, compute: Arc<dyn Fn() -> V + Send + Sync>) -> Self
     where
@@ -77,7 +78,7 @@ impl<V: Send + Sync + 'static> AsyncMapHandle<V> for AsyncSource<V> {
 
 impl<V> sealed::Sealed for AsyncComputed<V> {}
 impl<V: Send + Sync + 'static> AsyncMapHandle<V> for AsyncComputed<V> {
-    const KIND: EntryKind = EntryKind::Slot;
+    const KIND: EntryKind = EntryKind::Computed;
 
     fn materialize(ctx: &AsyncContext, compute: Arc<dyn Fn() -> V + Send + Sync>) -> Self
     where
@@ -319,7 +320,7 @@ mod tests {
         for k in [1u64, 2, 3] {
             fam.set(&ctx, k, true);
         }
-        assert_eq!(fam.entry_kind(), EntryKind::Cell);
+        assert_eq!(fam.entry_kind(), EntryKind::Source);
         assert_eq!(fam.present_count(), 3);
         assert_eq!(fam.observe(&ctx, &2), Some(true));
         assert_eq!(fam.present_keys(), vec![1, 2, 3]);

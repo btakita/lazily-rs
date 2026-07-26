@@ -79,10 +79,29 @@ use crate::context::{Compute, ComputeOps};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
     /// An **input** cell ([`Source`]) — always materialized on `get`.
-    Cell,
+    Source,
     /// A **derived** slot ([`Computed`]) — materialized eagerly (pre-mint) or
     /// lazily on first read.
-    Slot,
+    Computed,
+}
+
+/// Deprecated pre-v2 spellings of the [`EntryKind`] variants, kept as
+/// associated constants so existing *value* uses (`EntryKind::Cell`,
+/// comparisons, `const KIND` definitions) keep compiling with a rename note.
+///
+/// These are constants, not variants, so they cannot be used in **pattern**
+/// position (`match k { EntryKind::Cell => .. }`); migrate such matches to
+/// [`EntryKind::Source`] / [`EntryKind::Computed`].
+impl EntryKind {
+    /// Renamed to [`EntryKind::Source`].
+    #[deprecated(since = "0.49.0", note = "renamed to EntryKind::Source")]
+    #[allow(non_upper_case_globals)]
+    pub const Cell: EntryKind = EntryKind::Source;
+
+    /// Renamed to [`EntryKind::Computed`].
+    #[deprecated(since = "0.49.0", note = "renamed to EntryKind::Computed")]
+    #[allow(non_upper_case_globals)]
+    pub const Slot: EntryKind = EntryKind::Computed;
 }
 
 mod sealed {
@@ -93,8 +112,8 @@ mod sealed {
 /// [`Source`] (input cells) and [`Computed`] (derived slots) only — the
 /// two node kinds of the cell model. Sealed: bindings do not add new kinds.
 pub trait MapHandle<V>: sealed::Sealed + Copy + 'static {
-    /// This handle's entry kind. `Source` is [`EntryKind::Cell`]; `Computed`
-    /// is [`EntryKind::Slot`].
+    /// This handle's entry kind. `Source` is [`EntryKind::Source`]; `Computed`
+    /// is [`EntryKind::Computed`].
     const KIND: EntryKind;
 
     /// Allocate the node for one entry in `ctx`, with `compute` producing its
@@ -117,7 +136,7 @@ pub trait MapHandle<V>: sealed::Sealed + Copy + 'static {
 
 impl<V> sealed::Sealed for Source<V> {}
 impl<V: 'static> MapHandle<V> for Source<V> {
-    const KIND: EntryKind = EntryKind::Cell;
+    const KIND: EntryKind = EntryKind::Source;
 
     fn materialize(ctx: &Context, compute: impl Fn(&Compute) -> V + 'static) -> Self
     where
@@ -143,7 +162,7 @@ impl<V: 'static> MapHandle<V> for Source<V> {
 
 impl<V> sealed::Sealed for Computed<V> {}
 impl<V: 'static> MapHandle<V> for Computed<V> {
-    const KIND: EntryKind = EntryKind::Slot;
+    const KIND: EntryKind = EntryKind::Computed;
 
     fn materialize(ctx: &Context, compute: impl Fn(&Compute) -> V + 'static) -> Self
     where
@@ -431,8 +450,8 @@ where
         self.inner.order.borrow().len()
     }
 
-    /// This map's entry kind ([`EntryKind::Cell`] for a [`SourceMap`],
-    /// [`EntryKind::Slot`] for a [`ComputedMap`]).
+    /// This map's entry kind ([`EntryKind::Source`] for a [`SourceMap`],
+    /// [`EntryKind::Computed`] for a [`ComputedMap`]).
     pub fn entry_kind(&self) -> EntryKind {
         H::KIND
     }
@@ -649,7 +668,19 @@ mod tests {
             assert!(fam.is_present(&k));
         }
         assert_eq!(fam.get(&ctx, &5), Some(15));
-        assert_eq!(fam.entry_kind(), EntryKind::Slot);
+        assert_eq!(fam.entry_kind(), EntryKind::Computed);
+    }
+
+    /// The pre-v2 spellings survive as deprecated aliases and denote exactly the
+    /// same values, so an un-migrated caller's `EntryKind::Cell` is still the
+    /// input-cell kind.
+    #[test]
+    #[allow(deprecated)]
+    fn deprecated_entry_kind_aliases_denote_the_same_values() {
+        assert_eq!(EntryKind::Cell, EntryKind::Source);
+        assert_eq!(EntryKind::Slot, EntryKind::Computed);
+        assert_eq!(<Source<u32> as MapHandle<u32>>::KIND, EntryKind::Cell);
+        assert_eq!(<Computed<u32> as MapHandle<u32>>::KIND, EntryKind::Slot);
     }
 
     #[test]

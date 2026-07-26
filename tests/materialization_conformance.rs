@@ -203,6 +203,40 @@ fn deferral_not_deallocation() {
     );
 }
 
+/// Map a fixture's `entries[k].kind` token onto an [`EntryKind`].
+///
+/// The canonical fixture spells the two kinds `cell` / `slot`; the v2 cell
+/// kernel renamed the node kinds, so the fixture will later be flipped to
+/// `source` / `computed`. Both spellings are accepted so this runner stays
+/// green across that flip. Any other token is a hard error — an unknown kind
+/// must never be silently defaulted into one of the two buckets.
+fn entry_kind_from_fixture_token(kind: &str) -> EntryKind {
+    match kind {
+        "cell" | "source" => EntryKind::Source,
+        "slot" | "computed" => EntryKind::Computed,
+        other => panic!("unknown entry kind {other}"),
+    }
+}
+
+#[test]
+fn entry_kind_fixture_tokens_accept_both_spellings() {
+    // Pre-v2 wire spelling (what the canonical fixture ships today).
+    assert_eq!(entry_kind_from_fixture_token("cell"), EntryKind::Source);
+    assert_eq!(entry_kind_from_fixture_token("slot"), EntryKind::Computed);
+    // v2 wire spelling (what the fixture will be flipped to).
+    assert_eq!(entry_kind_from_fixture_token("source"), EntryKind::Source);
+    assert_eq!(
+        entry_kind_from_fixture_token("computed"),
+        EntryKind::Computed
+    );
+}
+
+#[test]
+#[should_panic(expected = "unknown entry kind effect")]
+fn entry_kind_fixture_token_rejects_unknown() {
+    let _ = entry_kind_from_fixture_token("effect");
+}
+
 #[test]
 fn entry_kind_orthogonal_to_mode() {
     if !spec_fixtures_present() {
@@ -233,10 +267,9 @@ fn entry_kind_orthogonal_to_mode() {
         let kind = entry.get("kind").and_then(|v| v.as_str()).expect("kind");
         let val = entry.get("val").and_then(|v| v.as_i64()).expect("val");
         vals.push((key.clone(), val));
-        match kind {
-            "cell" => cell_keys.push(key.clone()),
-            "slot" => slot_keys.push(key.clone()),
-            other => panic!("unknown entry kind {other}"),
+        match entry_kind_from_fixture_token(kind) {
+            EntryKind::Source => cell_keys.push(key.clone()),
+            EntryKind::Computed => slot_keys.push(key.clone()),
         }
     }
     let lookup = lookup_fn(vals);
@@ -250,8 +283,8 @@ fn entry_kind_orthogonal_to_mode() {
     }
     let eager_slots: ComputedMap<String, V> = ComputedMap::new(&ctx);
     eager_slots.materialize_all(&ctx, slot_keys.clone(), lookup.clone());
-    assert_eq!(eager_cells.entry_kind(), EntryKind::Cell);
-    assert_eq!(eager_slots.entry_kind(), EntryKind::Slot);
+    assert_eq!(eager_cells.entry_kind(), EntryKind::Source);
+    assert_eq!(eager_slots.entry_kind(), EntryKind::Computed);
     let mut eager_present = as_set(&eager_cells.present_keys());
     eager_present.extend(eager_slots.present_keys());
     assert_eq!(eager_present, as_set(&str_array(expected, "eager_present")));
