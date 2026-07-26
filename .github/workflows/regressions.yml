@@ -23,3 +23,24 @@ jobs:
       - name: Test loom model
         run: cargo +stable test --locked --features loom --test thread_safe_loom
 
+  benchmark-budgets:
+    name: Benchmark regression budgets
+    # Pin the image generation. Pass/fail uses deterministic instrumentation
+    # counters; wall-clock Criterion timings remain diagnostic evidence only.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Generate benchmark evidence
+        run: cargo +stable bench --locked --features "instrumentation,async,tokio,thread-safe"
+
+      - name: Enforce deterministic budgets
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: make benchmark-check-strict

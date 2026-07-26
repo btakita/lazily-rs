@@ -977,9 +977,8 @@ def warn_budgets_not_enforced(what: str) -> None:
         file=sys.stderr,
     )
     print(
-        "Note: no CI workflow runs these budgets (ci.yml enumerates cargo tests; "
-        "regressions.yml runs only the loom model), so this local check is the "
-        "only place they are enforced at all.",
+        "The scheduled regressions workflow enforces these budgets with fresh "
+        "evidence; this local check skipped them because its evidence is absent.",
         file=sys.stderr,
     )
     print("=" * 72, file=sys.stderr)
@@ -1015,6 +1014,19 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--refresh-profile",
+        action="store_true",
+        help="regenerate the deterministic instrumentation profile before checking",
+    )
+    parser.add_argument(
+        "--budgets-only",
+        action="store_true",
+        help=(
+            "enforce evidence and deterministic regression budgets without "
+            "comparing machine-dependent BENCHMARKS.md timings"
+        ),
+    )
+    parser.add_argument(
         "--profile-output",
         default=DEFAULT_PROFILE_OUTPUT,
         type=Path,
@@ -1022,7 +1034,12 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if args.check:
+    if args.budgets_only and not args.check:
+        parser.error("--budgets-only requires --check")
+
+    if args.refresh_profile:
+        run_instrumentation_profile(args.profile_output)
+    elif args.check:
         pass
     elif not args.no_run:
         # `scale-bench` enables the gated >=1M-node `scale` group (#lzscalebench).
@@ -1076,6 +1093,13 @@ def main() -> int:
         for failure in budget_failures:
             print(f"- {failure}", file=sys.stderr)
         return 1
+
+    if args.budgets_only:
+        print(
+            "benchmark regression budgets passed with fresh Criterion and "
+            "instrumentation evidence"
+        )
+        return 0
 
     package, version = read_package_metadata(args.cargo_toml)
     section = build_section(package, version, results, latencies, profiles)

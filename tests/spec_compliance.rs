@@ -790,6 +790,8 @@ mod threading_contract {
 mod benchmark_report_harness {
     const CARGO_TOML: &str = include_str!("../Cargo.toml");
     const BENCHMARKS_MD: &str = include_str!("../BENCHMARKS.md");
+    const MAKEFILE: &str = include_str!("../Makefile");
+    const REGRESSIONS_WORKFLOW: &str = include_str!("../.github/workflows/regressions.yml");
     const UPDATE_SCRIPT: &str = include_str!("../scripts/update-benchmark-results.py");
 
     fn package_version() -> &'static str {
@@ -962,6 +964,18 @@ mod benchmark_report_harness {
         assert!(UPDATE_SCRIPT.contains("thread_safe_graph_propagation"));
         assert!(UPDATE_SCRIPT.contains("SYNC_STRATEGY_ADOPTION_GATE"));
         assert!(UPDATE_SCRIPT.contains("--check"));
+        assert!(UPDATE_SCRIPT.contains("--budgets-only"));
+        assert!(UPDATE_SCRIPT.contains("--refresh-profile"));
+        assert!(MAKEFILE.contains(
+            "scripts/update-benchmark-results.py --check --require-evidence \
+             --refresh-profile --budgets-only"
+        ));
+        assert!(REGRESSIONS_WORKFLOW.contains(
+            "cargo +stable bench --locked --features \
+             \"instrumentation,async,tokio,thread-safe\""
+        ));
+        assert!(REGRESSIONS_WORKFLOW.contains("run: make benchmark-check-strict"));
+        assert!(REGRESSIONS_WORKFLOW.contains("runs-on: ubuntu-24.04"));
         assert!(UPDATE_SCRIPT.contains("benchmark-results:start"));
     }
 }

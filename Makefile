@@ -281,12 +281,12 @@ test-websocket:
 benchmark-check:
 >$(PYTHON) scripts/update-benchmark-results.py --check
 
-# The enforcing spelling: missing evidence is a hard failure. Use this anywhere the
-# budgets must actually hold. Worth knowing that NO CI workflow currently runs
-# either target — ci.yml enumerates cargo tests, regressions.yml runs only the loom
-# model — so today the budgets are enforced solely by whoever runs this locally.
+# The enforcing spelling: refresh the deterministic profile and hard-fail missing
+# Criterion evidence or budget regressions. Machine-specific wall-clock estimates
+# remain report data, not CI thresholds; the scheduled regressions workflow runs
+# the benches first, then invokes this target on a pinned runner image.
 benchmark-check-strict:
->$(PYTHON) scripts/update-benchmark-results.py --check --require-evidence
+>$(PYTHON) scripts/update-benchmark-results.py --check --require-evidence --refresh-profile --budgets-only
 
 benchmark-update:
 >$(PYTHON) scripts/update-benchmark-results.py
