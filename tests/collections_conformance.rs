@@ -17,7 +17,7 @@ use std::fs;
 use std::rc::Rc;
 
 use lazily::{
-    Block, CellTree, Context, DiffOp, Match, SemTree, Source, SourceMap, TextCrdt,
+    Block, Context, DiffOp, Match, SemTree, Source, SourceMap, SourceTree, TextCrdt,
     TextVersionVector, align, apply_to_map, assign_stable_keys, block_key, reconcile,
 };
 use serde_json::Value;
@@ -475,10 +475,10 @@ fn conformance_keyed_reconciliation_lis() {
 // ANCESTOR CHAIN (sibling subtrees stay cached); a node edit that doesn't
 // change the folded result MUST NOT re-run a downstream consumer (memo guard).
 
-fn build_sem_tree(ctx: &Context, node: &Value) -> CellTree<String, i64> {
+fn build_sem_tree(ctx: &Context, node: &Value) -> SourceTree<String, i64> {
     let id = node.get("id").and_then(|v| v.as_str()).unwrap().to_string();
     let value = node.get("value").and_then(|v| v.as_i64()).unwrap();
-    let root = CellTree::leaf(ctx, id, value);
+    let root = SourceTree::leaf(ctx, id, value);
     if let Some(children) = node.get("children") {
         let order = children.get("order").and_then(|v| v.as_array()).unwrap();
         let values = children.get("values").and_then(|v| v.as_object()).unwrap();
@@ -492,12 +492,12 @@ fn build_sem_tree(ctx: &Context, node: &Value) -> CellTree<String, i64> {
     root
 }
 
-/// Recursively search for a node by id (CellTree::child only sees one level).
+/// Recursively search for a node by id (SourceTree::child only sees one level).
 fn find_in_tree<V: PartialEq + Clone + 'static>(
     ctx: &Context,
-    node: &CellTree<String, V>,
+    node: &SourceTree<String, V>,
     id: &str,
-) -> Option<CellTree<String, V>> {
+) -> Option<SourceTree<String, V>> {
     if node.id() == id {
         return Some(node.clone());
     }

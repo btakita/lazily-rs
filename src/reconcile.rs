@@ -11,7 +11,7 @@
 //! per-item ops** instead of a whole-subtree replace — the enabling step for
 //! per-cell CRDT merge. [`apply_to_map`] (and [`SourceMap::reconcile`]) drive a
 //! reactive [`SourceMap`] from the op set, while [`apply_to_tree`] applies the
-//! same keyed child edits to a [`CellTree`] level. In both cases an unchanged
+//! same keyed child edits to a [`SourceTree`] level. In both cases an unchanged
 //! ("stable") entry's value cell is **never invalidated** by a sibling reorder.
 //!
 //! ```
@@ -36,7 +36,7 @@ use std::hash::Hash;
 
 use crate::Context;
 use crate::cell_family::SourceMap;
-use crate::cell_tree::CellTree;
+use crate::cell_tree::SourceTree;
 
 /// A single reconciliation operation, keyed by stable id.
 ///
@@ -155,12 +155,12 @@ where
     }
 }
 
-/// Apply a reconcile op set to one level of a live [`CellTree`].
+/// Apply a reconcile op set to one level of a live [`SourceTree`].
 ///
 /// This is the tree-shaped companion to [`apply_to_map`]: inserts attach a leaf
-/// child and move it into place, moves use [`CellTree::move_child`], removes
+/// child and move it into place, moves use [`SourceTree::move_child`], removes
 /// detach the child subtree, and updates write only the child node's value.
-pub fn apply_to_tree<K, V>(ctx: &Context, tree: &CellTree<K, V>, ops: &[DiffOp<K, V>])
+pub fn apply_to_tree<K, V>(ctx: &Context, tree: &SourceTree<K, V>, ops: &[DiffOp<K, V>])
 where
     K: Eq + Hash + Clone + 'static,
     V: PartialEq + Clone + 'static,
@@ -393,7 +393,7 @@ mod tests {
     #[test]
     fn apply_to_tree_round_trips_reconcile_ops() {
         let ctx = Context::new();
-        let root = CellTree::leaf(&ctx, "root", 0);
+        let root = SourceTree::leaf(&ctx, "root", 0);
         for (k, v) in [("a", 1), ("b", 2), ("c", 3)] {
             root.insert_child(&ctx, k, v);
         }
@@ -415,7 +415,7 @@ mod tests {
     #[test]
     fn apply_to_tree_pure_move_spares_child_value_reader() {
         let ctx = Context::new();
-        let root = CellTree::leaf(&ctx, "root", 0);
+        let root = SourceTree::leaf(&ctx, "root", 0);
         for (k, v) in [("a", 1), ("b", 2), ("c", 3)] {
             root.insert_child(&ctx, k, v);
         }

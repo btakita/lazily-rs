@@ -458,9 +458,9 @@ unlike the naive `remove` + `entry`, which re-mints the cell and bumps membershi
 A move MUST bump only the order signal (once), and MUST be a no-op (no invalidation) when
 the requested position equals the current position. `index` is clamped to `[0, len)`.
 
-### Ordered keyed tree (`CellTree`, `#lzordtree`)
+### Ordered keyed tree (`SourceTree`, `#lzordtree`)
 
-`CellTree<Id, V>` is a **shallow-or-deep, ordered, stably-keyed tree** composed from the
+`SourceTree<Id, V>` is a **shallow-or-deep, ordered, stably-keyed tree** composed from the
 primitives above — the document shape (root → components → items, each with a stable id)
 that keyed reconciliation (`#lzkeyrecon`) and per-cell CRDT merge build on. Each node is
 `(id, value_cell, ordered children)`:
@@ -473,10 +473,10 @@ that keyed reconciliation (`#lzkeyrecon`) and per-cell CRDT merge build on. Each
   invalidated by a membership/order change in a *sibling* subtree or a deeper descendant.
   `move_child*` inherit the atomic-move guarantee (child node keeps identity + subtree).
 
-`CellTree` is cheap to `Clone` (`Rc` to shared node state), giving **structural sharing**:
+`SourceTree` is cheap to `Clone` (`Rc` to shared node state), giving **structural sharing**:
 the same subtree node may be held in several places. Conformance: per-node value
 reactivity, per-level membership/order reactivity, and atomic child move MUST hold; a
-`CellTree` is a *composition* of cells (value cells + a keyed ordered collection), not a
+`SourceTree` is a *composition* of cells (value cells + a keyed ordered collection), not a
 new cell kind.
 
 Conformance: a keyed collection MUST keep value reactivity, set-membership reactivity, and
@@ -535,7 +535,7 @@ in-band anchors — the cheapest way to buy stable identity over fundamentally u
 
 ### Memoized semantic tree (`SemTree`, `#lzsemtree`)
 
-The syntactic `CellTree` holds *input* cells; the **semantic** tree (unresolved prompts,
+The syntactic `SourceTree` holds *input* cells; the **semantic** tree (unresolved prompts,
 drainable heads, section summaries) is a layer of **memoized `computed` nodes** derived from
 it. `SemTree::build` creates one `memo` slot per node that folds
 `(node value, child derived values) -> D`.

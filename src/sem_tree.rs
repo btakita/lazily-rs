@@ -1,6 +1,6 @@
-//! Memoized semantic tree over a [`CellTree`] (#lzsemtree).
+//! Memoized semantic tree over a [`SourceTree`] (#lzsemtree).
 //!
-//! The syntactic document tree ([`CellTree`]) holds *input* cells; the **semantic**
+//! The syntactic document tree ([`SourceTree`]) holds *input* cells; the **semantic**
 //! tree (e.g. "unresolved prompts", "drainable heads", "section summaries") is a
 //! layer of **memoized `computed` nodes** derived from it. [`SemTree`] builds one
 //! memoized slot per node that folds `(node value, child derived values) -> D`.
@@ -21,10 +21,10 @@
 //! edits).
 //!
 //! ```
-//! use lazily::{CellTree, SemTree, Context};
+//! use lazily::{SourceTree, SemTree, Context};
 //!
 //! let ctx = Context::new();
-//! let root: CellTree<&'static str, i32> = CellTree::leaf(&ctx, "root", 0);
+//! let root: SourceTree<&'static str, i32> = SourceTree::leaf(&ctx, "root", 0);
 //! let a = root.insert_child(&ctx, "a", 1);
 //! a.insert_child(&ctx, "a1", 10);
 //! root.insert_child(&ctx, "b", 2);
@@ -40,12 +40,12 @@ use std::rc::Rc;
 
 use crate::Context;
 use crate::cell::Computed;
-use crate::cell_tree::CellTree;
+use crate::cell_tree::SourceTree;
 
 /// A shared fold `(node value, children derived) -> derived`.
 type FoldFn<V, D> = Rc<dyn Fn(&V, &[D]) -> D>;
 
-/// A memoized semantic derivation over a [`CellTree`]: one `memo` slot per node,
+/// A memoized semantic derivation over a [`SourceTree`]: one `memo` slot per node,
 /// each folding `(node value, child derived values) -> D`.
 pub struct SemTree<Id, D> {
     root: Computed<D>,
@@ -62,7 +62,7 @@ where
     /// the tree's current order.
     pub fn build<V>(
         ctx: &Context,
-        root: &CellTree<Id, V>,
+        root: &SourceTree<Id, V>,
         fold: impl Fn(&V, &[D]) -> D + 'static,
     ) -> Self
     where
@@ -101,7 +101,7 @@ where
 
 fn derive<Id, V, D>(
     ctx: &Context,
-    node: &CellTree<Id, V>,
+    node: &SourceTree<Id, V>,
     fold: &FoldFn<V, D>,
     nodes: &mut HashMap<Id, Computed<D>>,
 ) -> Computed<D>
@@ -141,8 +141,8 @@ mod tests {
     use super::*;
 
     /// Build a small tree: root -> {a -> {a1, a2}, b -> {b1}}.
-    fn tree(ctx: &Context) -> CellTree<&'static str, i32> {
-        let root = CellTree::leaf(ctx, "root", 0);
+    fn tree(ctx: &Context) -> SourceTree<&'static str, i32> {
+        let root = SourceTree::leaf(ctx, "root", 0);
         let a = root.insert_child(ctx, "a", 1);
         a.insert_child(ctx, "a1", 10);
         a.insert_child(ctx, "a2", 20);
@@ -151,7 +151,7 @@ mod tests {
         root
     }
 
-    fn sum_tree(ctx: &Context, root: &CellTree<&'static str, i32>) -> SemTree<&'static str, i32> {
+    fn sum_tree(ctx: &Context, root: &SourceTree<&'static str, i32>) -> SemTree<&'static str, i32> {
         SemTree::build(ctx, root, |v: &i32, kids: &[i32]| {
             v + kids.iter().sum::<i32>()
         })
@@ -200,7 +200,7 @@ mod tests {
 
         let ctx = Context::new();
         // Derived: COUNT of nodes whose value is negative ("unresolved").
-        let root = CellTree::leaf(&ctx, "root", 0);
+        let root = SourceTree::leaf(&ctx, "root", 0);
         let a = root.insert_child(&ctx, "a", -1); // unresolved
         a.insert_child(&ctx, "a1", 5);
         root.insert_child(&ctx, "b", 7);
@@ -259,7 +259,7 @@ mod tests {
         // A document-shaped tree where a node value of `true` = an unresolved
         // prompt; derive the per-subtree unresolved count (a real semantic query).
         let ctx = Context::new();
-        let doc = CellTree::leaf(&ctx, "doc", false);
+        let doc = SourceTree::leaf(&ctx, "doc", false);
         let ex = doc.insert_child(&ctx, "exchange", false);
         ex.insert_child(&ctx, "q1", true); // unresolved
         ex.insert_child(&ctx, "q2", false);

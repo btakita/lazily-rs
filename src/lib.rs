@@ -158,7 +158,9 @@ pub use cell::{Computed, Source};
 #[allow(deprecated)]
 pub use cell_family::{CellMap, SlotMap};
 pub use cell_family::{ComputedMap, EntryKind, MapHandle, ReactiveMap, SourceMap};
+#[allow(deprecated)]
 pub use cell_tree::CellTree;
+pub use cell_tree::SourceTree;
 #[cfg(feature = "ipc")]
 pub use command::{
     CallState, CommandApplyStatus, CommandCancel, CommandEvent, CommandEventKind, CommandEvents,

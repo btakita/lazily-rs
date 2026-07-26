@@ -1,6 +1,6 @@
-//! Ordered keyed reactive tree: [`CellTree`] (#lzordtree).
+//! Ordered keyed reactive tree: [`SourceTree`] (#lzordtree).
 //!
-//! A `CellTree<Id, V>` models a **shallow-or-deep, ordered, stably-keyed tree**
+//! A `SourceTree<Id, V>` models a **shallow-or-deep, ordered, stably-keyed tree**
 //! — the shape an agent-doc document takes (root → components → items, each with
 //! a stable id). It is the substrate for keyed reconciliation (`#lzkeyrecon`)
 //! and, ultimately, per-cell CRDT merge.
@@ -15,20 +15,20 @@
 //!   `child_ids` / `len` is invalidated only when *that* node gains, loses, or
 //!   reorders a child — sibling subtrees and deeper descendants don't disturb it.
 //!
-//! Child order is mutated atomically via [`CellTree::move_child`], built on
+//! Child order is mutated atomically via [`SourceTree::move_child`], built on
 //! [`SourceMap::move_to`] (`#lzcellmove`): a reorder keeps each child node's cell
 //! identity, dependents, and lineage and bumps order once.
 //!
-//! `CellTree` is cheap to [`Clone`] (an `Rc` to shared node state), giving
+//! `SourceTree` is cheap to [`Clone`] (an `Rc` to shared node state), giving
 //! **structural sharing**: the same subtree node can be held in several places
 //! and handed to compute/effect closures without copying the graph.
 //!
 //! ```
-//! use lazily::{CellTree, Context};
+//! use lazily::{SourceTree, Context};
 //!
 //! let ctx = Context::new();
 //! // A document root whose value is a section label.
-//! let root: CellTree<&'static str, &'static str> = CellTree::leaf(&ctx, "root", "doc");
+//! let root: SourceTree<&'static str, &'static str> = SourceTree::leaf(&ctx, "root", "doc");
 //! let a = root.insert_child(&ctx, "a", "alpha");
 //! let _b = root.insert_child(&ctx, "b", "bravo");
 //!
@@ -60,11 +60,11 @@ use crate::context::ComputeOps;
 /// of child nodes. Cheap to [`Clone`] (`Rc` to shared state) — clones share the
 /// same underlying node (structural sharing), so mutating through one clone is
 /// visible through the others.
-pub struct CellTree<Id, V> {
-    inner: Rc<CellTreeNode<Id, V>>,
+pub struct SourceTree<Id, V> {
+    inner: Rc<SourceTreeNode<Id, V>>,
 }
 
-struct CellTreeNode<Id, V> {
+struct SourceTreeNode<Id, V> {
     id: Id,
     value: Source<V>,
     /// Reactive ordered membership of this node's direct children (the keys are
@@ -73,10 +73,10 @@ struct CellTreeNode<Id, V> {
     order: SourceMap<Id, ()>,
     /// Non-reactive storage of the actual child node handles, looked up by id.
     /// Kept in lockstep with `order`'s key set.
-    nodes: RefCell<HashMap<Id, CellTree<Id, V>>>,
+    nodes: RefCell<HashMap<Id, SourceTree<Id, V>>>,
 }
 
-impl<Id, V> Clone for CellTree<Id, V> {
+impl<Id, V> Clone for SourceTree<Id, V> {
     fn clone(&self) -> Self {
         Self {
             inner: Rc::clone(&self.inner),
@@ -84,7 +84,7 @@ impl<Id, V> Clone for CellTree<Id, V> {
     }
 }
 
-impl<Id, V> CellTree<Id, V>
+impl<Id, V> SourceTree<Id, V>
 where
     Id: Eq + Hash + Clone + 'static,
     V: PartialEq + Clone + 'static,
@@ -92,7 +92,7 @@ where
     /// Create a leaf node with stable `id` and initial `value`.
     pub fn leaf(ctx: &Context, id: Id, value: V) -> Self {
         Self {
-            inner: Rc::new(CellTreeNode {
+            inner: Rc::new(SourceTreeNode {
                 id,
                 value: ctx.source(value),
                 order: SourceMap::new(ctx),
@@ -130,11 +130,11 @@ where
     /// ordered children, bumping this level's membership + order once. If `id`
     /// already exists the existing child is returned unchanged (its value and
     /// subtree are preserved).
-    pub fn insert_child(&self, ctx: &Context, id: Id, value: V) -> CellTree<Id, V> {
+    pub fn insert_child(&self, ctx: &Context, id: Id, value: V) -> SourceTree<Id, V> {
         if let Some(existing) = self.inner.nodes.borrow().get(&id) {
             return existing.clone();
         }
-        let child = CellTree::leaf(ctx, id.clone(), value);
+        let child = SourceTree::leaf(ctx, id.clone(), value);
         self.inner
             .nodes
             .borrow_mut()
@@ -146,7 +146,7 @@ where
     /// Attach an already-built subtree as a child (structural sharing / move a
     /// subtree under this node). Appends at the end; returns the attached node.
     /// If a child with the same id exists it is left in place and returned.
-    pub fn attach_child(&self, ctx: &Context, child: CellTree<Id, V>) -> CellTree<Id, V> {
+    pub fn attach_child(&self, ctx: &Context, child: SourceTree<Id, V>) -> SourceTree<Id, V> {
         let id = child.inner.id.clone();
         if let Some(existing) = self.inner.nodes.borrow().get(&id) {
             return existing.clone();
@@ -160,7 +160,7 @@ where
     }
 
     /// Get a child by id (non-reactive lookup of the node handle).
-    pub fn child(&self, id: &Id) -> Option<CellTree<Id, V>> {
+    pub fn child(&self, id: &Id) -> Option<SourceTree<Id, V>> {
         self.inner.nodes.borrow().get(id).cloned()
     }
 
@@ -200,7 +200,7 @@ where
     }
 
     /// Reactive, ordered list of direct child nodes.
-    pub fn children(&self, ctx: &Context) -> Vec<CellTree<Id, V>> {
+    pub fn children(&self, ctx: &Context) -> Vec<SourceTree<Id, V>> {
         let nodes = self.inner.nodes.borrow();
         self.inner
             .order
@@ -228,7 +228,7 @@ where
 
     /// Resolve a node by a path of ids from this node downward (non-reactive).
     /// Returns `None` if any segment is missing.
-    pub fn resolve_path(&self, path: &[Id]) -> Option<CellTree<Id, V>> {
+    pub fn resolve_path(&self, path: &[Id]) -> Option<SourceTree<Id, V>> {
         let mut node = self.clone();
         for seg in path {
             node = node.child(seg)?;
@@ -237,12 +237,16 @@ where
     }
 }
 
+/// Deprecated alias for [`SourceTree`].
+#[deprecated(note = "renamed to SourceTree")]
+pub type CellTree<Id, V> = SourceTree<Id, V>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn doc(ctx: &Context) -> CellTree<&'static str, &'static str> {
-        let root = CellTree::leaf(ctx, "root", "doc");
+    fn doc(ctx: &Context) -> SourceTree<&'static str, &'static str> {
+        let root = SourceTree::leaf(ctx, "root", "doc");
         root.insert_child(ctx, "a", "alpha");
         root.insert_child(ctx, "b", "bravo");
         root.insert_child(ctx, "c", "charlie");
@@ -370,7 +374,7 @@ mod tests {
     #[test]
     fn resolve_path_walks_segments() {
         let ctx = Context::new();
-        let root = CellTree::leaf(&ctx, "root", "r");
+        let root = SourceTree::leaf(&ctx, "root", "r");
         let a = root.insert_child(&ctx, "a", "a");
         let b = a.insert_child(&ctx, "b", "b");
         b.insert_child(&ctx, "c", "c");
