@@ -1,6 +1,6 @@
-//! Async `AsyncSlotMap` materialization conformance (`#reactivemap`, async
+//! Async `AsyncComputedMap` materialization conformance (`#reactivemap`, async
 //! flavor). Replays the canonical fixtures in
-//! `lazily-spec/conformance/materialization/` through [`AsyncSlotMap`], proving
+//! `lazily-spec/conformance/materialization/` through [`AsyncComputedMap`], proving
 //! the async flavor obeys the same present-set materialization laws and the
 //! **eventual transparency** law proved in `lazily-formal`'s
 //! `AsyncMaterialization` module: a driven (resolved) async slot observes the
@@ -11,7 +11,7 @@
 use std::collections::HashSet;
 use std::fs;
 
-use lazily::{AsyncContext, AsyncSlotMap};
+use lazily::{AsyncComputedMap, AsyncContext};
 use serde_json::Value;
 
 const SPEC_DIR: &str = "../lazily-spec/conformance/materialization";
@@ -61,13 +61,13 @@ fn lookup_fn(entries: Vec<(String, V)>) -> impl Fn(&String) -> V + Clone + Send 
     }
 }
 
-/// An eager `AsyncSlotMap`: pre-mint the whole keyset.
-fn eager_slot_map(
+/// An eager `AsyncComputedMap`: pre-mint the whole keyset.
+fn eager_computed_map(
     ctx: &AsyncContext,
     keys: Vec<String>,
     entries: Vec<(String, V)>,
-) -> AsyncSlotMap<String, V> {
-    let map: AsyncSlotMap<String, V> = AsyncSlotMap::new(ctx);
+) -> AsyncComputedMap<String, V> {
+    let map: AsyncComputedMap<String, V> = AsyncComputedMap::new(ctx);
     map.materialize_all(ctx, keys, lookup_fn(entries));
     map
 }
@@ -87,9 +87,9 @@ async fn eventual_transparency_async() {
     let expected = fixture.get("expected").unwrap();
 
     let ctx_e = AsyncContext::new();
-    let eager = eager_slot_map(&ctx_e, keys.clone(), entries.clone());
+    let eager = eager_computed_map(&ctx_e, keys.clone(), entries.clone());
     let ctx_l = AsyncContext::new();
-    let lazy: AsyncSlotMap<String, V> = AsyncSlotMap::new(&ctx_l);
+    let lazy: AsyncComputedMap<String, V> = AsyncComputedMap::new(&ctx_l);
     let lookup = lookup_fn(entries);
 
     // Present-set laws (allocation axis, unchanged by async resolution).
@@ -126,7 +126,7 @@ async fn deferral_not_deallocation_async() {
     let entries = val_entries(&fixture);
 
     let ctx = AsyncContext::new();
-    let lazy: AsyncSlotMap<String, V> = AsyncSlotMap::new(&ctx);
+    let lazy: AsyncComputedMap<String, V> = AsyncComputedMap::new(&ctx);
     let lookup = lookup_fn(entries);
     for k in str_array(&fixture, "reads") {
         let _ = lazy.get_or_insert_handle(&ctx, k, lookup.clone());

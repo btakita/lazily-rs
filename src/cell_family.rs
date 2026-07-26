@@ -1,5 +1,5 @@
 //! Keyed reactive collections: the generic [`ReactiveMap`] and its
-//! [`CellMap`] / [`SlotMap`] specializations (`#reactivemap`).
+//! [`SourceMap`] / [`ComputedMap`] specializations (`#reactivemap`).
 //!
 //! `Context` addresses nodes by opaque [`SlotId`](crate::context). These types
 //! add a *keyed* layer on top: a hash collection whose **membership is itself
@@ -11,20 +11,20 @@
 //! `H` (the [`MapHandle`] trait, implemented by [`Source`] for input cells
 //! and [`Computed`] for derived slots):
 //!
-//! - **[`CellMap<K, V>`] = `ReactiveMap<K, V, Source<V>>`** — **input-cell**
+//! - **[`SourceMap<K, V>`] = `ReactiveMap<K, V, Source<V>>`** — **input-cell**
 //!   entries. Adds cell-only [`set`](ReactiveMap::set) and eager value-minting
 //!   ([`entry`](ReactiveMap::entry) / [`entry_with`](ReactiveMap::entry_with)).
-//! - **[`SlotMap<K, V>`] = `ReactiveMap<K, V, Computed<V>>`** — **derived-slot**
+//! - **[`ComputedMap<K, V>`] = `ReactiveMap<K, V, Computed<V>>`** — **derived-slot**
 //!   entries. [`get_or_insert_with`](ReactiveMap::get_or_insert_with) mints a
 //!   slot on first access (**lazy materialization**); a slot's value is derived,
-//!   so `SlotMap` has **no `set`**. Eager materialization is a pre-mint loop over
+//!   so `ComputedMap` has **no `set`**. Eager materialization is a pre-mint loop over
 //!   the keyset ([`materialize_all`](ReactiveMap::materialize_all)); lazy is
 //!   mint-on-access. There is **no eager/lazy mode flag**.
 //!
 //! The shared surface — `get_or_insert_with` / `remove` / `move_*` / membership /
 //! order / `keys` / `len` / `contains_key` — lives on the generic `ReactiveMap`.
-//! `set` and eager value-minting are the `CellMap`-only specialization; the
-//! pre-mint eager helper is the `SlotMap`-only specialization.
+//! `set` and eager value-minting are the `SourceMap`-only specialization; the
+//! pre-mint eager helper is the `ComputedMap`-only specialization.
 //!
 //! # Fine-grained vs. coarse
 //!
@@ -41,10 +41,10 @@
 //!   only when keys are **added or removed**, not when an existing value changes.
 //!
 //! ```
-//! use lazily::{CellMap, Context};
+//! use lazily::{SourceMap, Context};
 //!
 //! let ctx = Context::new();
-//! let scores: CellMap<&'static str, i32> = CellMap::new(&ctx);
+//! let scores: SourceMap<&'static str, i32> = SourceMap::new(&ctx);
 //! let alice = scores.entry(&ctx, "alice", 10);
 //! let bob = scores.entry(&ctx, "bob", 20);
 //!
@@ -172,8 +172,8 @@ impl<V: 'static> MapHandle<V> for Computed<V> {
 /// by compute/effect closures. All operations are taken against the owning
 /// [`Context`]; like the rest of `lazily`, the graph data lives in the context.
 ///
-/// The two specializations a binding exposes are [`CellMap`] (input cells) and
-/// [`SlotMap`] (derived slots). See the module docs.
+/// The two specializations a binding exposes are [`SourceMap`] (input cells) and
+/// [`ComputedMap`] (derived slots). See the module docs.
 pub struct ReactiveMap<K, V, H> {
     inner: Rc<ReactiveMapInner<K, H>>,
     _marker: PhantomData<V>,
@@ -266,8 +266,8 @@ where
     }
 
     /// Get the value at `key`, minting the entry via `factory(&key)` first if the
-    /// key is absent — the mint-on-access recipe. For a [`SlotMap`] this is the
-    /// **lazy materialization** pull; for a [`CellMap`] it seeds an input cell.
+    /// key is absent — the mint-on-access recipe. For a [`ComputedMap`] this is the
+    /// **lazy materialization** pull; for a [`SourceMap`] it seeds an input cell.
     ///
     /// Bumps reactive membership only on insert; an existing key returns its
     /// current value without re-running the factory.
@@ -431,8 +431,8 @@ where
         self.inner.order.borrow().len()
     }
 
-    /// This map's entry kind ([`EntryKind::Cell`] for a [`CellMap`],
-    /// [`EntryKind::Slot`] for a [`SlotMap`]).
+    /// This map's entry kind ([`EntryKind::Cell`] for a [`SourceMap`],
+    /// [`EntryKind::Slot`] for a [`ComputedMap`]).
     pub fn entry_kind(&self) -> EntryKind {
         H::KIND
     }
@@ -440,18 +440,27 @@ where
 
 /// A keyed **input-cell** collection: every entry is a settable [`Source<V>`].
 ///
-/// The `CellMap` specialization of [`ReactiveMap`] adds cell-only `set` and eager
+/// The `SourceMap` specialization of [`ReactiveMap`] adds cell-only `set` and eager
 /// value-minting (`entry` / `entry_with`) on top of the shared reactive keyed
 /// surface.
-pub type CellMap<K, V> = ReactiveMap<K, V, Source<V>>;
+pub type SourceMap<K, V> = ReactiveMap<K, V, Source<V>>;
 
 /// A keyed **derived-slot** collection: every entry is a [`Computed<V>`] whose
 /// value is derived. `get_or_insert_with` mints a slot on first access (lazy
 /// materialization); [`materialize_all`](ReactiveMap::materialize_all) pre-mints
-/// the keyset (eager). A slot's value is derived, so `SlotMap` has **no `set`**.
-pub type SlotMap<K, V> = ReactiveMap<K, V, Computed<V>>;
+/// the keyset (eager). A slot's value is derived, so `ComputedMap` has **no `set`**.
+pub type ComputedMap<K, V> = ReactiveMap<K, V, Computed<V>>;
 
-/// `CellMap`-only surface: eager value-minting and `set` (an input is settable).
+/// Deprecated alias for [`SourceMap`]. The v2 kernel renamed the node kinds to
+/// `Source`/`Computed`, so the map names now say which kind of entry they hold.
+#[deprecated(note = "renamed to SourceMap")]
+pub type CellMap<K, V> = SourceMap<K, V>;
+
+/// Deprecated alias for [`ComputedMap`].
+#[deprecated(note = "renamed to ComputedMap")]
+pub type SlotMap<K, V> = ComputedMap<K, V>;
+
+/// `SourceMap`-only surface: eager value-minting and `set` (an input is settable).
 impl<K, V> ReactiveMap<K, V, Source<V>>
 where
     K: Eq + Hash + Clone + 'static,
@@ -480,7 +489,7 @@ where
     /// it does not exist yet. Updating an existing entry leaves membership
     /// untouched and invalidates only that entry's dependents.
     ///
-    /// Cell-only: an input is settable; a derived [`SlotMap`] slot is not.
+    /// Cell-only: an input is settable; a derived [`ComputedMap`] slot is not.
     pub fn set(&self, ctx: &Context, key: K, value: V) {
         if let Some(handle) = self.inner.entries.borrow().get(&key).copied() {
             handle.set(ctx, value);
@@ -490,7 +499,7 @@ where
     }
 }
 
-/// `SlotMap`-only surface: the eager pre-mint helper. Lazy materialization is
+/// `ComputedMap`-only surface: the eager pre-mint helper. Lazy materialization is
 /// [`get_or_insert_with`](ReactiveMap::get_or_insert_with) on the shared surface.
 impl<K, V> ReactiveMap<K, V, Computed<V>>
 where
@@ -521,7 +530,7 @@ mod tests {
     #[test]
     fn entry_caches_one_cell_per_key() {
         let ctx = Context::new();
-        let map: CellMap<&str, i32> = CellMap::new(&ctx);
+        let map: SourceMap<&str, i32> = SourceMap::new(&ctx);
         let a1 = map.entry(&ctx, "a", 1);
         let a2 = map.entry(&ctx, "a", 999);
         // Same key -> same cell; the second default is ignored.
@@ -533,7 +542,7 @@ mod tests {
     #[test]
     fn get_or_insert_with_mints_once_then_returns_existing() {
         let ctx = Context::new();
-        let map: CellMap<&str, i32> = CellMap::new(&ctx);
+        let map: SourceMap<&str, i32> = SourceMap::new(&ctx);
         let calls = Rc::new(StdCell::new(0));
         // First access mints via the factory.
         assert_eq!(
@@ -567,7 +576,7 @@ mod tests {
     #[test]
     fn membership_is_reactive_but_value_changes_are_not() {
         let ctx = Context::new();
-        let map: CellMap<&str, i32> = CellMap::new(&ctx);
+        let map: SourceMap<&str, i32> = SourceMap::new(&ctx);
         let a = map.entry(&ctx, "a", 1);
         map.entry(&ctx, "b", 2);
 
@@ -595,7 +604,7 @@ mod tests {
     #[test]
     fn per_entry_reads_are_independent() {
         let ctx = Context::new();
-        let map: CellMap<&str, i32> = CellMap::new(&ctx);
+        let map: SourceMap<&str, i32> = SourceMap::new(&ctx);
         let a = map.entry(&ctx, "a", 1);
         let b = map.entry(&ctx, "b", 2);
 
@@ -616,9 +625,9 @@ mod tests {
     }
 
     #[test]
-    fn slot_map_mints_lazily_and_caches() {
+    fn computed_map_mints_lazily_and_caches() {
         let ctx = Context::new();
-        let fam: SlotMap<u32, u32> = SlotMap::new(&ctx);
+        let fam: ComputedMap<u32, u32> = ComputedMap::new(&ctx);
         // Nothing present until first access.
         assert_eq!(fam.present_count(), 0);
         assert_eq!(fam.get_or_insert_with(&ctx, 7, |&k| k * 2), 14);
@@ -631,9 +640,9 @@ mod tests {
     }
 
     #[test]
-    fn slot_map_materialize_all_is_eager() {
+    fn computed_map_materialize_all_is_eager() {
         let ctx = Context::new();
-        let fam: SlotMap<u32, u32> = SlotMap::new(&ctx);
+        let fam: ComputedMap<u32, u32> = ComputedMap::new(&ctx);
         fam.materialize_all(&ctx, [0u32, 1, 2, 5, 9], |&k| k * 3);
         assert_eq!(fam.present_count(), 5);
         for k in [0u32, 1, 2, 5, 9] {
@@ -646,7 +655,7 @@ mod tests {
     #[test]
     fn move_to_reorders_keys_and_keeps_cell_identity() {
         let ctx = Context::new();
-        let map: CellMap<&str, i32> = CellMap::new(&ctx);
+        let map: SourceMap<&str, i32> = SourceMap::new(&ctx);
         let a = map.entry(&ctx, "a", 1);
         map.entry(&ctx, "b", 2);
         map.entry(&ctx, "c", 3);
@@ -669,7 +678,7 @@ mod tests {
     #[test]
     fn pure_move_invalidates_order_but_not_membership_readers() {
         let ctx = Context::new();
-        let map: CellMap<&str, i32> = CellMap::new(&ctx);
+        let map: SourceMap<&str, i32> = SourceMap::new(&ctx);
         map.entry(&ctx, "a", 1);
         map.entry(&ctx, "b", 2);
         map.entry(&ctx, "c", 3);
@@ -708,7 +717,7 @@ mod tests {
     #[test]
     fn move_to_is_noop_when_position_unchanged() {
         let ctx = Context::new();
-        let map: CellMap<&str, i32> = CellMap::new(&ctx);
+        let map: SourceMap<&str, i32> = SourceMap::new(&ctx);
         map.entry(&ctx, "a", 1);
         map.entry(&ctx, "b", 2);
 
@@ -732,7 +741,7 @@ mod tests {
     #[test]
     fn move_before_and_after_place_relative_to_anchor() {
         let ctx = Context::new();
-        let map: CellMap<i32, i32> = CellMap::new(&ctx);
+        let map: SourceMap<i32, i32> = SourceMap::new(&ctx);
         for k in 0..4 {
             map.entry(&ctx, k, k * 10);
         }
@@ -754,7 +763,7 @@ mod tests {
     #[test]
     fn contains_key_tracks_membership() {
         let ctx = Context::new();
-        let map: CellMap<i32, i32> = CellMap::new(&ctx);
+        let map: SourceMap<i32, i32> = SourceMap::new(&ctx);
         let has_5 = ctx.computed({
             let map = map.clone();
             move |ctx| map.contains_key(ctx, &5)

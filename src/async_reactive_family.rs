@@ -17,7 +17,7 @@
 //! always resolved. Drive a slot to resolution with [`AsyncContext::get_async`] on
 //! the handle from [`get_or_insert_handle`](AsyncReactiveMap::get_or_insert_handle).
 //!
-//! Its two specializations are [`AsyncCellMap`] (input cells) and [`AsyncSlotMap`]
+//! Its two specializations are [`AsyncSourceMap`] (input cells) and [`AsyncComputedMap`]
 //! (derived slots). Mirrors the async materialization case in lazily-spec and the
 //! `AsyncMaterialization` proofs (eventual transparency) in lazily-formal.
 
@@ -242,7 +242,7 @@ where
     }
 }
 
-/// `AsyncCellMap`-only surface: `set` (an input is settable).
+/// `AsyncSourceMap`-only surface: `set` (an input is settable).
 impl<K, V> AsyncReactiveMap<K, V, AsyncSource<V>>
 where
     K: Eq + Hash + Clone + Send + Sync + 'static,
@@ -262,7 +262,7 @@ where
     }
 }
 
-/// `AsyncSlotMap`-only surface: the eager pre-mint helper.
+/// `AsyncComputedMap`-only surface: the eager pre-mint helper.
 impl<K, V> AsyncReactiveMap<K, V, AsyncComputed<V>>
 where
     K: Eq + Hash + Clone + Send + Sync + 'static,
@@ -285,12 +285,20 @@ where
 
 /// An async **input-cell** map: every entry is an always-resolved
 /// [`AsyncSource<V>`].
-pub type AsyncCellMap<K, V> = AsyncReactiveMap<K, V, AsyncSource<V>>;
+pub type AsyncSourceMap<K, V> = AsyncReactiveMap<K, V, AsyncSource<V>>;
 
 /// An async **derived-slot** map: entries are [`AsyncComputed<V>`] minted lazily
 /// on access or eagerly via [`materialize_all`](AsyncReactiveMap::materialize_all),
 /// resolved via [`AsyncContext::get_async`].
-pub type AsyncSlotMap<K, V> = AsyncReactiveMap<K, V, AsyncComputed<V>>;
+pub type AsyncComputedMap<K, V> = AsyncReactiveMap<K, V, AsyncComputed<V>>;
+
+/// Deprecated alias for [`AsyncSourceMap`].
+#[deprecated(note = "renamed to AsyncSourceMap")]
+pub type AsyncCellMap<K, V> = AsyncSourceMap<K, V>;
+
+/// Deprecated alias for [`AsyncComputedMap`].
+#[deprecated(note = "renamed to AsyncComputedMap")]
+pub type AsyncSlotMap<K, V> = AsyncComputedMap<K, V>;
 
 #[cfg(test)]
 mod tests {
@@ -300,14 +308,14 @@ mod tests {
 
     #[test]
     fn map_is_send_sync() {
-        assert_send_sync::<AsyncCellMap<u64, bool>>();
-        assert_send_sync::<AsyncSlotMap<u64, usize>>();
+        assert_send_sync::<AsyncSourceMap<u64, bool>>();
+        assert_send_sync::<AsyncComputedMap<u64, usize>>();
     }
 
     #[tokio::test]
-    async fn eager_cell_map_resolves_immediately() {
+    async fn eager_source_map_resolves_immediately() {
         let ctx = AsyncContext::new();
-        let fam: AsyncCellMap<u64, bool> = AsyncCellMap::new(&ctx);
+        let fam: AsyncSourceMap<u64, bool> = AsyncSourceMap::new(&ctx);
         for k in [1u64, 2, 3] {
             fam.set(&ctx, k, true);
         }
@@ -318,9 +326,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lazy_slot_map_defers_until_read() {
+    async fn lazy_computed_map_defers_until_read() {
         let ctx = AsyncContext::new();
-        let fam: AsyncSlotMap<u64, usize> = AsyncSlotMap::new(&ctx);
+        let fam: AsyncComputedMap<u64, usize> = AsyncComputedMap::new(&ctx);
         assert_eq!(fam.present_count(), 0);
         // Materialize + drive to resolution.
         let handle = fam.get_or_insert_handle(&ctx, 4, |k| (*k as usize) * 10);
@@ -332,10 +340,10 @@ mod tests {
     #[tokio::test]
     async fn eventual_transparency_eager_equals_lazy() {
         let ctx_e = AsyncContext::new();
-        let eager: AsyncSlotMap<u64, usize> = AsyncSlotMap::new(&ctx_e);
+        let eager: AsyncComputedMap<u64, usize> = AsyncComputedMap::new(&ctx_e);
         eager.materialize_all(&ctx_e, [1, 2, 3], |k| (*k as usize) * 2);
         let ctx_l = AsyncContext::new();
-        let lazy: AsyncSlotMap<u64, usize> = AsyncSlotMap::new(&ctx_l);
+        let lazy: AsyncComputedMap<u64, usize> = AsyncComputedMap::new(&ctx_l);
         for k in [1u64, 2, 3] {
             let ve = ctx_e.get_async(&eager.handle(&k).unwrap()).await;
             let vl = ctx_l
@@ -348,7 +356,7 @@ mod tests {
     #[tokio::test]
     async fn present_set_grows_monotonically() {
         let ctx = AsyncContext::new();
-        let fam: AsyncSlotMap<u64, usize> = AsyncSlotMap::new(&ctx);
+        let fam: AsyncComputedMap<u64, usize> = AsyncComputedMap::new(&ctx);
         let _ = fam.get_or_insert_handle(&ctx, 5, |k| *k as usize);
         let _ = fam.get_or_insert_handle(&ctx, 5, |k| *k as usize);
         let _ = fam.get_or_insert_handle(&ctx, 9, |k| *k as usize);
@@ -357,9 +365,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cell_map_reacts_to_set() {
+    async fn source_map_reacts_to_set() {
         let ctx = AsyncContext::new();
-        let fam: AsyncCellMap<u64, bool> = AsyncCellMap::new(&ctx);
+        let fam: AsyncSourceMap<u64, bool> = AsyncSourceMap::new(&ctx);
         for k in [10u64, 20] {
             fam.set(&ctx, k, true);
         }

@@ -1,6 +1,6 @@
-//! Thread-safe `ThreadSafeSlotMap` materialization conformance (`#reactivemap`,
+//! Thread-safe `ThreadSafeComputedMap` materialization conformance (`#reactivemap`,
 //! thread-safe flavor). Replays the canonical fixtures in
-//! `lazily-spec/conformance/materialization/` through [`ThreadSafeSlotMap`],
+//! `lazily-spec/conformance/materialization/` through [`ThreadSafeComputedMap`],
 //! proving the `Send + Sync` flavor obeys the same materialization laws as the
 //! single-threaded map — plus **confluence** (the order-independence proved in
 //! `lazily-formal`'s `Materialization` module: `materialize_present_comm` /
@@ -11,7 +11,7 @@
 use std::collections::HashSet;
 use std::fs;
 
-use lazily::{ThreadSafeContext, ThreadSafeSlotMap};
+use lazily::{ThreadSafeComputedMap, ThreadSafeContext};
 use serde_json::Value;
 
 const SPEC_DIR: &str = "../lazily-spec/conformance/materialization";
@@ -61,13 +61,13 @@ fn lookup_fn(entries: Vec<(String, V)>) -> impl Fn(&String) -> V + Clone + Send 
     }
 }
 
-/// An eager `ThreadSafeSlotMap`: pre-mint the whole keyset.
-fn eager_slot_map(
+/// An eager `ThreadSafeComputedMap`: pre-mint the whole keyset.
+fn eager_computed_map(
     ctx: &ThreadSafeContext,
     keys: Vec<String>,
     entries: Vec<(String, V)>,
-) -> ThreadSafeSlotMap<String, V> {
-    let map: ThreadSafeSlotMap<String, V> = ThreadSafeSlotMap::new(ctx);
+) -> ThreadSafeComputedMap<String, V> {
+    let map: ThreadSafeComputedMap<String, V> = ThreadSafeComputedMap::new(ctx);
     map.materialize_all(ctx, keys, lookup_fn(entries));
     map
 }
@@ -87,8 +87,8 @@ fn check_val_fixture(name: &str) -> Value {
     );
 
     let ctx = ThreadSafeContext::new();
-    let eager = eager_slot_map(&ctx, keys.clone(), entries.clone());
-    let lazy: ThreadSafeSlotMap<String, V> = ThreadSafeSlotMap::new(&ctx);
+    let eager = eager_computed_map(&ctx, keys.clone(), entries.clone());
+    let lazy: ThreadSafeComputedMap<String, V> = ThreadSafeComputedMap::new(&ctx);
     let lookup = lookup_fn(entries);
 
     assert_eq!(eager.present_count(), keys.len());
@@ -121,7 +121,7 @@ fn observational_transparency_thread_safe() {
     let entries = val_entries(&fixture);
 
     let ctx = ThreadSafeContext::new();
-    let lazy: ThreadSafeSlotMap<String, V> = ThreadSafeSlotMap::new(&ctx);
+    let lazy: ThreadSafeComputedMap<String, V> = ThreadSafeComputedMap::new(&ctx);
     let lookup = lookup_fn(entries);
     for k in str_array(&fixture, "reads") {
         lazy.get_or_insert_with(&ctx, k, lookup.clone());
@@ -143,7 +143,7 @@ fn deferral_not_deallocation_thread_safe() {
     let entries = val_entries(&fixture);
 
     let ctx = ThreadSafeContext::new();
-    let lazy: ThreadSafeSlotMap<String, V> = ThreadSafeSlotMap::new(&ctx);
+    let lazy: ThreadSafeComputedMap<String, V> = ThreadSafeComputedMap::new(&ctx);
     let lookup = lookup_fn(entries);
     let want_sizes: Vec<usize> = expected
         .get("present_after_each_read")
@@ -177,9 +177,9 @@ fn materialization_confluent_under_reordering() {
     let keys: Vec<String> = entries.iter().map(|(k, _)| k.clone()).collect();
 
     let ctx_fwd = ThreadSafeContext::new();
-    let fwd: ThreadSafeSlotMap<String, V> = ThreadSafeSlotMap::new(&ctx_fwd);
+    let fwd: ThreadSafeComputedMap<String, V> = ThreadSafeComputedMap::new(&ctx_fwd);
     let ctx_rev = ThreadSafeContext::new();
-    let rev: ThreadSafeSlotMap<String, V> = ThreadSafeSlotMap::new(&ctx_rev);
+    let rev: ThreadSafeComputedMap<String, V> = ThreadSafeComputedMap::new(&ctx_rev);
     let lookup = lookup_fn(entries);
 
     let mut fwd_vals = Vec::new();

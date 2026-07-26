@@ -1,7 +1,7 @@
-//! Cross-language conformance tests for `SlotMap` materialization
+//! Cross-language conformance tests for `ComputedMap` materialization
 //! (`#reactivemap`), driven by the canonical fixtures in
 //! `lazily-spec/conformance/materialization/`. These exercise the laws proved in
-//! `lazily-formal`'s `Materialization` module against the Rust `SlotMap`
+//! `lazily-formal`'s `Materialization` module against the Rust `ComputedMap`
 //! specialization of [`ReactiveMap`]:
 //!
 //! - `observational_transparency.json` — eager (pre-mint loop) and lazy
@@ -18,7 +18,7 @@
 use std::collections::HashSet;
 use std::fs;
 
-use lazily::{CellMap, Context, EntryKind, SlotMap};
+use lazily::{ComputedMap, Context, EntryKind, SourceMap};
 use serde_json::Value;
 
 const SPEC_DIR: &str = "../lazily-spec/conformance/materialization";
@@ -73,20 +73,20 @@ fn lookup_fn(entries: Vec<(String, V)>) -> impl Fn(&String) -> V + Clone + 'stat
     }
 }
 
-/// An eager `SlotMap`: pre-mint the whole keyset.
-fn eager_slot_map(
+/// An eager `ComputedMap`: pre-mint the whole keyset.
+fn eager_computed_map(
     ctx: &Context,
     keys: Vec<String>,
     entries: Vec<(String, V)>,
-) -> SlotMap<String, V> {
-    let map: SlotMap<String, V> = SlotMap::new(ctx);
+) -> ComputedMap<String, V> {
+    let map: ComputedMap<String, V> = ComputedMap::new(ctx);
     map.materialize_all(ctx, keys, lookup_fn(entries));
     map
 }
 
-/// A lazy `SlotMap`: empty, mint-on-access via `get_or_insert_with`.
-fn lazy_slot_map(ctx: &Context) -> SlotMap<String, V> {
-    SlotMap::new(ctx)
+/// A lazy `ComputedMap`: empty, mint-on-access via `get_or_insert_with`.
+fn lazy_computed_map(ctx: &Context) -> ComputedMap<String, V> {
+    ComputedMap::new(ctx)
 }
 
 /// Assert the shared invariants both `spec.val` fixtures declare: default mode
@@ -105,8 +105,8 @@ fn check_val_fixture(name: &str) -> Value {
     );
 
     let ctx = Context::new();
-    let eager = eager_slot_map(&ctx, keys.clone(), entries.clone());
-    let lazy = lazy_slot_map(&ctx);
+    let eager = eager_computed_map(&ctx, keys.clone(), entries.clone());
+    let lazy = lazy_computed_map(&ctx);
 
     // eager_materializes_all
     assert_eq!(eager.present_count(), keys.len());
@@ -149,7 +149,7 @@ fn observational_transparency() {
     // exactly the read keys (lazy_defers_slots).
     let entries = parse_val_spec(&fixture);
     let ctx = Context::new();
-    let lazy = lazy_slot_map(&ctx);
+    let lazy = lazy_computed_map(&ctx);
     let lookup = lookup_fn(entries);
     for k in str_array(&fixture, "reads") {
         lazy.get_or_insert_with(&ctx, k, lookup.clone());
@@ -171,7 +171,7 @@ fn deferral_not_deallocation() {
 
     let entries = parse_val_spec(&fixture);
     let ctx = Context::new();
-    let lazy = lazy_slot_map(&ctx);
+    let lazy = lazy_computed_map(&ctx);
     let lookup = lookup_fn(entries);
 
     // present_after_each_read: cumulative present-set size, monotone and
@@ -224,7 +224,7 @@ fn entry_kind_orthogonal_to_mode() {
 
     // Split the map's declared entries by kind: input cells vs derived slots.
     // A single `ReactiveMap<K,V,H>` fixes one handle kind, so a mixed-kind
-    // fixture is modelled by a `CellMap` over the cell entries and a `SlotMap`
+    // fixture is modelled by a `SourceMap` over the cell entries and a `ComputedMap`
     // over the slot entries — sharing one logical key space.
     let mut cell_keys: Vec<String> = Vec::new();
     let mut slot_keys: Vec<String> = Vec::new();
@@ -244,11 +244,11 @@ fn entry_kind_orthogonal_to_mode() {
     let ctx = Context::new();
 
     // Eager build: every entry present (cells + slots).
-    let eager_cells: CellMap<String, V> = CellMap::new(&ctx);
+    let eager_cells: SourceMap<String, V> = SourceMap::new(&ctx);
     for k in &cell_keys {
         eager_cells.entry(&ctx, k.clone(), lookup(k));
     }
-    let eager_slots: SlotMap<String, V> = SlotMap::new(&ctx);
+    let eager_slots: ComputedMap<String, V> = ComputedMap::new(&ctx);
     eager_slots.materialize_all(&ctx, slot_keys.clone(), lookup.clone());
     assert_eq!(eager_cells.entry_kind(), EntryKind::Cell);
     assert_eq!(eager_slots.entry_kind(), EntryKind::Slot);
@@ -258,11 +258,11 @@ fn entry_kind_orthogonal_to_mode() {
 
     // Lazy build: cells present at build (input cells are always materialized),
     // slots deferred until read.
-    let lazy_cells: CellMap<String, V> = CellMap::new(&ctx);
+    let lazy_cells: SourceMap<String, V> = SourceMap::new(&ctx);
     for k in &cell_keys {
         lazy_cells.entry(&ctx, k.clone(), lookup(k));
     }
-    let lazy_slots: SlotMap<String, V> = SlotMap::new(&ctx);
+    let lazy_slots: ComputedMap<String, V> = ComputedMap::new(&ctx);
     let present_at_build = as_set(&lazy_cells.present_keys());
     assert!(
         lazy_slots.present_keys().is_empty(),

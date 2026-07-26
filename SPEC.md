@@ -393,13 +393,13 @@ pub struct SlotId(u64);
 
 Both `Computed<T>` and `Source<T>` wrap a `SlotId` with `PhantomData<T>` for type safety.
 
-## Keyed cell collections (`CellFamily` / `CellMap`)
+## Keyed cell collections (`CellFamily` / `SourceMap`)
 
-`CellMap<K, V>` and `CellFamily<K, V>` add a *keyed* layer over the flat `SlotId`
+`SourceMap<K, V>` and `CellFamily<K, V>` add a *keyed* layer over the flat `SlotId`
 address space: a hash collection whose **membership is itself reactive**, with one
 independently-tracked value cell per entry.
 
-- **`CellMap<K, V>`** — a `K → Source<V>` map with two independent reactivity
+- **`SourceMap<K, V>`** — a `K → Source<V>` map with two independent reactivity
   surfaces:
   - **Per-entry value reactivity.** Each entry is its own cell, so a reader that
     depends on entry `a` is invalidated only when `a` changes — never when a sibling
@@ -415,13 +415,13 @@ independently-tracked value cell per entry.
     readers cached. Mutators bump via an untracked write so they never register a
     spurious dependency on the caller's frame.
 - **`CellFamily<K, V>`** — a parameterized factory (à la Recoil/Jotai `atomFamily`)
-  layered on `CellMap`: it lazily mints and caches one cell per distinct key on first
+  layered on `SourceMap`: it lazily mints and caches one cell per distinct key on first
   `get(key)`, via a `Fn(&K) -> V` factory. Repeated `get`s of the same key return the
   same cell.
 
 ### Wire-stable keyed addressing (`#lzwirekey`)
 
-A `CellMap`/`CellFamily` entry is addressable internally by its key, but on the
+A `SourceMap`/`CellFamily` entry is addressable internally by its key, but on the
 wire (`PROTOCOL.md`) a peer historically could only refer to it by the opaque,
 volatile `NodeId` it happened to receive — which a producer may re-mint under a
 *new* value after a resync or a remove-then-readd. The wire protocol therefore
@@ -435,7 +435,7 @@ introduce a node.
   conformance fixtures round-trip unchanged; positional Postcard always carries
   the optional discriminant for binary schema stability.
 - **Path = nesting.** A multi-segment path addresses nested collections (an
-  entry of a `CellMap` inside a `CellMap` entry) with no extra machinery. Length
+  entry of a `SourceMap` inside a `SourceMap` entry) with no extra machinery. Length
   (≤ 1024 bytes) and segment count (≤ 32) are bounded and rejected on the wire.
 - **Consumer key index.** A subscriber maintains a bijective `NodeKey ↔ NodeId`
   index (`KeyIndex`): ingesting a `Snapshot` or applying a keyed `NodeAdd` /
@@ -445,13 +445,13 @@ introduce a node.
 - **Producer wiring is staged.** The wire types, codecs, and consumer index land
   with `#lzwirekey`; threading each entry's `NodeKey` through the runtime→IPC
   projection waits on the graph→snapshot producer (today `NodeSnapshot`s are
-  constructed only at the transport seam, not minted from a live `CellMap`).
+  constructed only at the transport seam, not minted from a live `SourceMap`).
   Multi-producer key-uniqueness is owned by the distributed plane's last-writer
   rule (`#lzcrdtplane`), not this protocol.
 
 ### Atomic ordered move (`#lzcellmove`)
 
-`CellMap` exposes `move_to(key, index)`, `move_before(key, anchor)`, and
+`SourceMap` exposes `move_to(key, index)`, `move_before(key, anchor)`, and
 `move_after(key, anchor)`: the **atomic, optimized** reorder. A move MUST keep the
 entry's **same value cell** (handle identity), its dependents, and its CRDT lineage —
 unlike the naive `remove` + `entry`, which re-mints the cell and bumps membership twice.
@@ -468,7 +468,7 @@ that keyed reconciliation (`#lzkeyrecon`) and per-cell CRDT merge build on. Each
 - **Stable `id`** survives reorder and value edits.
 - **`value` cell** gives per-node value reactivity: editing node `X` MUST invalidate only
   readers of `X`, never a sibling or descendant.
-- **Ordered children** are a `CellMap`-backed reactive collection, so `child_ids()`/`len()`
+- **Ordered children** are a `SourceMap`-backed reactive collection, so `child_ids()`/`len()`
   and order are reactive **per level**: a reader of one node's children MUST NOT be
   invalidated by a membership/order change in a *sibling* subtree or a deeper descendant.
   `move_child*` inherit the atomic-move guarantee (child node keeps identity + subtree).
@@ -505,7 +505,7 @@ returns the minimal `{Insert, Remove, Move, Update}` op set that transforms `old
   emitted order (removes, then inserts/moves left-to-right, then updates) they reproduce
   `new`.
 
-`apply_to_map` (and the `CellMap::reconcile` convenience) drive a reactive `CellMap` from
+`apply_to_map` (and the `SourceMap::reconcile` convenience) drive a reactive `SourceMap` from
 the op set. Conformance for the reactive application: a **stable** entry (in the LIS, value
 unchanged) MUST NOT have its value cell invalidated by a sibling reorder — moves go through
 the atomic-move path, so reactivity is proportional to what actually changed. This minimal

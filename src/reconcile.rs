@@ -9,13 +9,13 @@
 //!
 //! This is the algorithm that turns a structural document edit into **minimal
 //! per-item ops** instead of a whole-subtree replace — the enabling step for
-//! per-cell CRDT merge. [`apply_to_map`] (and [`CellMap::reconcile`]) drive a
-//! reactive [`CellMap`] from the op set, while [`apply_to_tree`] applies the
+//! per-cell CRDT merge. [`apply_to_map`] (and [`SourceMap::reconcile`]) drive a
+//! reactive [`SourceMap`] from the op set, while [`apply_to_tree`] applies the
 //! same keyed child edits to a [`CellTree`] level. In both cases an unchanged
 //! ("stable") entry's value cell is **never invalidated** by a sibling reorder.
 //!
 //! ```
-//! use lazily::{reconcile, DiffOp, Context, CellMap};
+//! use lazily::{reconcile, DiffOp, Context, SourceMap};
 //!
 //! let old = [("a", 1), ("b", 2), ("c", 3)];
 //! let new = [("c", 3), ("a", 1), ("b", 2)];
@@ -25,7 +25,7 @@
 //!
 //! // Apply to a live reactive collection.
 //! let ctx = Context::new();
-//! let map: CellMap<&str, i32> = CellMap::new(&ctx);
+//! let map: SourceMap<&str, i32> = SourceMap::new(&ctx);
 //! for (k, v) in old { map.entry(&ctx, k, v); }
 //! map.reconcile(&ctx, &new);
 //! assert_eq!(map.keys(&ctx), vec!["c", "a", "b"]);
@@ -35,7 +35,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
 use crate::Context;
-use crate::cell_family::CellMap;
+use crate::cell_family::SourceMap;
 use crate::cell_tree::CellTree;
 
 /// A single reconciliation operation, keyed by stable id.
@@ -127,11 +127,11 @@ where
     ops
 }
 
-/// Apply a reconcile op set to a live [`CellMap`], driving it to the new shape
+/// Apply a reconcile op set to a live [`SourceMap`], driving it to the new shape
 /// with minimal invalidation: stable entries are untouched (their value cells
-/// keep their dependents cached), moves use [`CellMap::move_to`] (`#lzcellmove`),
+/// keep their dependents cached), moves use [`SourceMap::move_to`] (`#lzcellmove`),
 /// and only changed values are written.
-pub fn apply_to_map<K, V>(ctx: &Context, map: &CellMap<K, V>, ops: &[DiffOp<K, V>])
+pub fn apply_to_map<K, V>(ctx: &Context, map: &SourceMap<K, V>, ops: &[DiffOp<K, V>])
 where
     K: Eq + Hash + Clone + 'static,
     V: PartialEq + Clone + 'static,
@@ -186,7 +186,7 @@ where
     }
 }
 
-impl<K, V> CellMap<K, V>
+impl<K, V> SourceMap<K, V>
 where
     K: Eq + Hash + Clone + 'static,
     V: PartialEq + Clone + 'static,
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn apply_to_map_converges_and_spares_stable_value_cell() {
         let ctx = Context::new();
-        let map: CellMap<&str, i32> = CellMap::new(&ctx);
+        let map: SourceMap<&str, i32> = SourceMap::new(&ctx);
         for (k, v) in [("a", 1), ("b", 2), ("c", 3)] {
             map.entry(&ctx, k, v);
         }
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn apply_to_map_handles_inserts_removes_updates() {
         let ctx = Context::new();
-        let map: CellMap<&str, i32> = CellMap::new(&ctx);
+        let map: SourceMap<&str, i32> = SourceMap::new(&ctx);
         for (k, v) in [("a", 1), ("b", 2), ("c", 3)] {
             map.entry(&ctx, k, v);
         }

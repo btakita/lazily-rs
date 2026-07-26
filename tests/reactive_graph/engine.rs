@@ -12,8 +12,7 @@ use serde_json::Value;
 
 use super::model::{
     COMPUTE_FAILED, Computes, GraphModel, Merges, Ref, ScopeModel, arm_failure, computes_seen,
-    count_merge, dependencies_of,
-    dependents_of, dispose, log_snapshot, merges_seen,
+    count_merge, dependencies_of, dependents_of, dispose, log_snapshot, merges_seen,
 };
 
 /// A fixture assertion the implementation does not currently satisfy.
@@ -158,8 +157,8 @@ pub fn replay<'a, M: GraphModel>(
                 // contract (the next read re-runs the body), and latching would
                 // make the engine report the very defect
                 // `failed_compute_is_never_cached.json` exists to catch.
-                let caught = catch_armed_failure(std::panic::AssertUnwindSafe(|| {
-                    match signals.get(id) {
+                let caught =
+                    catch_armed_failure(std::panic::AssertUnwindSafe(|| match signals.get(id) {
                         Some(sig) => model.read_signal(sig),
                         None => {
                             let node = *nodes
@@ -167,8 +166,7 @@ pub fn replay<'a, M: GraphModel>(
                                 .unwrap_or_else(|| panic!("{fixture}: read of unknown node {id}"));
                             model.read(node)
                         }
-                    }
-                }));
+                    }));
                 match caught {
                     // A `fail_next` compute failure: a failed read that does NOT
                     // latch `poisoned`.

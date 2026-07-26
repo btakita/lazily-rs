@@ -9,8 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::model::{
     COMPUTE_FAILED, Computes, GraphModel, Log, Merges, Poison, Ref, ScopeModel, count_computes,
-    count_merge,
-    log_push,
+    count_merge, log_push,
 };
 use lazily::Sum;
 
@@ -632,8 +631,8 @@ mod asynchronous {
             let computes = computes.clone();
             Box::pin(async move {
                 if count_computes(&computes) {
-                panic!("{COMPUTE_FAILED}");
-            }
+                    panic!("{COMPUTE_FAILED}");
+                }
                 let mut acc = offset;
                 for r in &reads {
                     match read_in_compute(&c, *r).await {

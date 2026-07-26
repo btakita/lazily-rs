@@ -19,8 +19,8 @@
 //! - **Present-set monotonicity:** the materialized set only grows (deferral,
 //!   never de-allocation).
 //!
-//! Its two specializations are [`ThreadSafeCellMap`] (input cells) and
-//! [`ThreadSafeSlotMap`] (derived slots). Mirrors the `ThreadSafeSlotMap`
+//! Its two specializations are [`ThreadSafeSourceMap`] (input cells) and
+//! [`ThreadSafeComputedMap`] (derived slots). Mirrors the `ThreadSafeComputedMap`
 //! conformance case in lazily-spec and the `Materialization` proofs (plus
 //! **confluence**) in lazily-formal.
 
@@ -130,7 +130,7 @@ struct MapInner<K, H> {
 /// Operations run against the owning [`ThreadSafeContext`].
 ///
 /// See the module docs for the eager/lazy behavior and the
-/// [`ThreadSafeCellMap`]/[`ThreadSafeSlotMap`] kind specializations.
+/// [`ThreadSafeSourceMap`]/[`ThreadSafeComputedMap`] kind specializations.
 pub struct ThreadSafeReactiveMap<K, V, H> {
     inner: Arc<MapInner<K, H>>,
     _marker: PhantomData<V>,
@@ -204,7 +204,7 @@ where
     }
 
     /// Get the value at `key`, minting the entry via `factory(&key)` first if
-    /// absent. For a [`ThreadSafeSlotMap`] this is the lazy materialization pull.
+    /// absent. For a [`ThreadSafeComputedMap`] this is the lazy materialization pull.
     pub fn get_or_insert_with(
         &self,
         ctx: &ThreadSafeContext,
@@ -273,7 +273,7 @@ where
     }
 }
 
-/// `ThreadSafeCellMap`-only surface: `set` (an input is settable).
+/// `ThreadSafeSourceMap`-only surface: `set` (an input is settable).
 impl<K, V> ThreadSafeReactiveMap<K, V, Source<V>>
 where
     K: Eq + Hash + Clone + Send + Sync + 'static,
@@ -293,7 +293,7 @@ where
     }
 }
 
-/// `ThreadSafeSlotMap`-only surface: the eager pre-mint helper.
+/// `ThreadSafeComputedMap`-only surface: the eager pre-mint helper.
 impl<K, V> ThreadSafeReactiveMap<K, V, Computed<V>>
 where
     K: Eq + Hash + Clone + Send + Sync + 'static,
@@ -316,12 +316,20 @@ where
 }
 
 /// A thread-safe **input-cell** map: every entry is an always-materialized
-/// [`Source<V>`]. The `Send + Sync` analog of [`CellMap`](crate::CellMap).
-pub type ThreadSafeCellMap<K, V> = ThreadSafeReactiveMap<K, V, Source<V>>;
+/// [`Source<V>`]. The `Send + Sync` analog of [`SourceMap`](crate::SourceMap).
+pub type ThreadSafeSourceMap<K, V> = ThreadSafeReactiveMap<K, V, Source<V>>;
 
 /// A thread-safe **derived-slot** map: entries are [`Computed<V>`] minted lazily
 /// on access or eagerly via [`materialize_all`](ThreadSafeReactiveMap::materialize_all).
-pub type ThreadSafeSlotMap<K, V> = ThreadSafeReactiveMap<K, V, Computed<V>>;
+pub type ThreadSafeComputedMap<K, V> = ThreadSafeReactiveMap<K, V, Computed<V>>;
+
+/// Deprecated alias for [`ThreadSafeSourceMap`].
+#[deprecated(note = "renamed to ThreadSafeSourceMap")]
+pub type ThreadSafeCellMap<K, V> = ThreadSafeSourceMap<K, V>;
+
+/// Deprecated alias for [`ThreadSafeComputedMap`].
+#[deprecated(note = "renamed to ThreadSafeComputedMap")]
+pub type ThreadSafeSlotMap<K, V> = ThreadSafeComputedMap<K, V>;
 
 #[cfg(test)]
 mod tests {
@@ -332,14 +340,14 @@ mod tests {
     #[test]
     fn map_is_send_sync() {
         // The whole point: a thread-safe map can live in a `Send + Sync` owner.
-        assert_send_sync::<ThreadSafeCellMap<u64, bool>>();
-        assert_send_sync::<ThreadSafeSlotMap<u64, usize>>();
+        assert_send_sync::<ThreadSafeSourceMap<u64, bool>>();
+        assert_send_sync::<ThreadSafeComputedMap<u64, usize>>();
     }
 
     #[test]
-    fn eager_cell_map_materializes_all_at_build() {
+    fn eager_source_map_materializes_all_at_build() {
         let ctx = ThreadSafeContext::new();
-        let fam: ThreadSafeCellMap<u64, bool> = ThreadSafeCellMap::new(&ctx);
+        let fam: ThreadSafeSourceMap<u64, bool> = ThreadSafeSourceMap::new(&ctx);
         for k in [1u64, 2, 3] {
             fam.set(&ctx, k, true);
         }
@@ -350,10 +358,10 @@ mod tests {
     }
 
     #[test]
-    fn lazy_slot_map_defers_until_read() {
+    fn lazy_computed_map_defers_until_read() {
         let ctx = ThreadSafeContext::new();
         // Empty map + lazy → nothing materialized until observed.
-        let fam: ThreadSafeSlotMap<u64, usize> = ThreadSafeSlotMap::new(&ctx);
+        let fam: ThreadSafeComputedMap<u64, usize> = ThreadSafeComputedMap::new(&ctx);
         assert_eq!(fam.present_count(), 0);
         assert!(!fam.is_present(&2));
         assert_eq!(fam.get_or_insert_with(&ctx, 2, |k| (*k as usize) * 10), 20);
@@ -362,9 +370,9 @@ mod tests {
     }
 
     #[test]
-    fn eager_slot_map_materializes_all_up_front() {
+    fn eager_computed_map_materializes_all_up_front() {
         let ctx = ThreadSafeContext::new();
-        let fam: ThreadSafeSlotMap<u64, usize> = ThreadSafeSlotMap::new(&ctx);
+        let fam: ThreadSafeComputedMap<u64, usize> = ThreadSafeComputedMap::new(&ctx);
         fam.materialize_all(&ctx, [7, 8], |k| *k as usize);
         assert_eq!(fam.present_count(), 2);
     }
@@ -372,10 +380,10 @@ mod tests {
     #[test]
     fn observational_transparency_eager_equals_lazy() {
         let ctx_e = ThreadSafeContext::new();
-        let eager: ThreadSafeSlotMap<u64, usize> = ThreadSafeSlotMap::new(&ctx_e);
+        let eager: ThreadSafeComputedMap<u64, usize> = ThreadSafeComputedMap::new(&ctx_e);
         eager.materialize_all(&ctx_e, [1, 2, 3], |k| (*k as usize) * 2);
         let ctx_l = ThreadSafeContext::new();
-        let lazy: ThreadSafeSlotMap<u64, usize> = ThreadSafeSlotMap::new(&ctx_l);
+        let lazy: ThreadSafeComputedMap<u64, usize> = ThreadSafeComputedMap::new(&ctx_l);
         for k in [1u64, 2, 3] {
             let ve = eager.observe(&ctx_e, &k).unwrap();
             let vl = lazy.get_or_insert_with(&ctx_l, k, |k| (*k as usize) * 2);
@@ -386,7 +394,7 @@ mod tests {
     #[test]
     fn present_set_grows_monotonically() {
         let ctx = ThreadSafeContext::new();
-        let fam: ThreadSafeSlotMap<u64, usize> = ThreadSafeSlotMap::new(&ctx);
+        let fam: ThreadSafeComputedMap<u64, usize> = ThreadSafeComputedMap::new(&ctx);
         let _ = fam.get_or_insert_with(&ctx, 5, |k| *k as usize);
         let _ = fam.get_or_insert_with(&ctx, 5, |k| *k as usize); // repeat: no growth
         let _ = fam.get_or_insert_with(&ctx, 9, |k| *k as usize);
@@ -399,7 +407,7 @@ mod tests {
         // The agent-doc liveness shape: cell inputs + a derived count that recomputes
         // reactively when a cell flips — no pull-time scan.
         let ctx = ThreadSafeContext::new();
-        let liveness: ThreadSafeCellMap<u64, bool> = ThreadSafeCellMap::new(&ctx);
+        let liveness: ThreadSafeSourceMap<u64, bool> = ThreadSafeSourceMap::new(&ctx);
         for k in [10u64, 20, 30] {
             liveness.set(&ctx, k, true);
         }
@@ -426,7 +434,7 @@ mod tests {
     fn shared_across_threads() {
         use std::thread;
         let ctx = Arc::new(ThreadSafeContext::new());
-        let fam: ThreadSafeCellMap<u64, bool> = ThreadSafeCellMap::new(&ctx);
+        let fam: ThreadSafeSourceMap<u64, bool> = ThreadSafeSourceMap::new(&ctx);
         for k in [1u64, 2, 3, 4] {
             fam.set(&ctx, k, true);
         }

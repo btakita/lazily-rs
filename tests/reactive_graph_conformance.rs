@@ -295,7 +295,10 @@ fn run_corpus<M: GraphModel>() {
     // Every fixture is either replayed or named in MODEL_SKIPS for this model —
     // asserted in both directions, so a skip that stops applying fails here
     // rather than shrinking the run silently.
-    let model_skips = MODEL_SKIPS.iter().filter(|(m, _, _)| *m == model_name).count();
+    let model_skips = MODEL_SKIPS
+        .iter()
+        .filter(|(m, _, _)| *m == model_name)
+        .count();
     assert_eq!(skipped, model_skips, "{model_name}: skip ledger is stale");
     assert_eq!(
         replayed + skipped,

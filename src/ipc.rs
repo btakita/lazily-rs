@@ -481,8 +481,8 @@ impl std::error::Error for NodeKeyError {}
 /// a `NodeKey` is producer-defined and stable across NodeId churn: a
 /// removed-then-readded entry keeps the same key, so a peer can subscribe to
 /// "entry `scores/alice`" without maintaining an out-of-band key→NodeId map.
-/// A multi-segment path addresses nested collections (an entry of a `CellMap`
-/// inside a `CellMap` entry) with no extra machinery.
+/// A multi-segment path addresses nested collections (an entry of a `SourceMap`
+/// inside a `SourceMap` entry) with no extra machinery.
 ///
 /// Length and segment count are bounded ([`NODE_KEY_MAX_LEN`],
 /// [`NODE_KEY_MAX_SEGMENTS`]) to cap attacker-controlled growth; oversized keys
@@ -604,7 +604,7 @@ pub struct NodeSnapshot {
     /// Serialized value bytes, or `Opaque` when the node is visible but
     /// type-erased serialization was not available.
     pub state: NodeState,
-    /// Optional wire-stable keyed address for this node (a `CellMap`/`SlotMap`
+    /// Optional wire-stable keyed address for this node (a `SourceMap`/`ComputedMap`
     /// entry's path). `None` keeps today's opaque-NodeId-only addressing.
     pub key: Option<NodeKey>,
 }

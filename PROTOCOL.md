@@ -35,7 +35,7 @@ Wire format: `u64` wrapped in a `"node"` field.
 
 ### NodeKey
 
-Optional wire-stable keyed address for a collection entry (a `CellMap` /
+Optional wire-stable keyed address for a collection entry (a `SourceMap` /
 `CellFamily` entry). Unlike `NodeId` — the volatile internal handle — a
 `NodeKey` is producer-defined and **stable across NodeId churn**: an entry that
 is removed and later re-added is re-minted under a *new* `NodeId` but keeps the
@@ -49,7 +49,7 @@ maintaining an out-of-band key→NodeId map.
 ```
 
 Wire format: a `/`-joined path string. A multi-segment path addresses nested
-collections (an entry of a `CellMap` inside a `CellMap` entry) with no extra
+collections (an entry of a `SourceMap` inside a `SourceMap` entry) with no extra
 machinery — each `/` introduces a deeper segment.
 
 Bounds (reject on construction and on the wire):

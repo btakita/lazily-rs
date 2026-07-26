@@ -146,11 +146,18 @@ pub use async_context::{
     AsyncSource, AsyncTeardownScope,
 };
 #[cfg(feature = "async")]
-pub use async_reactive_family::{AsyncCellMap, AsyncMapHandle, AsyncReactiveMap, AsyncSlotMap};
+#[allow(deprecated)]
+pub use async_reactive_family::{AsyncCellMap, AsyncSlotMap};
+#[cfg(feature = "async")]
+pub use async_reactive_family::{
+    AsyncComputedMap, AsyncMapHandle, AsyncReactiveMap, AsyncSourceMap,
+};
 #[cfg(feature = "webrtc")]
 pub use bridge::{BridgeHub, HubError};
 pub use cell::{Computed, Source};
-pub use cell_family::{CellMap, EntryKind, MapHandle, ReactiveMap, SlotMap};
+#[allow(deprecated)]
+pub use cell_family::{CellMap, SlotMap};
+pub use cell_family::{ComputedMap, EntryKind, MapHandle, ReactiveMap, SourceMap};
 pub use cell_tree::CellTree;
 #[cfg(feature = "ipc")]
 pub use command::{
@@ -317,8 +324,11 @@ pub use thread_safe::{
     ThreadSafeTeardownScope,
 };
 #[cfg(feature = "thread-safe")]
+#[allow(deprecated)]
+pub use thread_safe_reactive_family::{ThreadSafeCellMap, ThreadSafeSlotMap};
+#[cfg(feature = "thread-safe")]
 pub use thread_safe_reactive_family::{
-    ThreadSafeCellMap, ThreadSafeMapHandle, ThreadSafeReactiveMap, ThreadSafeSlotMap,
+    ThreadSafeComputedMap, ThreadSafeMapHandle, ThreadSafeReactiveMap, ThreadSafeSourceMap,
 };
 pub use time::{
     CronCell, CronCore, DeadlineCell, DeadlineCore, Deadlined, IntervalCell, IntervalCore,

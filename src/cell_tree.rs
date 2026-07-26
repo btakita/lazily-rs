@@ -10,13 +10,13 @@
 //! - **`id: Id`** — a *stable* identity that survives reorder and value edits.
 //! - **`value: Source<V>`** — the node's own value cell. Editing node `X`'s
 //!   value invalidates only readers of `X` (fine-grained), never a sibling.
-//! - **ordered children** — a [`CellMap`] of child id → child node, so child
+//! - **ordered children** — a [`SourceMap`] of child id → child node, so child
 //!   *membership* and *order* are reactive **per level**: a reader of one node's
 //!   `child_ids` / `len` is invalidated only when *that* node gains, loses, or
 //!   reorders a child — sibling subtrees and deeper descendants don't disturb it.
 //!
 //! Child order is mutated atomically via [`CellTree::move_child`], built on
-//! [`CellMap::move_to`] (`#lzcellmove`): a reorder keeps each child node's cell
+//! [`SourceMap::move_to`] (`#lzcellmove`): a reorder keeps each child node's cell
 //! identity, dependents, and lineage and bumps order once.
 //!
 //! `CellTree` is cheap to [`Clone`] (an `Rc` to shared node state), giving
@@ -51,7 +51,7 @@ use std::rc::Rc;
 
 use crate::Context;
 use crate::cell::Source;
-use crate::cell_family::CellMap;
+use crate::cell_family::SourceMap;
 use crate::context::ComputeOps;
 
 /// A node in an ordered, stably-keyed reactive tree (`#lzordtree`).
@@ -70,7 +70,7 @@ struct CellTreeNode<Id, V> {
     /// Reactive ordered membership of this node's direct children (the keys are
     /// child ids; values are unit). Supplies per-level `child_ids`/`len`/order
     /// reactivity and atomic move (`#lzcellmove`).
-    order: CellMap<Id, ()>,
+    order: SourceMap<Id, ()>,
     /// Non-reactive storage of the actual child node handles, looked up by id.
     /// Kept in lockstep with `order`'s key set.
     nodes: RefCell<HashMap<Id, CellTree<Id, V>>>,
@@ -95,7 +95,7 @@ where
             inner: Rc::new(CellTreeNode {
                 id,
                 value: ctx.source(value),
-                order: CellMap::new(ctx),
+                order: SourceMap::new(ctx),
                 nodes: RefCell::new(HashMap::new()),
             }),
         }

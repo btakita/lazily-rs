@@ -62,7 +62,7 @@ shm = ["ipc", "dep:libc"]
 # DEPRECATED no-op: the typed Harel state-chart engine (`ChartBuilder`,
 # `StateChart`, reactive transition engine) is now part of core — pure Rust, no
 # extra dependencies, always available, alongside the other core reactive
-# constructs (`CellTree`, `CellMap`, `reconcile`). This alias is retained so
+# constructs (`CellTree`, `SourceMap`, `reconcile`). This alias is retained so
 # existing `features = ["statechart"]` consumers keep building; it will be removed
 # in a future release.
 statechart = []

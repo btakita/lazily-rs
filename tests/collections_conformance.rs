@@ -17,8 +17,8 @@ use std::fs;
 use std::rc::Rc;
 
 use lazily::{
-    Block, CellMap, CellTree, Context, DiffOp, Match, SemTree, Source, TextCrdt, TextVersionVector,
-    align, apply_to_map, assign_stable_keys, block_key, reconcile,
+    Block, CellTree, Context, DiffOp, Match, SemTree, Source, SourceMap, TextCrdt,
+    TextVersionVector, align, apply_to_map, assign_stable_keys, block_key, reconcile,
 };
 use serde_json::Value;
 
@@ -38,8 +38,8 @@ fn spec_fixtures_present() -> bool {
     std::path::Path::new(SPEC_DIR).exists()
 }
 
-fn build_initial(ctx: &Context, initial: &Value) -> CellMap<String, V> {
-    let map: CellMap<String, V> = CellMap::new(ctx);
+fn build_initial(ctx: &Context, initial: &Value) -> SourceMap<String, V> {
+    let map: SourceMap<String, V> = SourceMap::new(ctx);
     let order = initial
         .get("order")
         .and_then(|v| v.as_array())
@@ -59,7 +59,11 @@ fn build_initial(ctx: &Context, initial: &Value) -> CellMap<String, V> {
     map
 }
 
-fn value_reader(ctx: &Context, map: &CellMap<String, V>, key: &str) -> lazily::Computed<Option<V>> {
+fn value_reader(
+    ctx: &Context,
+    map: &SourceMap<String, V>,
+    key: &str,
+) -> lazily::Computed<Option<V>> {
     let map = map.clone();
     let key = key.to_string();
     ctx.computed(move |ctx| map.get(ctx, &key))
@@ -67,7 +71,7 @@ fn value_reader(ctx: &Context, map: &CellMap<String, V>, key: &str) -> lazily::C
 
 /// Apply a fixture `op` to the live collection. Returns the removed key, if any,
 /// so the caller can exclude it from the survivor value-reader checks.
-fn apply_op(ctx: &Context, map: &CellMap<String, V>, op: &Value) -> Option<String> {
+fn apply_op(ctx: &Context, map: &SourceMap<String, V>, op: &Value) -> Option<String> {
     let ty = op.get("type").and_then(|v| v.as_str()).expect("op.type");
     match ty {
         "set_value" => {
@@ -121,7 +125,7 @@ fn apply_op(ctx: &Context, map: &CellMap<String, V>, op: &Value) -> Option<Strin
     }
 }
 
-fn assert_state(ctx: &Context, map: &CellMap<String, V>, expected: &Value) {
+fn assert_state(ctx: &Context, map: &SourceMap<String, V>, expected: &Value) {
     if let Some(order) = expected.get("order").and_then(|v| v.as_array()) {
         let want: Vec<String> = order
             .iter()
@@ -221,7 +225,7 @@ fn assert_invalidation(
 /// handle (node identity) across the op — the atomic-move guarantee rather than
 /// a remove + re-mint.
 fn assert_handle_stable(
-    map: &CellMap<String, V>,
+    map: &SourceMap<String, V>,
     expected: &Value,
     handle_before: &HashMap<String, Option<Source<V>>>,
 ) {
@@ -390,10 +394,10 @@ fn run_reconcile_fixture(name: &str) {
         }
     }
 
-    // 2. Driving a live CellMap from `prior` with the op set converges to
+    // 2. Driving a live SourceMap from `prior` with the op set converges to
     //    result_order.
     let ctx = Context::new();
-    let map: CellMap<String, V> = CellMap::new(&ctx);
+    let map: SourceMap<String, V> = SourceMap::new(&ctx);
     for (k, v) in &prior {
         map.entry(&ctx, k.clone(), *v);
     }
@@ -412,7 +416,7 @@ fn run_reconcile_fixture(name: &str) {
         .unwrap_or_default();
     if !stable.is_empty() {
         let ctx = Context::new();
-        let map: CellMap<String, V> = CellMap::new(&ctx);
+        let map: SourceMap<String, V> = SourceMap::new(&ctx);
         for (k, v) in &prior {
             map.entry(&ctx, k.clone(), *v);
         }
