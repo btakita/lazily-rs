@@ -40,7 +40,7 @@ use std::rc::Rc;
 
 use crate::Context;
 use crate::cell::Computed;
-use crate::cell_tree::SourceTree;
+use crate::source_tree::SourceTree;
 
 /// A shared fold `(node value, children derived) -> derived`.
 type FoldFn<V, D> = Rc<dyn Fn(&V, &[D]) -> D>;

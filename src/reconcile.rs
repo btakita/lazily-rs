@@ -36,7 +36,7 @@ use std::hash::Hash;
 
 use crate::Context;
 use crate::cell_family::SourceMap;
-use crate::cell_tree::SourceTree;
+use crate::source_tree::SourceTree;
 
 /// A single reconciliation operation, keyed by stable id.
 ///

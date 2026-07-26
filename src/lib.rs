@@ -60,11 +60,11 @@ mod async_reactive_family;
 mod bridge;
 mod cell;
 mod cell_family;
-mod cell_tree;
 #[cfg(feature = "ipc")]
 mod command;
 mod context;
 pub mod reactive_graph;
+mod source_tree;
 /// #lzspecedgeindex audit probe (`--cfg audit_probe`): records the
 /// `pending_effects` depth seen by `dispose_effect`, so the audit harness can
 /// prove it actually exercises the dispose-during-flush path. An earlier
@@ -159,9 +159,6 @@ pub use cell::{Computed, Source};
 #[allow(deprecated)]
 pub use cell_family::{CellMap, SlotMap};
 pub use cell_family::{ComputedMap, EntryKind, MapHandle, ReactiveMap, SourceMap};
-#[allow(deprecated)]
-pub use cell_tree::CellTree;
-pub use cell_tree::SourceTree;
 #[cfg(feature = "ipc")]
 pub use command::{
     CallState, CommandApplyStatus, CommandCancel, CommandEvent, CommandEventKind, CommandEvents,
@@ -301,6 +298,9 @@ pub use service::{
 };
 #[cfg(feature = "signaling-client")]
 pub use signaling_client::{ClientMessage, ServerMessage, SignalingClient, SignalingError};
+#[allow(deprecated)]
+pub use source_tree::CellTree;
+pub use source_tree::SourceTree;
 pub use spill::{SpillMode, SpillPage, SpillStore};
 pub use stable_id::{
     Alignment, Block, BlockKey, Match, align, assign_stable_keys, block_key, similarity,
