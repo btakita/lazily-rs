@@ -21,6 +21,8 @@ LEAN_FORMAL_DIR ?= ../lazily-formal
 	test-async-resolve \
 	test-loom \
 	test-distributed \
+	test-crdt-plane \
+	test-distributed-conformance \
 	test-ffi \
 	test-ffi-binary \
 	test-ipc \
@@ -47,7 +49,7 @@ LEAN_FORMAL_DIR ?= ../lazily-formal
 	benchmark-update \
 	instrumentation-profile
 
-	check: fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-reliable-sync-conformance test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-check conformance-coverage
+	check: fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-reliable-sync-conformance test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-check conformance-coverage
 
 fmt:
 >$(CARGO) fmt --all --check
@@ -103,6 +105,16 @@ test-distributed:
 # DataChannel transport (`webrtc`), a combo no other target exercises.
 test-crdt-plane:
 >$(CARGO) test --locked --features "distributed webrtc"
+
+# Canonical distributed conformance (#verifycrdtplaneruntimein): the ingest
+# op-count contract — a SUPERSEDED op still counts, because it entered the log;
+# only redelivery of an already-logged op applies zero. lazily-cpp counted ops
+# that changed the winner instead and reported 4 of 5. rs is correct (its log
+# sorts and counts on insertion) but had no runner at all, so the same slip
+# would have gone unnoticed. Named explicitly rather than left riding on
+# test-crdt-plane's broader feature run, so it is visible in `check`.
+test-distributed-conformance:
+>$(CARGO) test --locked --features "distributed webrtc" --test distributed_conformance
 
 test-ffi:
 >$(CARGO) test --locked --features ffi --test ffi
