@@ -8,7 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::model::{
-    Computes, GraphModel, Log, Merges, Poison, Ref, ScopeModel, count_computes, count_merge,
+    COMPUTE_FAILED, Computes, GraphModel, Log, Merges, Poison, Ref, ScopeModel, count_computes,
+    count_merge,
     log_push,
 };
 use lazily::Sum;
@@ -17,12 +18,30 @@ use lazily::Sum;
 ///
 /// Reading a disposed node panics in every model — that is the library's
 /// expression of the corpus's `read_after_dispose`.
+///
+/// A `fail_next`-armed compute failure is deliberately NOT swallowed here: it is
+/// re-raised for the engine's `catch_armed_failure` to convert. Collapsing both
+/// into `Err(())` would make the engine latch the id as permanently unreadable,
+/// which is correct for disposal and wrong for a failed compute — the next read
+/// must re-run the body. Conflating them made the engine report the very defect
+/// `failed_compute_is_never_cached.json` exists to catch.
 pub fn quiet<R>(f: impl FnOnce() -> R) -> Result<R, ()> {
     let prev = panic::take_hook();
     panic::set_hook(Box::new(|_| {}));
     let out = panic::catch_unwind(AssertUnwindSafe(f));
     panic::set_hook(prev);
-    out.map_err(|_| ())
+    match out {
+        Ok(v) => Ok(v),
+        Err(payload) => {
+            if payload
+                .downcast_ref::<String>()
+                .is_some_and(|m| m.contains(COMPUTE_FAILED))
+            {
+                panic::resume_unwind(payload);
+            }
+            Err(())
+        }
+    }
 }
 
 // -- Context ----------------------------------------------------------------
@@ -70,7 +89,9 @@ mod basic {
             // Counted here, inside the body the runtime invokes — see
             // `Computes`. Counting at the construction site instead would make
             // a lazy memo indistinguishable from an eager signal.
-            count_computes(&computes);
+            if count_computes(&computes) {
+                panic!("{COMPUTE_FAILED}");
+            }
             let mut acc = offset;
             for r in &reads {
                 acc += tracked(c, *r, &poison);
@@ -349,7 +370,9 @@ mod threadsafe {
         let poison = poison.clone();
         let computes = computes.clone();
         move |c: &ThreadSafeContext| {
-            count_computes(&computes);
+            if count_computes(&computes) {
+                panic!("{COMPUTE_FAILED}");
+            }
             let mut acc = offset;
             for r in &reads {
                 acc += tracked(c, *r, &poison);
@@ -608,7 +631,9 @@ mod asynchronous {
             let poison = poison.clone();
             let computes = computes.clone();
             Box::pin(async move {
-                count_computes(&computes);
+                if count_computes(&computes) {
+                panic!("{COMPUTE_FAILED}");
+            }
                 let mut acc = offset;
                 for r in &reads {
                     match read_in_compute(&c, *r).await {

@@ -11,7 +11,8 @@ use std::sync::atomic::Ordering;
 use serde_json::Value;
 
 use super::model::{
-    Computes, GraphModel, Merges, Ref, ScopeModel, computes_seen, count_merge, dependencies_of,
+    COMPUTE_FAILED, Computes, GraphModel, Merges, Ref, ScopeModel, arm_failure, computes_seen,
+    count_merge, dependencies_of,
     dependents_of, dispose, log_snapshot, merges_seen,
 };
 
@@ -54,6 +55,27 @@ fn strs(v: &Value) -> Vec<String> {
 
 /// Replay one op stream. `tail` is the `scenarios` shape's `expected` block,
 /// evaluated against the final world state when present.
+/// Run `f`, converting a `fail_next`-armed compute panic into `Err(())` and
+/// letting every other panic through unchanged.
+///
+/// The two are different contracts and must not be conflated: an armed failure
+/// is the corpus asking "does this node re-run on the next read", while any
+/// other panic is a genuine defect the runner must not swallow.
+fn catch_armed_failure<T>(f: impl FnOnce() -> T + std::panic::UnwindSafe) -> Result<T, ()> {
+    match std::panic::catch_unwind(f) {
+        Ok(v) => Ok(v),
+        Err(payload) => {
+            let armed = payload
+                .downcast_ref::<String>()
+                .is_some_and(|m| m.contains(COMPUTE_FAILED));
+            if !armed {
+                std::panic::resume_unwind(payload);
+            }
+            Err(())
+        }
+    }
+}
+
 pub fn replay<'a, M: GraphModel>(
     model: &'a M,
     fixture: &str,
@@ -130,21 +152,32 @@ pub fn replay<'a, M: GraphModel>(
                 Err(())
             } else {
                 model.poison().store(false, Ordering::SeqCst);
-                let raw = match signals.get(id) {
-                    Some(sig) => model.read_signal(sig),
-                    None => {
-                        let node = *nodes
-                            .get(id)
-                            .unwrap_or_else(|| panic!("{fixture}: read of unknown node {id}"));
-                        model.read(node)
+                // A `fail_next`-armed compute body panics. Catch it here and
+                // report a failed read WITHOUT latching `poisoned`: disposal is
+                // permanent by contract, a failed compute is recoverable by
+                // contract (the next read re-runs the body), and latching would
+                // make the engine report the very defect
+                // `failed_compute_is_never_cached.json` exists to catch.
+                let caught = catch_armed_failure(std::panic::AssertUnwindSafe(|| {
+                    match signals.get(id) {
+                        Some(sig) => model.read_signal(sig),
+                        None => {
+                            let node = *nodes
+                                .get(id)
+                                .unwrap_or_else(|| panic!("{fixture}: read of unknown node {id}"));
+                            model.read(node)
+                        }
                     }
-                };
-                match raw {
-                    Err(()) => {
+                }));
+                match caught {
+                    // A `fail_next` compute failure: a failed read that does NOT
+                    // latch `poisoned`.
+                    Err(_) => Err(()),
+                    Ok(Err(())) => {
                         poisoned.insert(id.to_owned());
                         Err(())
                     }
-                    Ok(v) => {
+                    Ok(Ok(v)) => {
                         if model.poison().load(Ordering::SeqCst) {
                             // A live reader that still names a disposed
                             // dependency errors on its next recompute, and stays
@@ -327,6 +360,18 @@ pub fn replay<'a, M: GraphModel>(
                 Ok(v) => op_value = Some(v),
                 Err(()) => op_error = true,
             },
+            "fail_next" => {
+                // Arms the next N computes of an existing node to fail. It
+                // creates nothing and touches no dependency set.
+                let id = op["id"].as_str().unwrap();
+                let n = op["count"].as_u64().unwrap_or(1) as usize;
+                arm_failure(
+                    computes
+                        .get(id)
+                        .unwrap_or_else(|| panic!("{fixture}: fail_next on uncounted node {id}")),
+                    n,
+                );
+            }
             "set_cell" => {
                 let id = op["id"].as_str().unwrap();
                 match nodes[id] {
@@ -526,11 +571,11 @@ pub fn replay<'a, M: GraphModel>(
                         );
                     }
                 }
-                "error" => match want.as_str() {
-                    Some("read_after_dispose") => check!("error", op_error, true),
-                    None => check!("error", op_error, false),
-                    Some(other) => panic!("{fixture}: unknown expected error {other}"),
-                },
+                // Any non-null error code means "this op must fail"; null means
+                // "must not". The runner does not model error identity — the
+                // fixtures carry the code so the contract is legible, and each
+                // binding's own tests pin which error it raises.
+                "error" => check!("error", op_error, !want.is_null()),
                 "value" => {
                     if expect.get("error").and_then(Value::as_str).is_none() {
                         // The signal fixtures assert `value` on the `signal`

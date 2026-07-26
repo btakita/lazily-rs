@@ -58,13 +58,14 @@ const SPEC_DIR: &str = "../lazily-spec/conformance/reactive-graph";
 
 /// The canonical fixture set. Asserted against the directory listing so a
 /// fixture added or renamed upstream fails loudly instead of going unrun.
-const FIXTURES: [&str; 20] = [
+const FIXTURES: [&str; 21] = [
     "churn_returns_to_baseline.json",
     "cross_scope_teardown_hazard.json",
     "disarm_disposes_nothing.json",
     "disposal_does_not_run_surviving_effects.json",
     "dispose_detaches_edges_both_directions.json",
     "dispose_signal_reverts_to_lazy.json",
+    "failed_compute_is_never_cached.json",
     "read_after_dispose_is_an_error.json",
     "signal_materializes_once_per_batch.json",
     "signal_materializes_without_a_read.json",
@@ -93,6 +94,30 @@ const FIXTURES: [&str; 20] = [
 /// fixture: the runner asserts this list matches the observed set exactly, so a
 /// new divergence fails the build and a fixed one fails it until the entry is
 /// removed.
+/// Fixtures one MODEL cannot replay, with the capability gap that blocks it.
+///
+/// Separate from a divergence: a divergence is a finding the binding could fix,
+/// this is a fixture the RUNNER cannot express against that context.
+///
+/// `AsyncModel`'s compute returns `BoxFuture<Output = i64>` — no error channel —
+/// and the model blocks on its own runtime inside `read`. A `fail_next`-armed
+/// panic therefore kills the spawned task instead of surfacing, and the awaiting
+/// read never resolves: the test hangs rather than reporting anything. Both
+/// alternatives were worse than a named skip. Widening the compute to a `Result`
+/// would reshape every async fixture replay to chase one fixture. Returning a
+/// sentinel value and reporting the error from `read` would cache the sentinel,
+/// so the node would not re-run, and the fixture would report a divergence that
+/// is an artifact of the runner rather than a finding against lazily-rs — which
+/// implements the retry correctly
+/// (`AsyncSlotState::Error | AsyncSlotState::Empty => spawn_async_compute`).
+///
+/// Asserted in both directions: an entry that stops applying fails the test.
+const MODEL_SKIPS: &[(&str, &str, &str)] = &[(
+    "AsyncContext",
+    "failed_compute_is_never_cached.json",
+    "compute returns BoxFuture<Output = i64> with no error channel - an armed panic kills the spawned task and the blocking read never resolves",
+)];
+
 const KNOWN_DIVERGENCES: &[&str] = &[
     // `#lzfeedbackdrain` (design §9.1 / §8): the bounded effect drain lands on
     // `Context` and `ThreadSafeContext`, so both report exhaustion for the
@@ -153,7 +178,17 @@ fn run_corpus<M: GraphModel>() {
     let mut total_checks = 0usize;
     let mut observed_divergences: BTreeSet<String> = BTreeSet::new();
 
+    let mut skipped = 0usize;
     for name in FIXTURES {
+        if let Some((_, _, reason)) = MODEL_SKIPS
+            .iter()
+            .find(|(m, f, _)| *m == model_name && *f == name)
+        {
+            // Loud, named, per-model skip. Silent skipping is the anti-pattern.
+            eprintln!("SKIP reactive-graph[{model_name}] {name}: {reason}");
+            skipped += 1;
+            continue;
+        }
         let fx = load(name);
         // Dispatch on the fixture's declared `shape`, not on its filename: a
         // filename special case goes stale silently the moment a second
@@ -257,8 +292,13 @@ fn run_corpus<M: GraphModel>() {
     );
 
     // Positive assertion: the runner must have actually executed the corpus.
+    // Every fixture is either replayed or named in MODEL_SKIPS for this model —
+    // asserted in both directions, so a skip that stops applying fails here
+    // rather than shrinking the run silently.
+    let model_skips = MODEL_SKIPS.iter().filter(|(m, _, _)| *m == model_name).count();
+    assert_eq!(skipped, model_skips, "{model_name}: skip ledger is stale");
     assert_eq!(
-        replayed,
+        replayed + skipped,
         FIXTURES.len(),
         "{model_name}: did not replay every fixture"
     );

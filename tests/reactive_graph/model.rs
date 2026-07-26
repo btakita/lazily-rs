@@ -66,16 +66,56 @@ pub type Poison = Arc<AtomicBool>;
 /// runtime's behaviour, which is exactly the difference an eager signal and the
 /// lazy memo it is built on are distinguished by.
 ///
-/// `Arc<AtomicUsize>` rather than `Rc<Cell<usize>>` because thread-safe and
-/// async compute closures must be `Send + Sync`.
-pub type Computes = Arc<AtomicUsize>;
+/// `Arc<_>` rather than `Rc<Cell<usize>>` because thread-safe and async compute
+/// closures must be `Send + Sync`.
+///
+/// It also carries the `fail_next` arming, so the "count this run" and "is this
+/// run armed to fail" decisions happen at one place in one order: the count
+/// moves FIRST, so an armed run is counted exactly like a successful one. That
+/// ordering is what lets `failed_compute_is_never_cached.json` assert the retry
+/// on `computes_of` rather than on the error — a binding that caches a failure
+/// raises the same error on every read while running the body once.
+#[derive(Debug, Default)]
+pub struct ComputeCounter {
+    count: AtomicUsize,
+    armed: AtomicUsize,
+}
 
-pub fn count_computes(computes: &Computes) {
-    computes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+pub type Computes = Arc<ComputeCounter>;
+
+/// The panic payload a `fail_next`-armed compute body raises. A runner-owned
+/// sentinel, not a library error: the contract under test is that the library
+/// does not CACHE it.
+pub const COMPUTE_FAILED: &str = "reactive-graph: compute_failed (fail_next)";
+
+/// Count this invocation and report whether it is armed to fail.
+pub fn count_computes(computes: &Computes) -> bool {
+    use std::sync::atomic::Ordering::SeqCst;
+    computes.count.fetch_add(1, SeqCst);
+    loop {
+        let n = computes.armed.load(SeqCst);
+        if n == 0 {
+            return false;
+        }
+        if computes
+            .armed
+            .compare_exchange(n, n - 1, SeqCst, SeqCst)
+            .is_ok()
+        {
+            return true;
+        }
+    }
+}
+
+/// Arm the next `n` computes of this node to fail.
+pub fn arm_failure(computes: &Computes, n: usize) {
+    computes
+        .armed
+        .fetch_add(n.max(1), std::sync::atomic::Ordering::SeqCst);
 }
 
 pub fn computes_seen(computes: &Computes) -> usize {
-    computes.load(std::sync::atomic::Ordering::SeqCst)
+    computes.count.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// Cumulative merge-fold counter for one merge cell, backing the corpus's
