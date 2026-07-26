@@ -3811,6 +3811,110 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    // #lzqfrs Phase-3 prerequisite: does ThreadSafeContext need a multi-root
+    // `clear_slots`, or does `batch()` already close that gap?
+    //
+    // The queue-family plan assumed four reader-kind handles meant four frontier
+    // walks and queued a new multi-root clear API. It does not: `clear_slot` pushes
+    // into `state.batched_slots` while `batch_depth > 0`, and `finish_batch` sorts,
+    // dedups, and calls `flush_batched_invalidations` exactly once, handing every
+    // collected root to a single `clear_frontier_locked`.
+    //
+    // Measuring it took a second attempt worth recording. Counting recomputes of a
+    // shared downstream does NOT separate the cases: `computed` is guarded, so when
+    // the cleared nodes recompute to the same values the downstream is correctly
+    // suppressed and batched/unbatched look identical. The observable that does
+    // separate them is the instrumented lock site the flush runs under — one flush
+    // is one `SetCellInvalidation` acquisition, N flushes are N.
+    //
+    // Lives in-crate because `site_snapshots()` is `pub(crate)`; widening the public
+    // API just to measure this was not worth it.
+    #[cfg(feature = "instrumentation")]
+    #[test]
+    fn batch_gives_clear_a_single_multi_root_frontier() {
+        use crate::instrumentation::ThreadSafeLockSite;
+
+        fn invalidation_acquisitions(ctx: &ThreadSafeContext) -> u64 {
+            ctx.inner
+                .lock_instrumentation
+                .site_snapshots()
+                .iter()
+                .find(|s| s.site == ThreadSafeLockSite::SetCellInvalidation)
+                .map(|s| s.lock_acquisitions)
+                .expect("SetCellInvalidation is a known lock site")
+        }
+
+        let ctx = ThreadSafeContext::new();
+
+        // Four independent roots, mirroring a queue's four reader-kind handles.
+        let roots: Vec<_> = (0..4).map(|i| ctx.source(i as i64)).collect();
+        let derived: Vec<_> = roots
+            .iter()
+            .map(|root| {
+                let root = *root;
+                ctx.computed(move |cx| cx.get(&root) * 2)
+            })
+            .collect();
+        for d in &derived {
+            let _ = ctx.get(d);
+        }
+
+        // Batched: four clears, one flush.
+        let before = invalidation_acquisitions(&ctx);
+        ctx.batch(|_| {
+            for d in &derived {
+                ctx.clear(d);
+            }
+        });
+        let batched = invalidation_acquisitions(&ctx) - before;
+
+        for d in &derived {
+            let _ = ctx.get(d);
+        }
+
+        // The discriminator is ROOT COUNT, not batched-vs-unbatched. Two earlier
+        // probes failed and both failures are informative: recompute counts cannot
+        // separate the cases (the guard suppresses an unchanged downstream), and
+        // batched-vs-unbatched cannot either, because `SetCellInvalidation` is
+        // recorded only by `flush_batched_invalidations` — the unbatched path is not
+        // instrumented, so that control read 0 and proved nothing.
+        //
+        // What the claim actually says is "one flush no matter how many roots". So
+        // clear twice as many handles in one batch: still one flush if the roots are
+        // coalesced, eight if each walks on its own.
+        let wide: Vec<_> = (0..8)
+            .map(|i| {
+                let root = ctx.source(i as i64);
+                ctx.computed(move |cx| cx.get(&root) * 2)
+            })
+            .collect();
+        for d in &wide {
+            let _ = ctx.get(d);
+        }
+        let before = invalidation_acquisitions(&ctx);
+        ctx.batch(|_| {
+            for d in &wide {
+                ctx.clear(d);
+            }
+        });
+        let wide_batched = invalidation_acquisitions(&ctx) - before;
+
+        assert_eq!(
+            wide_batched, 1,
+            "eight clears in one batch must ALSO be one flush, got {wide_batched}; \
+             a count that tracks the number of roots means no coalescing"
+        );
+        assert_eq!(
+            batched, wide_batched,
+            "flush count must be independent of how many roots were cleared \
+             (four roots -> {batched}, eight roots -> {wide_batched})"
+        );
+
+        for (i, d) in derived.iter().enumerate() {
+            assert_eq!(ctx.get(d), (i as i64) * 2);
+        }
+    }
+
     // -- #lzspecedgeindex disposal ----------------------------------------
 
     #[test]
