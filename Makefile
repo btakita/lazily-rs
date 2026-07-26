@@ -155,8 +155,12 @@ test-collections-family-conformance:
 # AsyncQueueCell appears this goes red and names the runner to extend. Wired into
 # `check` on purpose — the collections gate spent its whole life compiling to
 # "running 0 tests" because no target ran it.
+# Needs `thread-safe`: the thread-safe flavor replay is behind that cfg, so the
+# featureless spelling compiles the module out and reports 3 passed instead of 6 —
+# a gate quietly running half of itself. Verified: without the feature this target
+# printed "3 passed"; with it, 6.
 test-queue-family-conformance:
->$(CARGO) test --locked --test queue_family_conformance
+>$(CARGO) test --locked --features thread-safe --test queue_family_conformance
 
 # Reactive queue conformance (#lzqueue): lazily-rs replays the canonical compute
 # fixtures in lazily-spec/conformance/collections/ `queuecell_*.json` — SPSC

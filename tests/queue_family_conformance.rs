@@ -65,7 +65,7 @@ const LEDGER: &[Flavor] = &[
     Flavor {
         name: "thread-safe",
         marker_type: "ThreadSafeQueueCell",
-        shipped: false,
+        shipped: true,
     },
     Flavor {
         name: "async",
@@ -229,4 +229,287 @@ fn shipped_flavor_replays_the_corpus() {
         "no fixture carried an expected.invalidates matrix — the reader-kind \
          independence contract would be unasserted"
     );
+}
+
+// -- Thread-safe flavor: the canonical corpus, actually replayed ---------------
+//
+// The ledger flag above went `true` in the same change that added the replay
+// below, and that pairing is the whole point. Flipping the flag alone would
+// silence the absence guard while testing nothing — the precise failure this file
+// was built to catch. `shipped` must mean "the corpus runs against it".
+//
+// This replays the same `queuecell_*.json` fixtures `queue_conformance.rs` runs
+// against the single-threaded shell, but through `ThreadSafeQueueCell`, asserting
+// the reader-kind values AND the `invalidates` matrix per step. `invalidates`
+// lives under `expected`; a runner reading it at step level would find nothing.
+#[cfg(feature = "thread-safe")]
+mod thread_safe_flavor {
+    use super::{QUEUE_FIXTURES, SPEC_DIR, spec_fixtures_present};
+    use lazily::{ThreadSafeContext, ThreadSafeQueueCell};
+    use serde_json::Value;
+    use std::fs;
+
+    type V = String;
+
+    struct Readers {
+        head: lazily::Computed<Option<V>>,
+        len: lazily::Computed<usize>,
+        is_empty: lazily::Computed<bool>,
+        is_full: lazily::Computed<bool>,
+        closed: lazily::Computed<bool>,
+    }
+
+    // Derived readers OVER the queue's readers, so "was it invalidated" is a real
+    // question about a graph node rather than about a cached number.
+    fn make_readers(ctx: &ThreadSafeContext, q: &ThreadSafeQueueCell<V>) -> Readers {
+        let (a, b, c, d, e) = (q.clone(), q.clone(), q.clone(), q.clone(), q.clone());
+        Readers {
+            head: ctx.computed(move |cx| a.head(cx)),
+            len: ctx.computed(move |cx| b.len(cx)),
+            is_empty: ctx.computed(move |cx| c.is_empty(cx)),
+            is_full: ctx.computed(move |cx| d.is_full(cx)),
+            closed: ctx.computed(move |cx| e.closed(cx)),
+        }
+    }
+
+    fn materialize(ctx: &ThreadSafeContext, r: &Readers) {
+        let _ = ctx.get(&r.head);
+        let _ = ctx.get(&r.len);
+        let _ = ctx.get(&r.is_empty);
+        let _ = ctx.get(&r.is_full);
+        let _ = ctx.get(&r.closed);
+    }
+
+    fn replay(name: &str) -> usize {
+        let text = fs::read_to_string(format!("{SPEC_DIR}/{name}"))
+            .unwrap_or_else(|e| panic!("canonical fixture {name} unreadable: {e}"));
+        let fixture: Value = serde_json::from_str(&text).expect("fixture parses");
+        let initial = &fixture["initial"];
+
+        let ctx = ThreadSafeContext::new();
+        let q = match initial["capacity"].as_u64() {
+            Some(cap) => ThreadSafeQueueCell::<V>::with_capacity(&ctx, cap as usize),
+            None => ThreadSafeQueueCell::<V>::new(&ctx),
+        };
+        assert!(
+            initial["elements"]
+                .as_array()
+                .map(|a| a.is_empty())
+                .unwrap_or(true),
+            "this runner does not seed initial.elements; a fixture needing it must \
+             extend the runner rather than be skipped"
+        );
+
+        let r = make_readers(&ctx, &q);
+        let steps = fixture["steps"].as_array().expect("steps array");
+        assert!(!steps.is_empty(), "a replay of zero steps is not a replay");
+
+        for (i, step) in steps.iter().enumerate() {
+            materialize(&ctx, &r);
+
+            let op = &step["op"];
+            let ty = op["type"].as_str().expect("op type");
+            let got_returns: Option<String> = match ty {
+                "push" | "try_push" => {
+                    let v = op["value"].as_str().expect("push value").to_string();
+                    match q.try_push(&ctx, v) {
+                        Ok(()) => Some("Ok".into()),
+                        Err(e) => Some(format!("{e:?}")),
+                    }
+                }
+                "pop" | "try_pop" => match q.try_pop(&ctx) {
+                    Ok(v) => Some(v),
+                    Err(e) => Some(format!("{e:?}")),
+                },
+                "close" => {
+                    q.close(&ctx);
+                    None
+                }
+                "batch" => {
+                    let inner = op["ops"].as_array().expect("batch ops");
+                    ctx.batch(|_| {
+                        for sub in inner {
+                            assert_eq!(
+                                sub["type"].as_str(),
+                                Some("push"),
+                                "batch currently only wraps pushes"
+                            );
+                            let v = sub["value"].as_str().expect("value").to_string();
+                            q.try_push(&ctx, v).expect("batched push");
+                        }
+                    });
+                    None
+                }
+                other => panic!("{name} step {i}: unhandled op `{other}`"),
+            };
+
+            let expected = &step["expected"];
+
+            // `invalidates` BEFORE any read — reading revalidates.
+            if let Some(inv) = expected.get("invalidates") {
+                for (key, node_valid) in [
+                    ("head", ctx.is_set(&r.head)),
+                    ("len", ctx.is_set(&r.len)),
+                    ("is_empty", ctx.is_set(&r.is_empty)),
+                    ("is_full", ctx.is_set(&r.is_full)),
+                    ("closed", ctx.is_set(&r.closed)),
+                ] {
+                    if let Some(want) = inv.get(key).and_then(|v| v.as_bool()) {
+                        assert_eq!(
+                            !node_valid, want,
+                            "{name} step {i}: invalidates.{key} — thread-safe flavor \
+                             disagrees with the canonical fixture"
+                        );
+                    }
+                }
+            }
+
+            if let Some(want) = step.get("returns").and_then(|v| v.as_str()) {
+                let got = got_returns.as_deref().unwrap_or("");
+                assert!(
+                    got == want || got.starts_with(want),
+                    "{name} step {i}: returns `{got}`, fixture says `{want}`"
+                );
+            }
+
+            if let Some(want) = expected.get("len").and_then(|v| v.as_u64()) {
+                assert_eq!(q.len(&ctx) as u64, want, "{name} step {i}: len");
+            }
+            if let Some(want) = expected.get("is_empty").and_then(|v| v.as_bool()) {
+                assert_eq!(q.is_empty(&ctx), want, "{name} step {i}: is_empty");
+            }
+            if let Some(want) = expected.get("is_full").and_then(|v| v.as_bool()) {
+                assert_eq!(q.is_full(&ctx), want, "{name} step {i}: is_full");
+            }
+            if let Some(want) = expected.get("closed").and_then(|v| v.as_bool()) {
+                assert_eq!(q.closed(&ctx), want, "{name} step {i}: closed");
+            }
+            match expected.get("head") {
+                Some(Value::String(want)) => {
+                    assert_eq!(
+                        q.head(&ctx).as_deref(),
+                        Some(want.as_str()),
+                        "{name} step {i}: head"
+                    )
+                }
+                Some(Value::Null) => assert_eq!(q.head(&ctx), None, "{name} step {i}: head"),
+                _ => {}
+            }
+        }
+        steps.len()
+    }
+
+    #[test]
+    fn thread_safe_flavor_replays_the_canonical_corpus() {
+        if !spec_fixtures_present() {
+            eprintln!("SKIP: lazily-spec sibling missing");
+            return;
+        }
+        let mut total = 0;
+        for f in QUEUE_FIXTURES {
+            total += replay(f);
+        }
+        // Positive proof, not an absence guard: a replay that loaded nothing would
+        // otherwise print the same success.
+        assert!(
+            total >= 25,
+            "thread-safe flavor replayed only {total} steps across \
+             {} fixtures — too few to be the real corpus",
+            QUEUE_FIXTURES.len()
+        );
+    }
+
+    // Atomic invalidation needs an observer that runs DURING the op, not a reader
+    // inspected after it. The step replay above cannot see this: each reader ends up
+    // cleared either way, so batching only changes how many frontier walks happened
+    // in between — invisible to anything that looks afterwards.
+    //
+    // An effect subscribed to two reader kinds that transition together can see it.
+    // A pop that takes a full bounded queue off capacity changes `len` AND
+    // `is_full`; batched, the effect reruns once, and a subscriber never observes
+    // `len` decremented while `is_full` still reads true. Unbatched it can rerun
+    // twice, which IS the glitch.
+    #[test]
+    fn one_op_invalidates_reader_kinds_atomically() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let ctx = ThreadSafeContext::new();
+        let q = ThreadSafeQueueCell::<V>::with_capacity(&ctx, 2);
+        q.try_push(&ctx, "a".into()).expect("push a");
+        q.try_push(&ctx, "b".into()).expect("push b");
+        assert!(
+            q.is_full(&ctx),
+            "queue must be at capacity before the probe"
+        );
+
+        let runs = Arc::new(AtomicUsize::new(0));
+        {
+            let (q, runs) = (q.clone(), Arc::clone(&runs));
+            ctx.effect(move |cx| {
+                runs.fetch_add(1, Ordering::SeqCst);
+                // Observe BOTH kinds that this pop transitions.
+                let _ = q.len(cx);
+                let _ = q.is_full(cx);
+            });
+        }
+        let baseline = runs.load(Ordering::SeqCst);
+        assert!(baseline >= 1, "effect must run once on creation");
+
+        // This pop changes len (2 -> 1) and is_full (true -> false) together.
+        q.try_pop(&ctx).expect("pop");
+
+        assert_eq!(
+            runs.load(Ordering::SeqCst) - baseline,
+            1,
+            "one op must rerun a two-kind subscriber exactly ONCE; more means the \
+             reader kinds were invalidated in separate frontier walks and a \
+             subscriber can observe len decremented while is_full is still stale"
+        );
+        assert!(!q.is_full(&ctx), "pop must take the queue off capacity");
+        assert_eq!(q.len(&ctx), 1);
+    }
+
+    // A lock-order inversion between the storage mutex and the context lock is
+    // invisible single-threaded and manifests as a HANG, not a failure — so it
+    // needs a concurrent probe. Ops take storage then release it before touching
+    // the context; readers take the context then storage. If an op ever
+    // invalidated while still holding storage, this deadlocks.
+    #[test]
+    fn concurrent_push_and_read_do_not_deadlock() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let ctx = Arc::new(ThreadSafeContext::new());
+        let q = ThreadSafeQueueCell::<V>::new(&ctx);
+
+        let writers: Vec<_> = (0..4)
+            .map(|w| {
+                let (ctx, q) = (Arc::clone(&ctx), q.clone());
+                thread::spawn(move || {
+                    for i in 0..50 {
+                        q.try_push(&ctx, format!("w{w}-{i}"))
+                            .expect("unbounded push");
+                    }
+                })
+            })
+            .collect();
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let (ctx, q) = (Arc::clone(&ctx), q.clone());
+                thread::spawn(move || {
+                    for _ in 0..50 {
+                        let _ = q.len(&ctx);
+                        let _ = q.head(&ctx);
+                        let _ = q.is_empty(&ctx);
+                    }
+                })
+            })
+            .collect();
+
+        for t in writers.into_iter().chain(readers) {
+            t.join().expect("no thread panicked or deadlocked");
+        }
+        assert_eq!(q.len(&ctx), 200, "every push must be visible after joining");
+    }
 }

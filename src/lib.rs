@@ -125,6 +125,8 @@ mod text_crdt;
 #[cfg(feature = "thread-safe")]
 mod thread_safe;
 #[cfg(feature = "thread-safe")]
+mod thread_safe_queue;
+#[cfg(feature = "thread-safe")]
 mod thread_safe_reactive_family;
 mod time;
 #[cfg(feature = "ipc")]
@@ -326,6 +328,8 @@ pub use thread_safe::{
     ReadStrategy, ThreadSafeContext, ThreadSafeEffectCallbackResult, ThreadSafeSignalHandle,
     ThreadSafeTeardownScope,
 };
+#[cfg(feature = "thread-safe")]
+pub use thread_safe_queue::ThreadSafeQueueCell;
 #[cfg(feature = "thread-safe")]
 #[allow(deprecated)]
 pub use thread_safe_reactive_family::{ThreadSafeCellMap, ThreadSafeSlotMap};
