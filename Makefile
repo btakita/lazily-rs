@@ -157,10 +157,12 @@ test-collections-family-conformance:
 # "running 0 tests" because no target ran it.
 # Needs `thread-safe`: the thread-safe flavor replay is behind that cfg, so the
 # featureless spelling compiles the module out and reports 3 passed instead of 6 —
-# a gate quietly running half of itself. Verified: without the feature this target
-# printed "3 passed"; with it, 6.
+# a gate quietly running half of itself. BOTH flavors are cfg-gated, so both
+# features are required: 3 passed with neither, 6 with thread-safe alone, 8 with
+# both. Verified each count rather than trusting the exit code, which is 0 in all
+# three cases.
 test-queue-family-conformance:
->$(CARGO) test --locked --features thread-safe --test queue_family_conformance
+>$(CARGO) test --locked --features "thread-safe async" --test queue_family_conformance
 
 # Reactive queue conformance (#lzqueue): lazily-rs replays the canonical compute
 # fixtures in lazily-spec/conformance/collections/ `queuecell_*.json` — SPSC

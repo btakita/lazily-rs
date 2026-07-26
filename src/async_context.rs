@@ -41,6 +41,12 @@ fn edge_remove(edges: &mut EdgeVec, id: SlotId) -> bool {
 type AsyncAny = dyn Any + Send + Sync;
 type BoxedAsyncFuture = Pin<Box<dyn Future<Output = Arc<AsyncAny>> + Send>>;
 type AsyncComputeFn = dyn Fn(AsyncComputeContext) -> BoxedAsyncFuture + Send + Sync;
+/// A compute that produces its value WITHOUT awaiting (`#lzqfrs`). Async slots
+/// normally resolve through a spawned task, so a read before resolution yields
+/// `None`. A reader kind derived from out-of-graph state has nothing to await,
+/// and forcing it through the task machinery would make every queue read return
+/// `Option` for no reason — so these resolve inline on read.
+type AsyncSyncComputeFn = dyn Fn(&AsyncComputeContext) -> Arc<AsyncAny> + Send + Sync;
 type AsyncEqualsFn = dyn Fn(&AsyncAny, &AsyncAny) -> bool + Send + Sync;
 type BoxedEffectFuture = Pin<Box<dyn Future<Output = Option<BoxedCleanupFn>> + Send>>;
 type BoxedCleanupFn = Box<dyn FnOnce() + Send>;
@@ -105,6 +111,8 @@ pub(crate) struct AsyncComputedNode {
     pub(crate) error: Option<Arc<dyn Error + Send + Sync>>,
     pub(crate) revision: u64,
     pub(crate) compute: Arc<AsyncComputeFn>,
+    /// Present iff built by `AsyncContext::computed` (synchronous compute).
+    pub(crate) sync_compute: Option<Arc<AsyncSyncComputeFn>>,
     pub(crate) equals: Option<Arc<AsyncEqualsFn>>,
     pub(crate) dependencies: EdgeVec,
     pub(crate) dependents: EdgeVec,
@@ -499,6 +507,18 @@ pub struct AsyncContext {
 pub struct AsyncComputed<T> {
     pub(crate) id: SlotId,
     pub(crate) _marker: PhantomData<T>,
+}
+
+impl<T> AsyncComputed<T> {
+    /// This cell's graph id, for [`AsyncContext::clear_slots`].
+    ///
+    /// `clear_slots` takes ids rather than handles because the roots of one
+    /// invalidation are usually different types — a queue clears `head`
+    /// (`Option<T>`), `len` (`usize`) and `is_full` (`bool`) in the same walk, and
+    /// no single handle type spans them.
+    pub fn id(&self) -> SlotId {
+        self.id
+    }
 }
 
 impl<T> Clone for AsyncComputed<T> {
@@ -1233,6 +1253,7 @@ impl AsyncContext {
                 error: None,
                 revision: 0,
                 compute: compute_arc,
+                sync_compute: None,
                 equals,
                 dependencies: EdgeVec::new(),
                 dependents: EdgeVec::new(),
@@ -1264,21 +1285,142 @@ impl AsyncContext {
     where
         T: Clone + Send + Sync + 'static,
     {
-        let inner = self.inner.lock();
-        match inner.get_node(handle.id) {
-            Some(AsyncNode::Computed(slot)) => match &slot.state {
-                AsyncSlotState::Resolved => {
-                    let val = slot.value.as_ref().expect("resolved without value");
-                    Some(
-                        val.downcast_ref::<T>()
-                            .expect("type mismatch in get")
-                            .clone(),
-                    )
+        // Fast path plus, for a synchronous compute, the closure to run. The
+        // closure is deliberately NOT called while `inner` is held: it is user
+        // code that reads sources, and those reads re-lock `inner`. Running it
+        // under the lock would deadlock the context on its own reader.
+        let (resolved, sync_compute, node_gen) = {
+            let inner = self.inner.lock();
+            match inner.get_node(handle.id) {
+                Some(AsyncNode::Computed(slot)) => match &slot.state {
+                    AsyncSlotState::Resolved => {
+                        let val = slot.value.as_ref().expect("resolved without value");
+                        (
+                            Some(
+                                val.downcast_ref::<T>()
+                                    .expect("type mismatch in get")
+                                    .clone(),
+                            ),
+                            None,
+                            0,
+                        )
+                    }
+                    _ => (None, slot.sync_compute.clone(), inner.generation(handle.id)),
+                },
+                _ => (None, None, 0),
+            }
+        };
+        if let Some(value) = resolved {
+            return Some(value);
+        }
+        let sync_compute = sync_compute?;
+
+        // Lock released.
+        let cx = AsyncComputeContext {
+            _context_id: self.inner.lock().context_id,
+            _node_id: handle.id,
+            _node_gen: node_gen,
+            inner: Arc::clone(&self.inner),
+            dependencies: Arc::new(Mutex::new(HashSet::new())),
+        };
+        let value = sync_compute(&cx);
+        let deps: EdgeVec = cx.dependencies.lock().iter().copied().collect();
+
+        let mut inner = self.inner.lock();
+        match inner.get_node_mut(handle.id) {
+            Some(AsyncNode::Computed(slot)) => {
+                // Re-check: a concurrent reader may have resolved it first. Either
+                // value is correct (same pure compute), so keep the stored one
+                // rather than racing to overwrite.
+                if !matches!(slot.state, AsyncSlotState::Resolved) {
+                    slot.value = Some(value);
+                    slot.state = AsyncSlotState::Resolved;
+                    slot.dependencies = deps;
                 }
-                _ => None,
-            },
+                let val = slot.value.as_ref().expect("resolved without value");
+                Some(
+                    val.downcast_ref::<T>()
+                        .expect("type mismatch in get")
+                        .clone(),
+                )
+            }
             _ => None,
         }
+    }
+
+    /// A derived cell whose compute is **synchronous** (`#lzqfrs`).
+    ///
+    /// `computed_async` resolves through a spawned task, so a read before
+    /// resolution yields `None`. That is right for a compute that awaits, and
+    /// wrong for one that cannot: a reader kind derived from out-of-graph state
+    /// (a queue's `len`, `head`, `is_full`) has nothing to await, and routing it
+    /// through the task machinery would make every such read return `Option` and
+    /// need a settle step for no reason.
+    ///
+    /// These resolve **inline on read**, so `get` returns `Some` immediately.
+    /// Invalidation is identical to any other slot — [`clear`](Self::clear) drops
+    /// the memo and the next read re-derives.
+    pub fn computed<T, F>(&self, compute: F) -> AsyncComputed<T>
+    where
+        T: PartialEq + Clone + Send + Sync + 'static,
+        F: Fn(&AsyncComputeContext) -> T + Send + Sync + 'static,
+    {
+        let sync_compute: Arc<AsyncSyncComputeFn> =
+            Arc::new(move |cx: &AsyncComputeContext| Arc::new(compute(cx)) as Arc<AsyncAny>);
+        let equals: Arc<AsyncEqualsFn> = Arc::new(|old: &AsyncAny, new: &AsyncAny| -> bool {
+            match (old.downcast_ref::<T>(), new.downcast_ref::<T>()) {
+                (Some(o), Some(n)) => o == n,
+                _ => false,
+            }
+        });
+        // The async compute is never invoked for these; it exists so the node
+        // shape stays uniform. Constructing it is cheap and keeps every other
+        // code path (dispose, invalidate, edge walks) unchanged.
+        let unused: Arc<AsyncComputeFn> =
+            Arc::new(|_| Box::pin(async { Arc::new(()) as Arc<AsyncAny> }));
+        let id;
+        {
+            let mut inner = self.inner.lock();
+            id = inner.alloc_id();
+            let node = AsyncComputedNode {
+                state: AsyncSlotState::Empty,
+                value: None,
+                error: None,
+                revision: 0,
+                compute: unused,
+                sync_compute: Some(sync_compute),
+                equals: Some(equals),
+                dependencies: EdgeVec::new(),
+                dependents: EdgeVec::new(),
+                notifier: None,
+            };
+            inner.insert_node(id, AsyncNode::Computed(node));
+        }
+        AsyncComputed {
+            id,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Drop a derived cell's memo and that of everything downstream, so the next
+    /// read re-derives (`#lzqfrs`).
+    pub fn clear<T>(&self, handle: &AsyncComputed<T>) {
+        self.clear_slots(&[handle.id]);
+    }
+
+    /// Multi-root [`clear`](Self::clear): every root and its cone invalidated in
+    /// ONE frontier walk.
+    ///
+    /// This matters for anything with several reader kinds that transition
+    /// together. Clearing them one at a time lets a subscriber observe a partial
+    /// state — a queue's `len` decremented while `is_full` still reads stale.
+    /// `invalidate_frontier_async` already accepted a slice of roots; the async
+    /// context simply never exposed a way to hand it more than one.
+    pub fn clear_slots(&self, ids: &[SlotId]) {
+        if ids.is_empty() {
+            return;
+        }
+        self.invalidate_frontier_async(ids);
     }
 
     pub async fn get_async<T>(&self, handle: &AsyncComputed<T>) -> T
@@ -2198,6 +2340,7 @@ mod tests {
             error: None,
             revision,
             compute: Arc::new(stub_compute),
+            sync_compute: None,
             equals: None,
             dependencies: EdgeVec::new(),
             dependents: EdgeVec::new(),
@@ -2212,6 +2355,7 @@ mod tests {
             error: None,
             revision,
             compute: Arc::new(stub_compute),
+            sync_compute: None,
             equals: Some(Arc::new(|old: &AsyncAny, new: &AsyncAny| -> bool {
                 let old_val = old.downcast_ref::<i32>();
                 let new_val = new.downcast_ref::<i32>();
@@ -2330,6 +2474,7 @@ mod tests {
             error: Some(Arc::new(std::io::Error::other("test"))),
             revision: 0,
             compute: Arc::new(stub_compute),
+            sync_compute: None,
             equals: None,
             dependencies: EdgeVec::new(),
             dependents: EdgeVec::new(),

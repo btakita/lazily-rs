@@ -72,6 +72,8 @@ mod source_tree;
 /// queue; this exists so that false negative cannot recur silently.
 #[cfg(audit_probe)]
 pub use context::audit_probe;
+#[cfg(feature = "async")]
+mod async_queue;
 mod coordination;
 #[cfg(feature = "distributed")]
 mod crdt;
@@ -148,6 +150,8 @@ pub use async_context::{
     AsyncEffectHandle, AsyncSignalHandle, AsyncSlotHandle, AsyncSlotState, AsyncSlotStateView,
     AsyncSource, AsyncTeardownScope,
 };
+#[cfg(feature = "async")]
+pub use async_queue::AsyncQueueCell;
 #[cfg(feature = "async")]
 #[allow(deprecated)]
 pub use async_reactive_family::{AsyncCellMap, AsyncSlotMap};

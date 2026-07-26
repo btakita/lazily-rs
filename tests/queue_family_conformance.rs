@@ -70,7 +70,7 @@ const LEDGER: &[Flavor] = &[
     Flavor {
         name: "async",
         marker_type: "AsyncQueueCell",
-        shipped: false,
+        shipped: true,
     },
 ];
 
@@ -511,5 +511,148 @@ mod thread_safe_flavor {
             t.join().expect("no thread panicked or deadlocked");
         }
         assert_eq!(q.len(&ctx), 200, "every push must be visible after joining");
+    }
+}
+
+// -- Async flavor: the same corpus, through AsyncQueueCell ---------------------
+//
+// Same rule as the thread-safe flavor above: the ledger flag went `true` in the
+// change that added this replay, never before it.
+//
+// Note what is NOT here — a settle step. `AsyncQueueCell`'s reader kinds are built
+// on `AsyncContext::computed` (synchronous compute), so they resolve inline on
+// read. Ordering is not async-coloured: a queue's length is not something you wait
+// for. If these reads ever start returning `None`, that is the regression, not a
+// reason to add an await.
+#[cfg(feature = "async")]
+mod async_flavor {
+    use super::{QUEUE_FIXTURES, SPEC_DIR, spec_fixtures_present};
+    use lazily::{AsyncContext, AsyncQueueCell};
+    use serde_json::Value;
+    use std::fs;
+
+    type V = String;
+
+    fn replay(name: &str) -> usize {
+        let text = fs::read_to_string(format!("{SPEC_DIR}/{name}"))
+            .unwrap_or_else(|e| panic!("canonical fixture {name} unreadable: {e}"));
+        let fixture: Value = serde_json::from_str(&text).expect("fixture parses");
+        let initial = &fixture["initial"];
+
+        let ctx = AsyncContext::new();
+        let q = match initial["capacity"].as_u64() {
+            Some(cap) => AsyncQueueCell::<V>::with_capacity(&ctx, cap as usize),
+            None => AsyncQueueCell::<V>::new(&ctx),
+        };
+        assert!(
+            initial["elements"]
+                .as_array()
+                .map(|a| a.is_empty())
+                .unwrap_or(true),
+            "this runner does not seed initial.elements"
+        );
+
+        let steps = fixture["steps"].as_array().expect("steps array");
+        assert!(!steps.is_empty(), "a replay of zero steps is not a replay");
+
+        for (i, step) in steps.iter().enumerate() {
+            let op = &step["op"];
+            let ty = op["type"].as_str().expect("op type");
+            let got_returns: Option<String> = match ty {
+                "push" | "try_push" => {
+                    let v = op["value"].as_str().expect("push value").to_string();
+                    match q.try_push(&ctx, v) {
+                        Ok(()) => Some("Ok".into()),
+                        Err(e) => Some(format!("{e:?}")),
+                    }
+                }
+                "pop" | "try_pop" => match q.try_pop(&ctx) {
+                    Ok(v) => Some(v),
+                    Err(e) => Some(format!("{e:?}")),
+                },
+                "close" => {
+                    q.close(&ctx);
+                    None
+                }
+                "batch" => {
+                    let inner = op["ops"].as_array().expect("batch ops");
+                    for sub in inner {
+                        assert_eq!(sub["type"].as_str(), Some("push"));
+                        let v = sub["value"].as_str().expect("value").to_string();
+                        q.try_push(&ctx, v).expect("batched push");
+                    }
+                    None
+                }
+                other => panic!("{name} step {i}: unhandled op `{other}`"),
+            };
+
+            let expected = &step["expected"];
+            if let Some(want) = step.get("returns").and_then(|v| v.as_str()) {
+                let got = got_returns.as_deref().unwrap_or("");
+                assert!(
+                    got == want || got.starts_with(want),
+                    "{name} step {i}: returns `{got}`, fixture says `{want}`"
+                );
+            }
+            if let Some(want) = expected.get("len").and_then(|v| v.as_u64()) {
+                assert_eq!(q.len(&ctx) as u64, want, "{name} step {i}: len");
+            }
+            if let Some(want) = expected.get("is_empty").and_then(|v| v.as_bool()) {
+                assert_eq!(q.is_empty(&ctx), want, "{name} step {i}: is_empty");
+            }
+            if let Some(want) = expected.get("is_full").and_then(|v| v.as_bool()) {
+                assert_eq!(q.is_full(&ctx), want, "{name} step {i}: is_full");
+            }
+            if let Some(want) = expected.get("closed").and_then(|v| v.as_bool()) {
+                assert_eq!(q.closed(&ctx), want, "{name} step {i}: closed");
+            }
+            match expected.get("head") {
+                Some(Value::String(want)) => assert_eq!(
+                    q.head(&ctx).as_deref(),
+                    Some(want.as_str()),
+                    "{name} step {i}: head"
+                ),
+                Some(Value::Null) => assert_eq!(q.head(&ctx), None, "{name} step {i}: head"),
+                _ => {}
+            }
+        }
+        steps.len()
+    }
+
+    #[test]
+    fn async_flavor_replays_the_canonical_corpus() {
+        if !spec_fixtures_present() {
+            eprintln!("SKIP: lazily-spec sibling missing");
+            return;
+        }
+        let mut total = 0;
+        for f in QUEUE_FIXTURES {
+            total += replay(f);
+        }
+        assert!(
+            total >= 25,
+            "async flavor replayed only {total} steps — too few to be the real corpus"
+        );
+    }
+
+    // The claim that ordering is not async-coloured, made falsifiable: every reader
+    // kind yields a value on a bare read, with nothing driven and nothing awaited.
+    #[test]
+    fn reader_kinds_resolve_without_being_driven() {
+        let ctx = AsyncContext::new();
+        let q = AsyncQueueCell::<V>::with_capacity(&ctx, 2);
+        q.try_push(&ctx, "a".into()).expect("push");
+
+        assert_eq!(q.len(&ctx), 1);
+        assert_eq!(q.head(&ctx).as_deref(), Some("a"));
+        assert!(!q.is_empty(&ctx));
+        assert!(!q.is_full(&ctx));
+        assert!(!q.closed(&ctx));
+
+        q.try_push(&ctx, "b".into()).expect("push");
+        assert!(q.is_full(&ctx), "second push must reach capacity");
+        q.try_pop(&ctx).expect("pop");
+        assert!(!q.is_full(&ctx), "pop must take it off capacity");
+        assert_eq!(q.head(&ctx).as_deref(), Some("b"), "head follows the pop");
     }
 }

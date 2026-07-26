@@ -701,3 +701,153 @@ async fn async_signal_get_async_awaits_up_to_date_value() {
     ctx.set(&n, 4);
     assert_eq!(sig.get_async(&ctx).await, 8);
 }
+
+// -- #lzqfrs AsyncContext prerequisites ---------------------------------------
+//
+// AsyncQueueCell needs two things AsyncContext did not have: a synchronous-compute
+// `computed`, and a multi-root `clear`. These pin both.
+
+#[tokio::test]
+async fn sync_computed_resolves_without_being_driven() {
+    let ctx = AsyncContext::new();
+    let c = ctx.computed(|_| 42u32);
+    // The whole point: no settle, no drive, no await. `computed_async` would be
+    // `None` here until its task ran.
+    assert_eq!(
+        ctx.get(&c),
+        Some(42),
+        "a synchronous compute has nothing to await"
+    );
+}
+
+#[tokio::test]
+async fn sync_computed_memoizes_until_cleared() {
+    let ctx = AsyncContext::new();
+    let runs = Arc::new(AtomicU64::new(0));
+    let c = {
+        let runs = Arc::clone(&runs);
+        ctx.computed(move |_| runs.fetch_add(1, Ordering::SeqCst) + 1)
+    };
+
+    assert_eq!(ctx.get(&c), Some(1));
+    assert_eq!(
+        ctx.get(&c),
+        Some(1),
+        "second read must hit the memo, not recompute"
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "exactly one compute so far");
+
+    ctx.clear(&c);
+    assert_eq!(
+        ctx.get(&c),
+        Some(2),
+        "clear must drop the memo so the next read re-derives"
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn sync_computed_registers_a_real_dependency_edge() {
+    let ctx = AsyncContext::new();
+    let src = ctx.source(1u32);
+    let doubled = ctx.computed(move |cx| cx.get(&src) * 2);
+
+    assert_eq!(ctx.get(&doubled), Some(2));
+    // If the read inside the compute did not register an edge, this write would
+    // leave the memo stale and the assertion below would still read 2. That is the
+    // difference between a derived cell and a cached function call.
+    ctx.set(&src, 5);
+    assert_eq!(
+        ctx.get(&doubled),
+        Some(10),
+        "writing the source must invalidate the derived cell; a stale 2 means no \
+         dependency edge was registered"
+    );
+}
+
+#[tokio::test]
+async fn clear_slots_invalidates_every_root() {
+    let ctx = AsyncContext::new();
+    let counters: Vec<Arc<AtomicU64>> = (0..4).map(|_| Arc::new(AtomicU64::new(0))).collect();
+    let cells: Vec<_> = counters
+        .iter()
+        .map(|c| {
+            let c = Arc::clone(c);
+            ctx.computed(move |_| c.fetch_add(1, Ordering::SeqCst) + 1)
+        })
+        .collect();
+
+    for cell in &cells {
+        assert_eq!(ctx.get(cell), Some(1));
+    }
+    for c in &counters {
+        assert_eq!(c.load(Ordering::SeqCst), 1, "each cell computed once");
+    }
+
+    // One call, four roots — this is the shape a queue op needs when several
+    // reader kinds transition together.
+    let ids: Vec<_> = cells.iter().map(|c| c.id()).collect();
+    ctx.clear_slots(&ids);
+
+    for cell in &cells {
+        assert_eq!(
+            ctx.get(cell),
+            Some(2),
+            "every root must have been invalidated"
+        );
+    }
+    for c in &counters {
+        assert_eq!(
+            c.load(Ordering::SeqCst),
+            2,
+            "each cell re-derived exactly once"
+        );
+    }
+}
+
+#[tokio::test]
+async fn clear_slots_ignores_an_empty_root_set() {
+    let ctx = AsyncContext::new();
+    let runs = Arc::new(AtomicU64::new(0));
+    let c = {
+        let runs = Arc::clone(&runs);
+        ctx.computed(move |_| runs.fetch_add(1, Ordering::SeqCst) + 1)
+    };
+    assert_eq!(ctx.get(&c), Some(1));
+    ctx.clear_slots(&[]);
+    assert_eq!(
+        ctx.get(&c),
+        Some(1),
+        "an empty clear must not invalidate anything"
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+}
+
+// A sync compute must record the edge in BOTH directions.
+//
+// Found by mutation: dropping the forward `dependencies` list left every other
+// test green, because invalidation travels the REVERSE edge, which
+// `AsyncComputeContext::get` registers on the source itself. The forward list is
+// what disposal walks to detach those reverse edges — so without it the graph
+// invalidates correctly and then leaks a dangling dependent on every dispose.
+// `dependency_count` names the direction the other tests could not see.
+#[tokio::test]
+async fn sync_computed_records_the_edge_in_both_directions() {
+    let ctx = AsyncContext::new();
+    let src = ctx.source(1u32);
+    let doubled = ctx.computed(move |cx| cx.get(&src) * 2);
+    assert_eq!(ctx.get(&doubled), Some(2));
+
+    assert_eq!(
+        ctx.dependent_count(&src),
+        1,
+        "the source must know its dependent (reverse edge — this is what carries \
+         invalidation)"
+    );
+    assert_eq!(
+        ctx.dependency_count(&doubled),
+        1,
+        "the derived cell must record what it read (forward edge — this is what \
+         disposal walks to detach the reverse edge)"
+    );
+}
