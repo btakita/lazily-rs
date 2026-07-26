@@ -1316,7 +1316,31 @@ impl ThreadSafeInvalidationPlan {
                         continue;
                     }
                     visited_slots.insert(id);
-                    if slot.value.is_none() && !slot.dirty {
+                    // An unset, clean slot normally needs no clearing — there is
+                    // no cached value to drop and no dependent to dirty.
+                    //
+                    // Unless a recompute is IN FLIGHT against it. `compute` runs
+                    // outside the state lock, and the publish is rejected only
+                    // when `invalidation_revision` moved since `begin_recompute`
+                    // snapshotted it — and that counter is bumped by
+                    // `fast_path.clear()`, which runs only for slots this plan
+                    // clears. Skipping here therefore skips the revision bump,
+                    // and the in-flight recompute publishes a value derived from
+                    // pre-invalidation state as if it were current.
+                    //
+                    // That is a lost invalidation, not a slow one: the stale
+                    // value is marked fresh and never re-derives until something
+                    // else clears the slot. It bit `ThreadSafeQueueCell`, whose
+                    // reader kinds are unset between ops and derive from
+                    // out-of-graph storage — a push concurrent with a first read
+                    // of `len` published the pre-push length and kept serving it
+                    // (`concurrent_push_and_read_do_not_deadlock`, 199 of 200).
+                    //
+                    // Clearing it here bumps the revision, so the racing publish
+                    // returns `Stale` and the caller re-derives. Cheap: only a
+                    // slot actually mid-recompute takes this path.
+                    if slot.value.is_none() && !slot.dirty && !slot.fast_path.recompute_in_flight()
+                    {
                         continue;
                     }
                     plan.add_slot_clear(id);
@@ -3810,6 +3834,82 @@ impl<T: PartialEq + Send + Sync + 'static> Write<ThreadSafeContext> for Source<T
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // A clear that lands DURING an in-flight recompute must win.
+    //
+    // `compute` runs outside the state lock, so a writer can invalidate between
+    // "the reader started deriving" and "the reader published". The publish is
+    // rejected only when `invalidation_revision` moved, and that counter moves
+    // only for slots the invalidation plan actually clears — which used to skip
+    // any slot that was unset and clean. A slot mid-first-recompute is exactly
+    // that, so the clear was a no-op and the stale value was published as fresh.
+    //
+    // Deterministic on purpose. The bug was originally seen as a 1-in-30 flake in
+    // `concurrent_push_and_read_do_not_deadlock` under saturating load; a test
+    // that needs a loaded machine to fail is not a regression gate. The barriers
+    // below pin the one interleaving that matters, so this fails 100% of the time
+    // without the fix and passes 100% with it.
+    #[test]
+    fn a_clear_during_an_in_flight_recompute_is_not_lost() {
+        use std::sync::mpsc;
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        let ctx = Arc::new(ThreadSafeContext::new());
+        // Out-of-graph state, exactly like a queue's storage: the reader kind
+        // derives from it and takes no dependency on it.
+        let storage = Arc::new(Mutex::new(1usize));
+
+        let (started_tx, started_rx) = mpsc::channel::<()>();
+        let (cleared_tx, cleared_rx) = mpsc::channel::<()>();
+        let started_tx = Mutex::new(started_tx);
+        let cleared_rx = Mutex::new(cleared_rx);
+
+        // Only the FIRST recompute takes part in the handshake. The re-derive
+        // after the clear must not block on a channel nobody will send to.
+        let handshaken = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let len = {
+            let storage = Arc::clone(&storage);
+            let handshaken = Arc::clone(&handshaken);
+            ctx.computed(move |_| {
+                // Read storage FIRST, then hand control to the writer. The value
+                // this recompute will publish is now fixed at the pre-write one.
+                let observed = *storage.lock().expect("storage");
+                if !handshaken.swap(true, Ordering::AcqRel) {
+                    let _ = started_tx.lock().expect("started tx").send(());
+                    let _ = cleared_rx
+                        .lock()
+                        .expect("cleared rx")
+                        .recv_timeout(std::time::Duration::from_secs(5));
+                }
+                observed
+            })
+        };
+
+        let reader = {
+            let (ctx, len) = (Arc::clone(&ctx), len);
+            thread::spawn(move || ctx.get(&len))
+        };
+
+        // The reader has observed 1 and is parked inside its compute.
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("reader must reach its compute body");
+
+        *storage.lock().expect("storage") = 2;
+        ctx.clear(&len);
+
+        let _ = cleared_tx.send(());
+        let _ = reader.join().expect("reader thread");
+
+        assert_eq!(
+            ctx.get(&len),
+            2,
+            "a clear issued while a recompute was in flight was lost: the racing \
+             publish stored the pre-clear value and marked it fresh, so the slot \
+             serves a value that no longer matches the state it derives from"
+        );
+    }
 
     // #lzqfrs Phase-3 prerequisite: does ThreadSafeContext need a multi-root
     // `clear_slots`, or does `batch()` already close that gap?
