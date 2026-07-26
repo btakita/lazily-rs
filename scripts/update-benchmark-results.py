@@ -943,6 +943,48 @@ def replace_benchmarks_section(content: str, section: str) -> str:
     return content.rstrip() + "\n" + new_section + "\n"
 
 
+# Distinguishing "the budgets were never measured here" from "the budgets were
+# measured and are red".
+#
+# `--check` reuses whatever `target/criterion` holds. A pruned or fresh target
+# dir has no estimates, and hard-failing there made `make check` unreachable in
+# any clean checkout — the gate was red for a reason that has nothing to do with
+# the code, which is how a gate stops being read at all.
+#
+# The skip is deliberately narrow: it fires only when the criterion directory is
+# ABSENT. A directory that exists but yields no estimates is a broken or partial
+# bench run, not a fresh checkout, and still fails. And the skip is loud, because
+# a silent one would be an escape hatch: delete the directory, get a green check.
+# It says plainly that no budget was enforced.
+def evidence_missing_is_skippable(criterion_dir: Path, require_evidence: bool) -> bool:
+    if require_evidence:
+        return False
+    return not criterion_dir.exists()
+
+
+def warn_budgets_not_enforced(what: str) -> None:
+    print("", file=sys.stderr)
+    print("=" * 72, file=sys.stderr)
+    print(f"SKIPPED: {what}", file=sys.stderr)
+    print(
+        "NO BENCHMARK BUDGET WAS ENFORCED BY THIS RUN. This is not a pass — it is "
+        "the absence of a measurement.",
+        file=sys.stderr,
+    )
+    print(
+        "Populate it with `make benchmark-update` (runs the benches), or re-run "
+        "with --require-evidence to make this a hard failure.",
+        file=sys.stderr,
+    )
+    print(
+        "Note: no CI workflow runs these budgets (ci.yml enumerates cargo tests; "
+        "regressions.yml runs only the loom model), so this local check is the "
+        "only place they are enforced at all.",
+        file=sys.stderr,
+    )
+    print("=" * 72, file=sys.stderr)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true", help="fail if README.md is stale")
@@ -965,6 +1007,14 @@ def main() -> int:
         type=Path,
     )
     parser.add_argument(
+        "--require-evidence",
+        action="store_true",
+        help=(
+            "treat missing benchmark evidence as a hard failure instead of a loud "
+            "skip; use wherever the budgets must actually be enforced"
+        ),
+    )
+    parser.add_argument(
         "--profile-output",
         default=DEFAULT_PROFILE_OUTPUT,
         type=Path,
@@ -983,6 +1033,12 @@ def main() -> int:
 
     results = discover_results(args.criterion_dir)
     if not results:
+        if evidence_missing_is_skippable(args.criterion_dir, args.require_evidence):
+            warn_budgets_not_enforced(
+                f"no benchmark evidence in this checkout ({args.criterion_dir} does "
+                "not exist)"
+            )
+            return 0
         print(
             f"no Criterion estimates found under {args.criterion_dir}; run without --no-run",
             file=sys.stderr,
@@ -996,6 +1052,12 @@ def main() -> int:
             print(f"- {failure}", file=sys.stderr)
         return 1
     if not args.profile_output.exists():
+        if evidence_missing_is_skippable(args.criterion_dir, args.require_evidence):
+            warn_budgets_not_enforced(
+                f"no instrumentation profile in this checkout ({args.profile_output} "
+                "does not exist)"
+            )
+            return 0
         print(
             f"no instrumentation profile found at {args.profile_output}; run without --check",
             file=sys.stderr,

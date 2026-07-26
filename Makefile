@@ -42,6 +42,7 @@ LEAN_FORMAL_DIR ?= ../lazily-formal
 	test-webrtc \
 	test-websocket \
 	benchmark-check \
+	benchmark-check-strict \
 	benchmark-update \
 	instrumentation-profile
 
@@ -227,8 +228,22 @@ test-webrtc-signaling:
 test-websocket:
 >$(CARGO) test --locked --features websocket
 
+# Reuses whatever `target/criterion` already holds. When that directory is ABSENT
+# (fresh clone, pruned target) it prints a loud "no budget was enforced" banner and
+# passes, because hard-failing there made `make check` unreachable for a reason
+# that has nothing to do with the code — and a gate that is always red stops being
+# read. The skip is narrow on purpose: a directory that EXISTS but yields no
+# estimates is a broken bench run, not a fresh checkout, and still fails, so
+# deleting it is not a way to turn a red budget green.
 benchmark-check:
 >$(PYTHON) scripts/update-benchmark-results.py --check
+
+# The enforcing spelling: missing evidence is a hard failure. Use this anywhere the
+# budgets must actually hold. Worth knowing that NO CI workflow currently runs
+# either target — ci.yml enumerates cargo tests, regressions.yml runs only the loom
+# model — so today the budgets are enforced solely by whoever runs this locally.
+benchmark-check-strict:
+>$(PYTHON) scripts/update-benchmark-results.py --check --require-evidence
 
 benchmark-update:
 >$(PYTHON) scripts/update-benchmark-results.py
