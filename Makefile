@@ -33,6 +33,7 @@ export LAZILY_CONFORMANCE_MANIFEST = $(CONFORMANCE_MANIFEST)
 	test-loom \
 	test-distributed \
 	test-crdt-plane \
+	test-interop-peer \
 	test-distributed-conformance \
 	test-ffi \
 	test-ffi-binary \
@@ -60,7 +61,7 @@ export LAZILY_CONFORMANCE_MANIFEST = $(CONFORMANCE_MANIFEST)
 	benchmark-update \
 	instrumentation-profile
 
-	check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-reliable-sync-conformance test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-check conformance-coverage
+	check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-reliable-sync-conformance test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-check conformance-coverage
 
 fmt:
 >$(CARGO) fmt --all --check
@@ -116,6 +117,9 @@ test-distributed:
 # DataChannel transport (`webrtc`), a combo no other target exercises.
 test-crdt-plane:
 >$(CARGO) test --locked --features "distributed webrtc"
+
+test-interop-peer:
+>$(CARGO) run --locked --quiet --features "distributed webrtc" --bin lazily-interop-peer -- --self-check
 
 # Canonical distributed conformance (#verifycrdtplaneruntimein): the ingest
 # op-count contract — a SUPERSEDED op still counts, because it entered the log;

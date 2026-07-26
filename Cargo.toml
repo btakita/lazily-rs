@@ -21,6 +21,11 @@ resolver = "3"
 [lib]
 crate-type = ["lib", "cdylib"]
 
+[[bin]]
+name = "lazily-interop-peer"
+path = "src/bin/lazily-interop-peer.rs"
+required-features = ["distributed", "webrtc"]
+
 [features]
 # Thread-safe reactive context (lock-backed, Send + Sync). Required of any
 # binding whose platform exposes preemptive threading (lazily-spec §
