@@ -320,8 +320,9 @@ where
         self.lock().contains(key)
     }
 
-    /// The currently-materialized keys, in first-materialization order. The present
-    /// set only grows (deferral, not de-allocation).
+    /// The currently-materialized keys, in first-materialization order.
+    /// Materialization only grows this set; an explicit [`remove`](Self::remove)
+    /// shrinks it.
     pub fn present_keys(&self) -> Vec<K> {
         self.lock().keys()
     }

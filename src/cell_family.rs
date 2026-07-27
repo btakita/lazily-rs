@@ -349,7 +349,8 @@ where
     }
 
     /// The currently-materialized (present) keys, in first-materialization order.
-    /// Non-reactive; the present set only grows (deferral, not de-allocation).
+    /// Non-reactive. Materialization only grows this set; an explicit
+    /// [`remove`](Self::remove) shrinks it.
     pub fn present_keys(&self) -> Vec<K> {
         self.inner.core.borrow().keys()
     }
