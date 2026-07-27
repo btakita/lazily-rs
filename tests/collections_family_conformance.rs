@@ -366,16 +366,11 @@ impl MapModel for AsyncModel {
         self.map.handle(&key.to_string())
     }
 
-    /// Unlike `keys`/`len`/`contains_key`, the async map's `observe` is **not**
-    /// generic over the read surface — it takes a bare `AsyncContext`, which
-    /// registers no edge. A tracked per-entry read therefore has to go through
-    /// the handle. (Worth closing: the asymmetry is not load-bearing.)
     fn value_reader(&self, key: &str) -> Self::ValueReader {
         let map = self.map.clone();
         let key = key.to_string();
         self.ctx.computed_async(move |actx| {
-            let handle = map.handle(&key);
-            let value = handle.map(|h| actx.get(&h));
+            let value = map.observe(&actx, &key);
             async move { value }
         })
     }

@@ -13,9 +13,9 @@
 //! ([`get_or_insert_handle`](AsyncReactiveMap::get_or_insert_handle)). There is no
 //! eager/lazy mode flag. The transparency law is **eventual**: an async derived
 //! slot read is `None` while pending and resolves to the canonical value — so
-//! [`observe`](AsyncReactiveMap::observe) returns [`Option<V>`]. Input cells are
-//! always resolved. Drive a slot to resolution with [`AsyncContext::get_async`] on
-//! the handle from [`get_or_insert_handle`](AsyncReactiveMap::get_or_insert_handle).
+//! `observe` returns [`Option<V>`]. Input cells are always resolved. Drive a slot
+//! to resolution with [`AsyncContext::get_async`] on the handle from
+//! [`get_or_insert_handle`](AsyncReactiveMap::get_or_insert_handle).
 //!
 //! Its two specializations are [`AsyncSourceMap`] (input cells) and [`AsyncComputedMap`]
 //! (derived slots). Mirrors the async materialization case in lazily-spec and the
@@ -66,13 +66,6 @@ pub trait AsyncMapHandle<V>: sealed::Sealed + Copy + Send + Sync + 'static {
     where
         V: PartialEq + Clone + Send + Sync + 'static;
 
-    /// Non-blocking read: `Some(value)` for a materialized cell or a resolved slot,
-    /// `None` for a slot still pending. Drive a pending slot to resolution with
-    /// [`AsyncContext::get_async`].
-    fn observe(self, ctx: &AsyncContext) -> Option<V>
-    where
-        V: Clone + Send + Sync + 'static;
-
     /// Detach this entry's node from the graph on removal.
     ///
     /// The single-threaded flavor only clears the cached value and dependents,
@@ -93,13 +86,6 @@ impl<V: Send + Sync + 'static> AsyncMapHandle<V> for AsyncSource<V> {
         // An input has no derivation: materialize by setting its value directly.
         // Evaluated once, detached — a source cell's seed value is not an edge.
         ctx.source(ctx.eval_detached(|actx| compute(actx)))
-    }
-
-    fn observe(self, ctx: &AsyncContext) -> Option<V>
-    where
-        V: Clone + Send + Sync + 'static,
-    {
-        Some(ctx.get(&self))
     }
 
     fn clear_dependents(self, ctx: &AsyncContext) {
@@ -126,13 +112,6 @@ impl<V: Send + Sync + 'static> AsyncMapHandle<V> for AsyncComputed<V> {
             let v = compute(&actx);
             async move { v }
         })
-    }
-
-    fn observe(self, ctx: &AsyncContext) -> Option<V>
-    where
-        V: Clone + Send + Sync + 'static,
-    {
-        ctx.get(&self)
     }
 
     fn clear_dependents(self, ctx: &AsyncContext) {
@@ -307,13 +286,6 @@ where
         self.mint_with(ctx, key, compute)
     }
 
-    /// Non-blocking observe of an existing entry: `Some(value)` for a cell or
-    /// resolved slot, `None` for a pending slot or an absent key. Non-minting.
-    pub fn observe(&self, ctx: &AsyncContext, key: &K) -> Option<V> {
-        let handle = self.lock().get(key);
-        handle.and_then(|h| h.observe(ctx))
-    }
-
     /// Return the existing entry handle for `key`, or `None`. Non-minting.
     pub fn handle(&self, key: &K) -> Option<H> {
         self.lock().get(key)
@@ -452,6 +424,38 @@ pub type AsyncSourceMap<K, V> = AsyncReactiveMap<K, V, AsyncSource<V>>;
 /// resolved via [`AsyncContext::get_async`].
 pub type AsyncComputedMap<K, V> = AsyncReactiveMap<K, V, AsyncComputed<V>>;
 
+impl<K, V> AsyncReactiveMap<K, V, AsyncSource<V>>
+where
+    K: Eq + Hash + Clone + Send + Sync + 'static,
+    V: PartialEq + Clone + Send + Sync + 'static,
+{
+    /// Non-blocking observe of an existing source entry. Generic over the read
+    /// surface: an [`AsyncComputeContext`] registers a dependency edge, while a
+    /// bare [`AsyncContext`] read remains untracked. Non-minting.
+    pub fn observe<C>(&self, ctx: &C, key: &K) -> Option<V>
+    where
+        AsyncSource<V>: Read<C, Output = V>,
+    {
+        self.lock().get(key).map(|handle| handle.read(ctx))
+    }
+}
+
+impl<K, V> AsyncReactiveMap<K, V, AsyncComputed<V>>
+where
+    K: Eq + Hash + Clone + Send + Sync + 'static,
+    V: PartialEq + Clone + Send + Sync + 'static,
+{
+    /// Non-blocking observe of an existing computed entry. A pending or absent
+    /// entry yields `None`; a resolved entry yields `Some(value)`. Generic over
+    /// the read surface with the same tracked/untracked split as source entries.
+    pub fn observe<C>(&self, ctx: &C, key: &K) -> Option<V>
+    where
+        AsyncComputed<V>: Read<C, Output = Option<V>>,
+    {
+        self.lock().get(key).and_then(|handle| handle.read(ctx))
+    }
+}
+
 /// Deprecated alias for [`AsyncSourceMap`].
 #[deprecated(note = "renamed to AsyncSourceMap")]
 pub type AsyncCellMap<K, V> = AsyncSourceMap<K, V>;
@@ -522,6 +526,63 @@ mod tests {
         assert_eq!(fam.len(&ctx), 1);
         assert!(fam.contains_key(&ctx, &1));
         assert_eq!(fam.keys(&ctx), vec![1]);
+    }
+
+    #[tokio::test]
+    async fn entry_observe_tracks_only_through_compute_context() {
+        let ctx = AsyncContext::new();
+        let fam: AsyncSourceMap<u64, i64> = AsyncSourceMap::new(&ctx);
+        fam.set(&ctx, 1, 10);
+        let entry = fam.handle(&1).expect("source entry");
+
+        assert_eq!(fam.observe(&ctx, &1), Some(10));
+        assert_eq!(
+            ctx.dependent_count(&entry),
+            0,
+            "a bare-context observe must not create an edge"
+        );
+
+        let reads = Arc::new(AtomicU64::new(0));
+        let f = fam.clone();
+        let observed_reads = Arc::clone(&reads);
+        let observed = ctx.computed_async(move |actx| {
+            observed_reads.fetch_add(1, Ordering::SeqCst);
+            let value = f.observe(&actx, &1).expect("tracked source entry");
+            async move { value * 2 }
+        });
+
+        assert_eq!(ctx.get_async(&observed).await, 20);
+        assert_eq!(ctx.dependent_count(&entry), 1);
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+
+        fam.set(&ctx, 1, 11);
+        assert_eq!(ctx.get_async(&observed).await, 22);
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn resolved_computed_entry_observe_tracks_downstream() {
+        let ctx = AsyncContext::new();
+        let upstream = ctx.source(5i64);
+        let fam: AsyncComputedMap<u64, i64> = AsyncComputedMap::new(&ctx);
+        let entry = fam.get_or_insert_handle(&ctx, 1, move |actx, _| actx.get(&upstream) * 2);
+        assert_eq!(ctx.get_async(&entry).await, 10);
+
+        let f = fam.clone();
+        let downstream = ctx.computed_async(move |actx| {
+            let value = f.observe(&actx, &1).expect("resolved computed entry");
+            async move { value + 1 }
+        });
+        assert_eq!(ctx.get_async(&downstream).await, 11);
+        assert_eq!(ctx.dependent_count(&entry), 1);
+
+        ctx.set(&upstream, 6);
+        assert!(
+            !ctx.is_set(&downstream),
+            "entry invalidation must propagate to its observe reader"
+        );
+        assert_eq!(ctx.get_async(&entry).await, 12);
+        assert_eq!(ctx.get_async(&downstream).await, 13);
     }
 
     #[test]

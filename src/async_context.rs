@@ -696,6 +696,20 @@ impl AsyncComputeContext {
         }
     }
 
+    fn read_computed<T>(&self, handle: &AsyncComputed<T>) -> Option<T>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        self.dependencies.lock().insert(handle.id);
+        {
+            let mut inner = self.inner.lock();
+            if inner.generation(self._node_id) == self._node_gen {
+                register_dependency_locked(&mut inner, handle.id, self._node_id);
+            }
+        }
+        self.owning_context().read_slot(handle)
+    }
+
     /// Reconstruct an owning [`AsyncContext`] over the same graph.
     ///
     /// A write from inside an effect is not a dependency — it creates no edge
@@ -2201,6 +2215,13 @@ impl<T: Clone + Send + Sync + 'static> Read<AsyncComputeContext> for AsyncSource
     type Output = T;
     fn read(&self, ctx: &AsyncComputeContext) -> T {
         ctx.read_source(self)
+    }
+}
+
+impl<T: Clone + Send + Sync + 'static> Read<AsyncComputeContext> for AsyncComputed<T> {
+    type Output = Option<T>;
+    fn read(&self, ctx: &AsyncComputeContext) -> Option<T> {
+        ctx.read_computed(self)
     }
 }
 
