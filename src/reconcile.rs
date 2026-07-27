@@ -37,6 +37,8 @@ use std::hash::Hash;
 use crate::Context;
 use crate::cell_family::SourceMap;
 use crate::source_tree::SourceTree;
+#[cfg(feature = "thread-safe")]
+use crate::{ThreadSafeContext, ThreadSafeSourceTree};
 
 /// A single reconciliation operation, keyed by stable id.
 ///
@@ -164,6 +166,38 @@ pub fn apply_to_tree<K, V>(ctx: &Context, tree: &SourceTree<K, V>, ops: &[DiffOp
 where
     K: Eq + Hash + Clone + 'static,
     V: PartialEq + Clone + 'static,
+{
+    for op in ops {
+        match op {
+            DiffOp::Remove { key } => {
+                tree.remove_child(ctx, key);
+            }
+            DiffOp::Insert { key, value, index } => {
+                tree.insert_child(ctx, key.clone(), value.clone());
+                tree.move_child(ctx, key, *index);
+            }
+            DiffOp::Move { key, to } => {
+                tree.move_child(ctx, key, *to);
+            }
+            DiffOp::Update { key, value } => {
+                if let Some(child) = tree.child(key) {
+                    child.set(ctx, value.clone());
+                }
+            }
+        }
+    }
+}
+
+/// Apply a reconcile op set to one level of a live
+/// [`ThreadSafeSourceTree`].
+#[cfg(feature = "thread-safe")]
+pub fn apply_to_thread_safe_tree<K, V>(
+    ctx: &ThreadSafeContext,
+    tree: &ThreadSafeSourceTree<K, V>,
+    ops: &[DiffOp<K, V>],
+) where
+    K: Eq + Hash + Clone + Send + Sync + 'static,
+    V: PartialEq + Clone + Send + Sync + 'static,
 {
     for op in ops {
         match op {

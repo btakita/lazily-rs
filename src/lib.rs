@@ -135,6 +135,10 @@ mod thread_safe_queue;
 #[cfg(feature = "thread-safe")]
 mod thread_safe_reactive_family;
 #[cfg(feature = "thread-safe")]
+mod thread_safe_sem_tree;
+#[cfg(feature = "thread-safe")]
+mod thread_safe_source_tree;
+#[cfg(feature = "thread-safe")]
 mod thread_safe_topic;
 #[cfg(feature = "thread-safe")]
 mod thread_safe_work_queue;
@@ -293,6 +297,8 @@ pub use receipt::{
     CausalReceipt, CausalReceipts, ReceiptApplyStatus, ReceiptMessage, ReceiptOutcome,
     ReceiptProjection,
 };
+#[cfg(feature = "thread-safe")]
+pub use reconcile::apply_to_thread_safe_tree;
 pub use reconcile::{DiffOp, apply_to_map, apply_to_tree, reconcile};
 pub use relay::{
     BackpressurePolicy, BoundDim, IngressOutcome, Overflow, RelayCell, RelayConfigError,
@@ -355,6 +361,10 @@ pub use thread_safe_reactive_family::{ThreadSafeCellMap, ThreadSafeSlotMap};
 pub use thread_safe_reactive_family::{
     ThreadSafeComputedMap, ThreadSafeMapHandle, ThreadSafeReactiveMap, ThreadSafeSourceMap,
 };
+#[cfg(feature = "thread-safe")]
+pub use thread_safe_sem_tree::ThreadSafeSemTree;
+#[cfg(feature = "thread-safe")]
+pub use thread_safe_source_tree::ThreadSafeSourceTree;
 #[cfg(feature = "thread-safe")]
 pub use thread_safe_topic::ThreadSafeTopicCell;
 #[cfg(feature = "thread-safe")]
