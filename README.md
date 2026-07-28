@@ -436,6 +436,22 @@ portable primitives without moving runtime policy into the graph kernel. Its
 `Timer::after` / `Timer::at`, non-blocking `poll` / deterministic `poll_at`, or
 the zero-async-runtime blocking `wait`.
 
+`RevisionBarrier` is the corresponding blocking coordination bridge. Producers
+publish monotone revisions with `advance`; waiters require both a revision newer
+than their captured `after_revision` and a derived predicate. Predicate checks
+run outside the barrier lock and are retried if a revision or receipt
+notification races them, closing the check-to-sleep lost-wakeup window. Optional
+`Timer` and barrier-owned cancellation inputs produce typed satisfied,
+timed-out, cancelled, disposed, or unavailable outcomes. Keyed effect-receipt
+storage and transport remain application-owned; update that ledger and call
+`notify`.
+
+This layer deliberately does not add generic mutexes, semaphores, latches,
+channels, or task groups: Rust already supplies local synchronization and Lazily
+already supplies distributed `LockCell`, `SemaphoreCell`, `BarrierCell`, and
+`QuorumCell`. New standard-library primitives should be admitted only when they
+add a reactive revision or effect-lifecycle guarantee.
+
 ### ThreadSafeContext
 
 Enable the `thread-safe` feature (v0.18.0+, was default before):
