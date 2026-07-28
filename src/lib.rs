@@ -123,6 +123,7 @@ mod spill;
 mod stable_id;
 mod state_machine;
 pub mod statechart;
+pub mod stdlib;
 #[cfg(feature = "webrtc-str0m")]
 mod str0m_backend;
 #[cfg(feature = "webrtc-str0m")]

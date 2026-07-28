@@ -428,6 +428,14 @@ the formal backstop is `lazily-formal/LazilyFormal/DurableSink.lean`.
 | `effect.dispose(&ctx)` | Dispose an effect and unsubscribe dependencies |
 | `effect.is_active(&ctx)` | Check whether an effect is still registered |
 
+### Lazily standard library
+
+`lazily::stdlib` contains optional-convenience semantics built from the
+portable primitives without moving runtime policy into the graph kernel. Its
+`Timer` adapts the logical `TimerCore` to Rust's monotone `Instant`: use
+`Timer::after` / `Timer::at`, non-blocking `poll` / deterministic `poll_at`, or
+the zero-async-runtime blocking `wait`.
+
 ### ThreadSafeContext
 
 Enable the `thread-safe` feature (v0.18.0+, was default before):
