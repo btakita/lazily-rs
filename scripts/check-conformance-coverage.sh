@@ -35,6 +35,10 @@ KNOWN_UNCOVERED=(
   "receipts/causal_receipts.json"
   "reliable-sync/coalesce_bounds_outbox.json"
   "reliable-sync/liveness_lease_eviction.json"
+  # Phase 0 defines the portable stdlib corpus; the production runner lands in Phase 1.
+  "stdlib/revision_barrier.json"
+  "stdlib/timeout.json"
+  "stdlib/timer.json"
 )
 
 MANIFEST="${LAZILY_CONFORMANCE_MANIFEST:-build/conformance-fixtures-loaded.txt}"
