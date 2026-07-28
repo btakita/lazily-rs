@@ -1,7 +1,10 @@
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
-use lazily::stdlib::{Timeout, TimeoutOperation, TimeoutOutcome, TimeoutPoll};
+use lazily::stdlib::{
+    Timeout, TimeoutCancellation, TimeoutOperation, TimeoutOutcome, TimeoutPoll,
+    TimeoutUnavailableReason,
+};
 
 #[test]
 fn completion_before_deadline_is_latched() {
@@ -143,4 +146,48 @@ fn wait_with_exposes_deterministic_clock_and_wait_seams() {
 
     assert_eq!(outcome, &TimeoutOutcome::Completed("done"));
     assert_eq!(wait_calls.get(), 1);
+}
+
+#[test]
+fn typed_cancellation_unavailability_is_latched() {
+    let start = Instant::now();
+    let mut timeout = Timeout::<()>::try_after_at(start, Duration::from_secs(1)).unwrap();
+
+    assert_eq!(
+        timeout.poll_at_with_cancellation(
+            start,
+            || TimeoutOperation::Pending,
+            || TimeoutCancellation::Unavailable,
+        ),
+        TimeoutPoll::Unavailable
+    );
+    assert_eq!(
+        timeout.unavailable_reason(),
+        Some(TimeoutUnavailableReason::Cancellation)
+    );
+}
+
+#[test]
+fn completion_observes_cancellation_once_but_wins_the_race() {
+    let start = Instant::now();
+    let operation_calls = Cell::new(0);
+    let cancellation_calls = Cell::new(0);
+    let mut timeout = Timeout::try_after_at(start, Duration::from_secs(1)).unwrap();
+
+    assert_eq!(
+        timeout.poll_at_with_cancellation(
+            start,
+            || {
+                operation_calls.set(operation_calls.get() + 1);
+                TimeoutOperation::Completed(42)
+            },
+            || {
+                cancellation_calls.set(cancellation_calls.get() + 1);
+                TimeoutCancellation::Cancelled
+            },
+        ),
+        TimeoutPoll::Completed(&42)
+    );
+    assert_eq!(operation_calls.get(), 1);
+    assert_eq!(cancellation_calls.get(), 1);
 }

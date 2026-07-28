@@ -28,6 +28,26 @@ pub enum TimerPoll {
     },
 }
 
+/// A typed failure from a deterministic [`Timer`] clock seam.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimerError {
+    /// Adding a duration would exceed the selected clock representation.
+    DeadlineOverflow,
+    /// A caller-driven clock moved behind its last accepted observation.
+    ClockRegression,
+}
+
+impl std::fmt::Display for TimerError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DeadlineOverflow => formatter.write_str("timer deadline overflow"),
+            Self::ClockRegression => formatter.write_str("timer clock regressed"),
+        }
+    }
+}
+
+impl std::error::Error for TimerError {}
+
 /// A blocking/pollable wall-clock adapter over the logical [`TimerCore`].
 ///
 /// `TimerCore` remains the portable primitive: it knows only monotone logical
@@ -42,6 +62,8 @@ pub enum TimerPoll {
 pub struct Timer {
     deadline: Instant,
     core: TimerCore,
+    last_observed: Option<Instant>,
+    fired_at: Option<Instant>,
 }
 
 impl Timer {
@@ -51,10 +73,37 @@ impl Timer {
     ///
     /// Panics if `delay` is too large to represent as an [`Instant`].
     pub fn after(delay: Duration) -> Self {
-        let deadline = Instant::now()
-            .checked_add(delay)
-            .expect("timer delay exceeds the Instant range");
-        Self::at(deadline)
+        Self::try_after(delay).expect("timer delay exceeds the Instant range")
+    }
+
+    /// Create a timer after `delay`, returning a typed overflow instead of
+    /// panicking.
+    pub fn try_after(delay: Duration) -> Result<Self, TimerError> {
+        Self::try_after_at(Instant::now(), delay)
+    }
+
+    /// Create a timer from an explicitly supplied clock observation.
+    ///
+    /// This constructor and [`try_poll_at`](Self::try_poll_at) form the
+    /// deterministic monotone-clock seam used by conformance runners.
+    pub fn try_after_at(now: Instant, delay: Duration) -> Result<Self, TimerError> {
+        let deadline = now.checked_add(delay).ok_or(TimerError::DeadlineOverflow)?;
+        Ok(Self {
+            deadline,
+            core: TimerCore::new(1),
+            last_observed: Some(now),
+            fired_at: None,
+        })
+    }
+
+    /// Checked addition for portable logical-tick fixture clocks.
+    ///
+    /// Wall-clock adapters still use [`Instant`], but peer and conformance
+    /// adapters can validate their `u64` logical timeline before mapping it to
+    /// an `Instant`.
+    pub fn checked_deadline_ticks(now: u64, duration: u64) -> Result<u64, TimerError> {
+        now.checked_add(duration)
+            .ok_or(TimerError::DeadlineOverflow)
     }
 
     /// Create a timer for an absolute monotone-clock `deadline`.
@@ -62,6 +111,8 @@ impl Timer {
         Self {
             deadline,
             core: TimerCore::new(1),
+            last_observed: None,
+            fired_at: None,
         }
     }
 
@@ -75,6 +126,11 @@ impl Timer {
         self.core.fired()
     }
 
+    /// The clock instant that first observed the terminal fire edge.
+    pub fn fired_at(&self) -> Option<Instant> {
+        self.fired_at
+    }
+
     /// Poll using the current standard-library monotone clock.
     pub fn poll(&mut self) -> TimerPoll {
         self.poll_at(Instant::now())
@@ -86,10 +142,26 @@ impl Timer {
     /// fired, the timer remains terminal even if a later call supplies an
     /// earlier instant.
     pub fn poll_at(&mut self, now: Instant) -> TimerPoll {
+        self.poll_at_unchecked(now)
+    }
+
+    /// Poll an explicitly supplied monotone clock and reject regressions
+    /// without changing timer state.
+    pub fn try_poll_at(&mut self, now: Instant) -> Result<TimerPoll, TimerError> {
+        if self.core.fired() {
+            return Ok(TimerPoll::Fired { newly_fired: false });
+        }
+        if self.last_observed.is_some_and(|last| now < last) {
+            return Err(TimerError::ClockRegression);
+        }
+        self.last_observed = Some(now);
+        Ok(self.poll_at_unchecked(now))
+    }
+
+    fn poll_at_unchecked(&mut self, now: Instant) -> TimerPoll {
         if self.core.fired() {
             return TimerPoll::Fired { newly_fired: false };
         }
-
         if now < self.deadline {
             return TimerPoll::Pending {
                 remaining: self.deadline.duration_since(now),
@@ -97,6 +169,9 @@ impl Timer {
         }
 
         let newly_fired = self.core.tick(1);
+        if newly_fired {
+            self.fired_at = Some(now);
+        }
         TimerPoll::Fired { newly_fired }
     }
 
@@ -123,6 +198,28 @@ pub enum TimeoutOperation<T> {
     Completed(T),
     /// The operation can no longer be observed.
     Unavailable,
+}
+
+/// The caller-observed state of a cancellation input wrapped by [`Timeout`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeoutCancellation {
+    /// Cancellation is available and has not been requested.
+    Pending,
+    /// Cancellation was requested.
+    Cancelled,
+    /// The cancellation source can no longer be observed.
+    Unavailable,
+}
+
+/// Why a [`Timeout`] resolved to [`TimeoutOutcome::Unavailable`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeoutUnavailableReason {
+    /// The operation adapter became unavailable.
+    Operation,
+    /// The cancellation adapter became unavailable.
+    Cancellation,
+    /// The caller-driven monotone clock regressed.
+    ClockRegression,
 }
 
 /// A latched terminal outcome stored by [`Timeout`].
@@ -173,6 +270,7 @@ pub enum TimeoutPoll<'a, T> {
 pub struct Timeout<T> {
     timer: Timer,
     outcome: Option<TimeoutOutcome<T>>,
+    unavailable_reason: Option<TimeoutUnavailableReason>,
 }
 
 impl<T> Timeout<T> {
@@ -185,6 +283,11 @@ impl<T> Timeout<T> {
         Self::from_timer(Timer::after(delay))
     }
 
+    /// Create a timeout from an explicitly supplied clock observation.
+    pub fn try_after_at(now: Instant, delay: Duration) -> Result<Self, TimerError> {
+        Timer::try_after_at(now, delay).map(Self::from_timer)
+    }
+
     /// Create a timeout for an absolute monotone-clock `deadline`.
     pub fn at(deadline: Instant) -> Self {
         Self::from_timer(Timer::at(deadline))
@@ -195,6 +298,7 @@ impl<T> Timeout<T> {
         Self {
             timer,
             outcome: None,
+            unavailable_reason: None,
         }
     }
 
@@ -211,6 +315,11 @@ impl<T> Timeout<T> {
     /// Return the latched terminal outcome, if any.
     pub fn outcome(&self) -> Option<&TimeoutOutcome<T>> {
         self.outcome.as_ref()
+    }
+
+    /// Return the reason for a terminal unavailable outcome.
+    pub fn unavailable_reason(&self) -> Option<TimeoutUnavailableReason> {
+        self.unavailable_reason
     }
 
     /// Poll using the current standard-library monotone clock.
@@ -235,39 +344,90 @@ impl<T> Timeout<T> {
         F: FnOnce() -> TimeoutOperation<T>,
         C: FnOnce() -> bool,
     {
+        self.poll_at_with_cancellation(now, operation, || {
+            if cancelled() {
+                TimeoutCancellation::Cancelled
+            } else {
+                TimeoutCancellation::Pending
+            }
+        })
+    }
+
+    /// Poll with a typed cancellation adapter.
+    ///
+    /// Before the deadline both adapters are invoked exactly once. Completion
+    /// wins a simultaneous cancellation; an unavailable operation wins an
+    /// unavailable or cancelled cancellation input. At or after the deadline
+    /// neither adapter is invoked.
+    pub fn poll_at_with_cancellation<F, C>(
+        &mut self,
+        now: Instant,
+        operation: F,
+        cancellation: C,
+    ) -> TimeoutPoll<'_, T>
+    where
+        F: FnOnce() -> TimeoutOperation<T>,
+        C: FnOnce() -> TimeoutCancellation,
+    {
         if self.outcome.is_some() {
             return self
                 .terminal_poll()
                 .expect("terminal timeout must have an outcome");
         }
 
-        if matches!(self.timer.poll_at(now), TimerPoll::Fired { .. }) {
-            self.outcome = Some(TimeoutOutcome::TimedOut);
-            return TimeoutPoll::TimedOut;
+        match self.timer.try_poll_at(now) {
+            Ok(TimerPoll::Fired { .. }) => {
+                self.outcome = Some(TimeoutOutcome::TimedOut);
+                return TimeoutPoll::TimedOut;
+            }
+            Err(TimerError::ClockRegression) => {
+                self.outcome = Some(TimeoutOutcome::Unavailable);
+                self.unavailable_reason = Some(TimeoutUnavailableReason::ClockRegression);
+                return TimeoutPoll::Unavailable;
+            }
+            Err(TimerError::DeadlineOverflow) => {
+                unreachable!("a constructed timer already has a representable deadline");
+            }
+            Ok(TimerPoll::Pending { .. }) => {}
         }
 
         let operation = operation();
-        if let TimeoutOperation::Completed(value) = operation {
-            self.outcome = Some(TimeoutOutcome::Completed(value));
-            return self
-                .terminal_poll()
-                .expect("completed timeout must have an outcome");
+        let cancellation = cancellation();
+        match operation {
+            TimeoutOperation::Completed(value) => {
+                self.outcome = Some(TimeoutOutcome::Completed(value));
+                return self
+                    .terminal_poll()
+                    .expect("completed timeout must have an outcome");
+            }
+            TimeoutOperation::Unavailable => {
+                self.outcome = Some(TimeoutOutcome::Unavailable);
+                self.unavailable_reason = Some(TimeoutUnavailableReason::Operation);
+                return TimeoutPoll::Unavailable;
+            }
+            TimeoutOperation::Pending => {}
         }
 
-        if cancelled() {
-            self.outcome = Some(TimeoutOutcome::Cancelled);
-            return TimeoutPoll::Cancelled;
+        match cancellation {
+            TimeoutCancellation::Cancelled => {
+                self.outcome = Some(TimeoutOutcome::Cancelled);
+                return TimeoutPoll::Cancelled;
+            }
+            TimeoutCancellation::Unavailable => {
+                self.outcome = Some(TimeoutOutcome::Unavailable);
+                self.unavailable_reason = Some(TimeoutUnavailableReason::Cancellation);
+                return TimeoutPoll::Unavailable;
+            }
+            TimeoutCancellation::Pending => {}
         }
 
-        if matches!(operation, TimeoutOperation::Unavailable) {
-            self.outcome = Some(TimeoutOutcome::Unavailable);
-            return TimeoutPoll::Unavailable;
-        }
-
-        match self.timer.poll_at(now) {
-            TimerPoll::Pending { remaining } => TimeoutPoll::Pending { remaining },
-            TimerPoll::Fired { .. } => {
+        match self.timer.try_poll_at(now) {
+            Ok(TimerPoll::Pending { remaining }) => TimeoutPoll::Pending { remaining },
+            Ok(TimerPoll::Fired { .. }) => {
                 unreachable!("timer was pending earlier in the same deterministic poll")
+            }
+            Err(_) => {
+                unreachable!("the same deterministic clock observation cannot regress")
             }
         }
     }
@@ -340,7 +500,8 @@ pub enum RevisionWaitOutcome {
 #[derive(Debug)]
 struct RevisionBarrierState {
     revision: u64,
-    generation: u64,
+    revision_generation: u64,
+    wake_generation: u64,
     disposed: bool,
 }
 
@@ -374,7 +535,7 @@ impl BarrierCancellation {
                 .state
                 .lock()
                 .expect("revision barrier mutex poisoned");
-            state.generation = state.generation.wrapping_add(1);
+            state.wake_generation = state.wake_generation.wrapping_add(1);
             barrier.changed.notify_all();
         }
         true
@@ -408,7 +569,8 @@ impl RevisionBarrier {
             inner: Arc::new(RevisionBarrierInner {
                 state: Mutex::new(RevisionBarrierState {
                     revision: initial_revision,
-                    generation: 0,
+                    revision_generation: 0,
+                    wake_generation: 0,
                     disposed: false,
                 }),
                 changed: Condvar::new(),
@@ -425,6 +587,15 @@ impl RevisionBarrier {
             .revision
     }
 
+    /// Return the number of accepted revision advances.
+    pub fn generation(&self) -> u64 {
+        self.inner
+            .state
+            .lock()
+            .expect("revision barrier mutex poisoned")
+            .revision_generation
+    }
+
     /// Publish a strictly newer revision and wake waiters.
     ///
     /// Returns `false` for stale or duplicate revisions and after disposal.
@@ -439,7 +610,8 @@ impl RevisionBarrier {
         }
 
         state.revision = revision;
-        state.generation = state.generation.wrapping_add(1);
+        state.revision_generation = state.revision_generation.wrapping_add(1);
+        state.wake_generation = state.wake_generation.wrapping_add(1);
         self.inner.changed.notify_all();
         true
     }
@@ -458,7 +630,7 @@ impl RevisionBarrier {
             return;
         }
 
-        state.generation = state.generation.wrapping_add(1);
+        state.wake_generation = state.wake_generation.wrapping_add(1);
         self.inner.changed.notify_all();
     }
 
@@ -484,7 +656,7 @@ impl RevisionBarrier {
         }
 
         state.disposed = true;
-        state.generation = state.generation.wrapping_add(1);
+        state.wake_generation = state.wake_generation.wrapping_add(1);
         self.inner.changed.notify_all();
         true
     }
@@ -533,6 +705,14 @@ impl RevisionBarrier {
                     revision: state.revision,
                 };
             }
+            match deadline.as_deref_mut().map(Timer::poll) {
+                Some(TimerPoll::Fired { .. }) => {
+                    return RevisionWaitOutcome::TimedOut {
+                        revision: state.revision,
+                    };
+                }
+                Some(TimerPoll::Pending { .. }) | None => {}
+            }
             if cancellation.is_some_and(BarrierCancellation::is_cancelled) {
                 return RevisionWaitOutcome::Cancelled {
                     revision: state.revision,
@@ -541,7 +721,7 @@ impl RevisionBarrier {
 
             if state.revision > after_revision {
                 let revision = state.revision;
-                let generation = state.generation;
+                let wake_generation = state.wake_generation;
                 drop(state);
                 let checked = check(revision);
                 state = self
@@ -550,7 +730,7 @@ impl RevisionBarrier {
                     .lock()
                     .expect("revision barrier mutex poisoned");
 
-                if state.generation != generation {
+                if state.wake_generation != wake_generation {
                     continue;
                 }
 
@@ -567,9 +747,7 @@ impl RevisionBarrier {
 
             match deadline.as_deref_mut().map(Timer::poll) {
                 Some(TimerPoll::Fired { .. }) => {
-                    return RevisionWaitOutcome::TimedOut {
-                        revision: state.revision,
-                    };
+                    unreachable!("timer was pending earlier in the same barrier iteration");
                 }
                 Some(TimerPoll::Pending { remaining }) => {
                     let (next_state, _) = self

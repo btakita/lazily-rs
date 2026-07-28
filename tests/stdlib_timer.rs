@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use lazily::stdlib::{Timer, TimerPoll};
+use lazily::stdlib::{Timer, TimerError, TimerPoll};
 
 #[test]
 fn timer_poll_at_is_pending_then_fires_exactly_once() {
@@ -50,4 +50,34 @@ fn zero_delay_wait_fires_without_an_async_runtime() {
 
     assert_eq!(timer.wait(), TimerPoll::Fired { newly_fired: true });
     assert_eq!(timer.wait(), TimerPoll::Fired { newly_fired: false });
+}
+
+#[test]
+fn deterministic_clock_regression_is_typed_and_does_not_change_state() {
+    let start = Instant::now();
+    let mut timer = Timer::try_after_at(start, Duration::from_secs(5)).unwrap();
+
+    assert_eq!(
+        timer.try_poll_at(start + Duration::from_secs(3)),
+        Ok(TimerPoll::Pending {
+            remaining: Duration::from_secs(2)
+        })
+    );
+    assert_eq!(
+        timer.try_poll_at(start + Duration::from_secs(2)),
+        Err(TimerError::ClockRegression)
+    );
+    assert_eq!(
+        timer.try_poll_at(start + Duration::from_secs(5)),
+        Ok(TimerPoll::Fired { newly_fired: true })
+    );
+    assert_eq!(timer.fired_at(), Some(start + Duration::from_secs(5)));
+}
+
+#[test]
+fn logical_tick_deadline_overflow_is_typed() {
+    assert_eq!(
+        Timer::checked_deadline_ticks(u64::MAX - 1, 2),
+        Err(TimerError::DeadlineOverflow)
+    );
 }

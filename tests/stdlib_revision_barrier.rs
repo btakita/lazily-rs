@@ -102,6 +102,25 @@ fn timer_deadline_returns_a_typed_timeout() {
 }
 
 #[test]
+fn exact_deadline_dominates_simultaneous_cancellation() {
+    let barrier = RevisionBarrier::new(7);
+    let cancellation = barrier.cancellation();
+    assert!(cancellation.cancel());
+    let mut deadline = Timer::after(Duration::ZERO);
+
+    assert_eq!(
+        barrier.wait_after(
+            7,
+            |_| RevisionCheck::Satisfied,
+            Some(&mut deadline),
+            Some(&cancellation),
+        ),
+        RevisionWaitOutcome::TimedOut { revision: 7 }
+    );
+    assert_eq!(barrier.generation(), 0);
+}
+
+#[test]
 fn disposal_wakes_waiters_and_latches() {
     let barrier = RevisionBarrier::new(3);
     let waiter = barrier.clone();
