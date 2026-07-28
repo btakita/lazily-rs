@@ -436,6 +436,14 @@ portable primitives without moving runtime policy into the graph kernel. Its
 `Timer::after` / `Timer::at`, non-blocking `poll` / deterministic `poll_at`, or
 the zero-async-runtime blocking `wait`.
 
+`Timeout<T>` composes that timer with caller-owned operation and cancellation
+probes. It latches typed completed, timed-out, cancelled, or unavailable
+outcomes without owning a future, executor, or hidden thread. `poll_at` is the
+deterministic clock seam; `wait_with` additionally accepts the caller's clock
+and wait policy so channels, condition variables, reactors, or test schedulers
+can supply wakeups. The deadline is strict, while completion wins a
+completion/cancellation race observed before it.
+
 `RevisionBarrier` is the corresponding blocking coordination bridge. Producers
 publish monotone revisions with `advance`; waiters require both a revision newer
 than their captured `after_revision` and a derived predicate. Predicate checks

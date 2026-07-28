@@ -114,6 +114,203 @@ impl Timer {
     }
 }
 
+/// The caller-observed state of an operation wrapped by [`Timeout`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TimeoutOperation<T> {
+    /// The operation has not completed yet.
+    Pending,
+    /// The operation completed with a value.
+    Completed(T),
+    /// The operation can no longer be observed.
+    Unavailable,
+}
+
+/// A latched terminal outcome stored by [`Timeout`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TimeoutOutcome<T> {
+    /// The operation completed before the deadline.
+    Completed(T),
+    /// The monotone deadline was reached.
+    TimedOut,
+    /// Cancellation was observed before the deadline.
+    Cancelled,
+    /// The caller-supplied operation became unavailable.
+    Unavailable,
+}
+
+/// The result of polling a [`Timeout`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeoutPoll<'a, T> {
+    /// Neither the operation nor the deadline is terminal.
+    Pending {
+        /// Time remaining at the instant used for this poll.
+        remaining: Duration,
+    },
+    /// The operation completed before the deadline.
+    Completed(&'a T),
+    /// The monotone deadline was reached.
+    TimedOut,
+    /// Cancellation was observed before the deadline.
+    Cancelled,
+    /// The caller-supplied operation became unavailable.
+    Unavailable,
+}
+
+/// A caller-driven timeout adapter composed from [`Timer`].
+///
+/// `Timeout` owns no operation, executor, task, or thread. Instead,
+/// [`poll`](Self::poll), [`poll_at`](Self::poll_at), and
+/// [`wait_with`](Self::wait_with) accept caller-supplied adapters for an
+/// operation or future and its cancellation state. This keeps runtime and wait
+/// policy outside the Lazily graph kernel.
+///
+/// The deadline is strict: a poll at or after it resolves to
+/// [`TimeoutOutcome::TimedOut`] without polling the operation. Before the
+/// deadline, completion wins if completion and cancellation are both observed
+/// by the same poll. Every terminal outcome is latched, so later reads do not
+/// call any supplied adapter again.
+#[derive(Debug)]
+pub struct Timeout<T> {
+    timer: Timer,
+    outcome: Option<TimeoutOutcome<T>>,
+}
+
+impl<T> Timeout<T> {
+    /// Create a timeout whose deadline is `delay` from now.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `delay` is too large to represent as an [`Instant`].
+    pub fn after(delay: Duration) -> Self {
+        Self::from_timer(Timer::after(delay))
+    }
+
+    /// Create a timeout for an absolute monotone-clock `deadline`.
+    pub fn at(deadline: Instant) -> Self {
+        Self::from_timer(Timer::at(deadline))
+    }
+
+    /// Create a timeout from an existing standard-library [`Timer`].
+    pub fn from_timer(timer: Timer) -> Self {
+        Self {
+            timer,
+            outcome: None,
+        }
+    }
+
+    /// The absolute monotone deadline.
+    pub fn deadline(&self) -> Instant {
+        self.timer.deadline()
+    }
+
+    /// Whether a terminal outcome has been latched.
+    pub fn is_terminal(&self) -> bool {
+        self.outcome.is_some()
+    }
+
+    /// Return the latched terminal outcome, if any.
+    pub fn outcome(&self) -> Option<&TimeoutOutcome<T>> {
+        self.outcome.as_ref()
+    }
+
+    /// Poll using the current standard-library monotone clock.
+    ///
+    /// `operation` may adapt a `Future::poll`, channel receive, process wait,
+    /// or any other non-blocking operation probe. `cancelled` remains
+    /// caller-owned and is checked only while the deadline is pending.
+    pub fn poll<F, C>(&mut self, operation: F, cancelled: C) -> TimeoutPoll<'_, T>
+    where
+        F: FnOnce() -> TimeoutOperation<T>,
+        C: FnOnce() -> bool,
+    {
+        self.poll_at(Instant::now(), operation, cancelled)
+    }
+
+    /// Poll at an explicitly supplied monotone instant.
+    ///
+    /// This is the deterministic clock seam. At or after the deadline, the
+    /// operation and cancellation adapters are not called.
+    pub fn poll_at<F, C>(&mut self, now: Instant, operation: F, cancelled: C) -> TimeoutPoll<'_, T>
+    where
+        F: FnOnce() -> TimeoutOperation<T>,
+        C: FnOnce() -> bool,
+    {
+        if self.outcome.is_some() {
+            return self
+                .terminal_poll()
+                .expect("terminal timeout must have an outcome");
+        }
+
+        if matches!(self.timer.poll_at(now), TimerPoll::Fired { .. }) {
+            self.outcome = Some(TimeoutOutcome::TimedOut);
+            return TimeoutPoll::TimedOut;
+        }
+
+        let operation = operation();
+        if let TimeoutOperation::Completed(value) = operation {
+            self.outcome = Some(TimeoutOutcome::Completed(value));
+            return self
+                .terminal_poll()
+                .expect("completed timeout must have an outcome");
+        }
+
+        if cancelled() {
+            self.outcome = Some(TimeoutOutcome::Cancelled);
+            return TimeoutPoll::Cancelled;
+        }
+
+        if matches!(operation, TimeoutOperation::Unavailable) {
+            self.outcome = Some(TimeoutOutcome::Unavailable);
+            return TimeoutPoll::Unavailable;
+        }
+
+        match self.timer.poll_at(now) {
+            TimerPoll::Pending { remaining } => TimeoutPoll::Pending { remaining },
+            TimerPoll::Fired { .. } => {
+                unreachable!("timer was pending earlier in the same deterministic poll")
+            }
+        }
+    }
+
+    /// Drive the timeout with caller-supplied clock and wait policies.
+    ///
+    /// `wait` receives the current remaining deadline budget. It may adapt a
+    /// condition variable, channel timeout, thread park, reactor, or test
+    /// scheduler. This method does not spawn a thread or select a runtime.
+    pub fn wait_with<P, C, N, W>(
+        &mut self,
+        mut operation: P,
+        mut cancelled: C,
+        mut now: N,
+        mut wait: W,
+    ) -> &TimeoutOutcome<T>
+    where
+        P: FnMut() -> TimeoutOperation<T>,
+        C: FnMut() -> bool,
+        N: FnMut() -> Instant,
+        W: FnMut(Duration),
+    {
+        while let TimeoutPoll::Pending { remaining } =
+            self.poll_at(now(), &mut operation, &mut cancelled)
+        {
+            wait(remaining);
+        }
+
+        self.outcome
+            .as_ref()
+            .expect("terminal timeout must have an outcome")
+    }
+
+    fn terminal_poll(&self) -> Option<TimeoutPoll<'_, T>> {
+        self.outcome.as_ref().map(|outcome| match outcome {
+            TimeoutOutcome::Completed(value) => TimeoutPoll::Completed(value),
+            TimeoutOutcome::TimedOut => TimeoutPoll::TimedOut,
+            TimeoutOutcome::Cancelled => TimeoutPoll::Cancelled,
+            TimeoutOutcome::Unavailable => TimeoutPoll::Unavailable,
+        })
+    }
+}
+
 /// The result of evaluating a [`RevisionBarrier`] predicate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RevisionCheck {
