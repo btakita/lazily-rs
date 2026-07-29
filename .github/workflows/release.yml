@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish-crate:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "lazily"))')"
+          test "${GITHUB_REF_NAME}" = "v${version}"
+
+      - name: Authenticate to crates.io via OIDC trusted publishing
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish crate
+        run: cargo publish --locked

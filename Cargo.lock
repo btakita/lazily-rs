@@ -1192,7 +1192,7 @@ dependencies = [
 
 [[package]]
 name = "lazily"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "arc-swap",
  "base64",
