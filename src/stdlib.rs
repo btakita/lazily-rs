@@ -503,6 +503,8 @@ struct RevisionBarrierState {
     revision_generation: u64,
     wake_generation: u64,
     disposed: bool,
+    last_now: Option<u64>,
+    clock_regressed: bool,
 }
 
 #[derive(Debug)]
@@ -572,6 +574,8 @@ impl RevisionBarrier {
                     revision_generation: 0,
                     wake_generation: 0,
                     disposed: false,
+                    last_now: None,
+                    clock_regressed: false,
                 }),
                 changed: Condvar::new(),
             }),
@@ -596,6 +600,40 @@ impl RevisionBarrier {
             .revision_generation
     }
 
+    /// Accept one logical-clock observation for portable barrier adapters.
+    ///
+    /// The first observation establishes the clock. A smaller later value
+    /// latches the barrier as unavailable without changing its revision or
+    /// generation. `false` means either that regression was observed or that
+    /// an earlier terminal state already won.
+    pub fn observe_clock(&self, now: u64) -> bool {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("revision barrier mutex poisoned");
+        if state.disposed || state.clock_regressed {
+            return false;
+        }
+        if state.last_now.is_some_and(|last_now| now < last_now) {
+            state.clock_regressed = true;
+            state.wake_generation = state.wake_generation.wrapping_add(1);
+            self.inner.changed.notify_all();
+            return false;
+        }
+        state.last_now = Some(now);
+        true
+    }
+
+    /// Whether a logical-clock regression latched this barrier unavailable.
+    pub fn clock_regressed(&self) -> bool {
+        self.inner
+            .state
+            .lock()
+            .expect("revision barrier mutex poisoned")
+            .clock_regressed
+    }
+
     /// Publish a strictly newer revision and wake waiters.
     ///
     /// Returns `false` for stale or duplicate revisions and after disposal.
@@ -605,7 +643,7 @@ impl RevisionBarrier {
             .state
             .lock()
             .expect("revision barrier mutex poisoned");
-        if state.disposed || revision <= state.revision {
+        if state.disposed || state.clock_regressed || revision <= state.revision {
             return false;
         }
 
@@ -626,7 +664,7 @@ impl RevisionBarrier {
             .state
             .lock()
             .expect("revision barrier mutex poisoned");
-        if state.disposed {
+        if state.disposed || state.clock_regressed {
             return;
         }
 
@@ -651,7 +689,7 @@ impl RevisionBarrier {
             .state
             .lock()
             .expect("revision barrier mutex poisoned");
-        if state.disposed {
+        if state.disposed || state.clock_regressed {
             return false;
         }
 
@@ -700,6 +738,11 @@ impl RevisionBarrier {
             .expect("revision barrier mutex poisoned");
 
         loop {
+            if state.clock_regressed {
+                return RevisionWaitOutcome::Unavailable {
+                    revision: state.revision,
+                };
+            }
             if state.disposed {
                 return RevisionWaitOutcome::Disposed {
                     revision: state.revision,

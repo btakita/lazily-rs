@@ -2,8 +2,6 @@ mod common;
 
 use std::cell::Cell;
 use std::collections::BTreeSet;
-use std::sync::mpsc;
-use std::thread;
 use std::time::{Duration, Instant};
 
 use lazily::stdlib::{
@@ -296,7 +294,12 @@ fn map_wait(outcome: RevisionWaitOutcome, barrier: &RevisionBarrier) -> Value {
         RevisionWaitOutcome::Cancelled { .. } => barrier_observation("cancelled", barrier, None),
         RevisionWaitOutcome::Disposed { .. } => barrier_observation("disposed", barrier, None),
         RevisionWaitOutcome::Unavailable { .. } => {
-            barrier_observation("unavailable", barrier, Some("cancellation_unavailable"))
+            let reason = if barrier.clock_regressed() {
+                "clock_regression"
+            } else {
+                "cancellation_unavailable"
+            };
+            barrier_observation("unavailable", barrier, Some(reason))
         }
     }
 }
@@ -317,32 +320,31 @@ fn replay_barriers(fixture: &Value) {
                     barrier_observation("pending", barrier.as_ref().unwrap(), None)
                 }
                 "register_recheck" => {
+                    let current = barrier.as_ref().unwrap().clone();
+                    if !current.observe_clock(step["now"].as_u64().expect("now")) {
+                        let (outcome, reason) = if current.clock_regressed() {
+                            ("unavailable", Some("clock_regression"))
+                        } else {
+                            ("disposed", None)
+                        };
+                        let actual = barrier_observation(outcome, &current, reason);
+                        assert_step("stdlib_revision_barrier_v1", scenario, index, actual);
+                        continue;
+                    }
                     let observed = step["observed_revision"]
                         .as_u64()
                         .expect("observed revision");
                     let predicate = step["predicate"].as_bool().expect("predicate");
-                    let current = barrier.as_ref().unwrap().clone();
-                    let waiter = current.clone();
                     let after = required_revision.saturating_sub(1);
-                    let (ready_tx, ready_rx) = mpsc::channel();
-                    let handle = thread::spawn(move || {
-                        ready_tx.send(()).expect("runner receiver");
-                        waiter.wait_after(
-                            after,
-                            |_| {
-                                if predicate {
-                                    RevisionCheck::Satisfied
-                                } else {
-                                    RevisionCheck::Pending
-                                }
-                            },
-                            None,
-                            None,
+                    let _ = current.advance(observed);
+                    if predicate && current.revision() >= required_revision {
+                        map_wait(
+                            current.wait_after(after, |_| RevisionCheck::Satisfied, None, None),
+                            &current,
                         )
-                    });
-                    ready_rx.recv().expect("runner waiter");
-                    assert!(current.advance(observed));
-                    map_wait(handle.join().expect("barrier waiter"), &current)
+                    } else {
+                        barrier_observation("pending", &current, None)
+                    }
                 }
                 "advance" => {
                     let current = barrier.as_ref().unwrap();
@@ -368,39 +370,58 @@ fn replay_barriers(fixture: &Value) {
                 "observe" => {
                     let current = barrier.as_ref().unwrap();
                     let now = step["now"].as_u64().expect("now");
-                    let reached = deadline.is_some_and(|value| now >= value);
-                    let predicate = step["predicate"].as_bool().expect("predicate");
-                    let cancellation = step["cancellation"].as_str().expect("cancellation");
-                    let mut timer = reached.then(|| Timer::after(Duration::ZERO));
-                    let owned = current.cancellation();
-                    let foreign_barrier = RevisionBarrier::new(0);
-                    let foreign = foreign_barrier.cancellation();
-                    if !reached && cancellation == "cancelled" {
-                        assert!(owned.cancel());
-                    }
-                    let token = match cancellation {
-                        "cancelled" => Some(&owned),
-                        "unavailable" => Some(&foreign),
-                        "pending" => Some(&owned),
-                        value => panic!("unknown cancellation {value}"),
-                    };
-                    let outcome = current.wait_after(
-                        required_revision.saturating_sub(1),
-                        |_| {
-                            if predicate {
-                                RevisionCheck::Satisfied
+                    if !current.observe_clock(now) {
+                        let (outcome, reason) = if current.clock_regressed() {
+                            ("unavailable", Some("clock_regression"))
+                        } else {
+                            ("disposed", None)
+                        };
+                        let mut observation = barrier_observation(outcome, current, reason);
+                        observation["cancellation_calls"] = json!(0);
+                        observation
+                    } else {
+                        let reached = deadline.is_some_and(|value| now >= value);
+                        let predicate = step["predicate"].as_bool().expect("predicate");
+                        let cancellation = step["cancellation"].as_str().expect("cancellation");
+                        let mut timer = reached.then(|| Timer::after(Duration::ZERO));
+                        let owned = current.cancellation();
+                        let foreign_barrier = RevisionBarrier::new(0);
+                        let foreign = foreign_barrier.cancellation();
+                        if !reached && cancellation == "cancelled" {
+                            assert!(owned.cancel());
+                        }
+                        let token = match cancellation {
+                            "cancelled" => Some(&owned),
+                            "unavailable" => Some(&foreign),
+                            "pending" => Some(&owned),
+                            value => panic!("unknown cancellation {value}"),
+                        };
+                        let predicate_satisfied =
+                            predicate && current.revision() >= required_revision;
+                        let mut observation =
+                            if reached || predicate_satisfied || cancellation != "pending" {
+                                map_wait(
+                                    current.wait_after(
+                                        required_revision.saturating_sub(1),
+                                        |_| {
+                                            if predicate {
+                                                RevisionCheck::Satisfied
+                                            } else {
+                                                RevisionCheck::Pending
+                                            }
+                                        },
+                                        timer.as_mut(),
+                                        token,
+                                    ),
+                                    current,
+                                )
                             } else {
-                                RevisionCheck::Pending
-                            }
-                        },
-                        timer.as_mut(),
-                        token,
-                    );
-                    let mut observation = map_wait(outcome, current);
-                    let predicate_satisfied = predicate && current.revision() >= required_revision;
-                    observation["cancellation_calls"] =
-                        json!(if reached || predicate_satisfied { 0 } else { 1 });
-                    observation
+                                barrier_observation("pending", current, None)
+                            };
+                        observation["cancellation_calls"] =
+                            json!(if reached || predicate_satisfied { 0 } else { 1 });
+                        observation
+                    }
                 }
                 "dispose" => {
                     let current = barrier.as_ref().unwrap();
@@ -648,7 +669,7 @@ fn independent_barrier(
             ("generation".into(), json!(0)),
             ("required".into(), step["required_revision"].clone()),
             ("deadline".into(), step["deadline"].clone()),
-            ("last_now".into(), json!(0)),
+            ("last_now".into(), Value::Null),
         ]);
         return model_barrier_observation(state);
     }
@@ -657,7 +678,11 @@ fn independent_barrier(
         return model_barrier_observation(state);
     }
     if state["status"] != "pending" && mutation != Some("terminal_not_latched") {
-        return model_barrier_observation(state);
+        let mut result = model_barrier_observation(state);
+        if op == "observe" {
+            result["cancellation_calls"] = json!(0);
+        }
+        return result;
     }
     if mutation == Some("terminal_not_latched") {
         state.insert("status".into(), json!("pending"));
@@ -692,6 +717,23 @@ fn independent_barrier(
         }
         return model_barrier_observation(state);
     }
+    if op == "register_recheck" || op == "observe" {
+        let now = step["now"].as_u64().unwrap();
+        if state["last_now"]
+            .as_u64()
+            .is_some_and(|last_now| now < last_now)
+            && mutation != Some("barrier_accept_clock_regression")
+        {
+            state.insert("status".into(), json!("unavailable"));
+            state.insert("reason".into(), json!("clock_regression"));
+            let mut result = model_barrier_observation(state);
+            if op == "observe" {
+                result["cancellation_calls"] = json!(0);
+            }
+            return result;
+        }
+        state.insert("last_now".into(), json!(now));
+    }
     if op == "register_recheck" {
         state.insert(
             "generation".into(),
@@ -711,7 +753,6 @@ fn independent_barrier(
     }
     assert_eq!(op, "observe");
     let now = step["now"].as_u64().unwrap();
-    state.insert("last_now".into(), json!(now));
     let reached = state["deadline"].as_u64().is_some_and(|deadline| {
         if mutation == Some("deadline_strict_greater") {
             now > deadline

@@ -1,8 +1,6 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
-use std::sync::mpsc;
-use std::thread;
 use std::time::{Duration, Instant};
 
 use lazily::stdlib::{
@@ -482,44 +480,36 @@ impl BarrierFeature {
         let observation = match string_field(step, "op")? {
             "start" => {
                 self.required_revision = u64_field(step, "required_revision")?;
-                self.deadline = step.get("deadline").and_then(Value::as_u64);
+                self.deadline = step.get("deadline").and_then(value_u64);
                 self.barrier = Some(RevisionBarrier::new(u64_field(step, "revision")?));
                 barrier_value("pending", self.barrier.as_ref().unwrap(), None)
             }
             "register_recheck" => {
-                let observed = u64_field(step, "observed_revision")?;
-                let predicate = bool_field(step, "predicate")?;
                 let barrier = self
                     .barrier
                     .as_ref()
                     .ok_or("barrier feature is not started")?
                     .clone();
-                let waiter = barrier.clone();
-                let after = self.required_revision.saturating_sub(1);
-                let (ready_tx, ready_rx) = mpsc::channel();
-                let handle = thread::spawn(move || {
-                    ready_tx.send(()).expect("peer receiver");
-                    waiter.wait_after(
-                        after,
-                        |_| {
-                            if predicate {
-                                RevisionCheck::Satisfied
-                            } else {
-                                RevisionCheck::Pending
-                            }
-                        },
-                        None,
-                        None,
-                    )
-                });
-                ready_rx.recv().map_err(|error| error.to_string())?;
-                let _ = barrier.advance(observed);
-                barrier_wait_value(
-                    handle
-                        .join()
-                        .map_err(|_| "barrier feature waiter panicked".to_owned())?,
-                    &barrier,
-                )
+                if !barrier.observe_clock(u64_field(step, "now")?) {
+                    if barrier.clock_regressed() {
+                        barrier_value("unavailable", &barrier, Some("clock_regression"))
+                    } else {
+                        barrier_value("disposed", &barrier, None)
+                    }
+                } else {
+                    let observed = u64_field(step, "observed_revision")?;
+                    let predicate = bool_field(step, "predicate")?;
+                    let after = self.required_revision.saturating_sub(1);
+                    let _ = barrier.advance(observed);
+                    if predicate && barrier.revision() >= self.required_revision {
+                        barrier_wait_value(
+                            barrier.wait_after(after, |_| RevisionCheck::Satisfied, None, None),
+                            &barrier,
+                        )
+                    } else {
+                        barrier_value("pending", &barrier, None)
+                    }
+                }
             }
             "advance" => {
                 let barrier = self
@@ -551,42 +541,56 @@ impl BarrierFeature {
                     .as_ref()
                     .ok_or("barrier feature is not started")?;
                 let now = u64_field(step, "now")?;
-                let reached = self.deadline.is_some_and(|deadline| now >= deadline);
-                let predicate = bool_field(step, "predicate")?;
-                let cancellation = string_field(step, "cancellation")?;
-                let mut timer = reached.then(|| Timer::after(Duration::ZERO));
-                let owned = barrier.cancellation();
-                let foreign_barrier = RevisionBarrier::new(0);
-                let foreign = foreign_barrier.cancellation();
-                if !reached && cancellation == "cancelled" {
-                    let _ = owned.cancel();
-                }
-                let token = match cancellation {
-                    "cancelled" | "pending" => Some(&owned),
-                    "unavailable" => Some(&foreign),
-                    value => return Err(format!("unsupported cancellation {value}")),
-                };
-                let outcome = barrier.wait_after(
-                    self.required_revision.saturating_sub(1),
-                    |_| {
-                        if predicate {
-                            RevisionCheck::Satisfied
-                        } else {
-                            RevisionCheck::Pending
-                        }
-                    },
-                    timer.as_mut(),
-                    token,
-                );
-                let mut value = barrier_wait_value(outcome, barrier);
-                value["cancellation_calls"] = json!(if reached
-                    || (predicate && barrier.revision() >= self.required_revision)
-                {
-                    0
+                if !barrier.observe_clock(now) {
+                    let (outcome, reason) = if barrier.clock_regressed() {
+                        ("unavailable", Some("clock_regression"))
+                    } else {
+                        ("disposed", None)
+                    };
+                    let mut value = barrier_value(outcome, barrier, reason);
+                    value["cancellation_calls"] = json!(0);
+                    value
                 } else {
-                    1
-                });
-                value
+                    let reached = self.deadline.is_some_and(|deadline| now >= deadline);
+                    let predicate = bool_field(step, "predicate")?;
+                    let cancellation = string_field(step, "cancellation")?;
+                    let mut timer = reached.then(|| Timer::after(Duration::ZERO));
+                    let owned = barrier.cancellation();
+                    let foreign_barrier = RevisionBarrier::new(0);
+                    let foreign = foreign_barrier.cancellation();
+                    if !reached && cancellation == "cancelled" {
+                        let _ = owned.cancel();
+                    }
+                    let token = match cancellation {
+                        "cancelled" | "pending" => Some(&owned),
+                        "unavailable" => Some(&foreign),
+                        value => return Err(format!("unsupported cancellation {value}")),
+                    };
+                    let predicate_satisfied =
+                        predicate && barrier.revision() >= self.required_revision;
+                    let mut value = if reached || predicate_satisfied || cancellation != "pending" {
+                        barrier_wait_value(
+                            barrier.wait_after(
+                                self.required_revision.saturating_sub(1),
+                                |_| {
+                                    if predicate {
+                                        RevisionCheck::Satisfied
+                                    } else {
+                                        RevisionCheck::Pending
+                                    }
+                                },
+                                timer.as_mut(),
+                                token,
+                            ),
+                            barrier,
+                        )
+                    } else {
+                        barrier_value("pending", barrier, None)
+                    };
+                    value["cancellation_calls"] =
+                        json!(if reached || predicate_satisfied { 0 } else { 1 });
+                    value
+                }
             }
             "dispose" => {
                 let barrier = self
@@ -626,8 +630,14 @@ fn string_field<'a>(value: &'a Value, field: &str) -> Result<&'a str, String> {
 fn u64_field(value: &Value, field: &str) -> Result<u64, String> {
     value
         .get(field)
-        .and_then(Value::as_u64)
+        .and_then(value_u64)
         .ok_or_else(|| format!("feature step requires u64 {field}"))
+}
+
+fn value_u64(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
 }
 
 fn bool_field(value: &Value, field: &str) -> Result<bool, String> {
@@ -655,9 +665,15 @@ fn barrier_wait_value(outcome: RevisionWaitOutcome, barrier: &RevisionBarrier) -
         RevisionWaitOutcome::TimedOut { .. } => barrier_value("timed_out", barrier, None),
         RevisionWaitOutcome::Cancelled { .. } => barrier_value("cancelled", barrier, None),
         RevisionWaitOutcome::Disposed { .. } => barrier_value("disposed", barrier, None),
-        RevisionWaitOutcome::Unavailable { .. } => {
-            barrier_value("unavailable", barrier, Some("cancellation_unavailable"))
-        }
+        RevisionWaitOutcome::Unavailable { .. } => barrier_value(
+            "unavailable",
+            barrier,
+            Some(if barrier.clock_regressed() {
+                "clock_regression"
+            } else {
+                "cancellation_unavailable"
+            }),
+        ),
     }
 }
 

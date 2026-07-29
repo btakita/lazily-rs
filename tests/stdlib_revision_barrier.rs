@@ -204,3 +204,34 @@ fn keyed_effect_receipts_remain_external_to_the_barrier() {
         RevisionWaitOutcome::Satisfied { revision: 5 }
     );
 }
+
+#[test]
+fn clock_regression_latches_unavailable_without_advancing_state() {
+    let barrier = RevisionBarrier::new(1);
+
+    assert!(barrier.observe_clock(5));
+    assert!(!barrier.observe_clock(4));
+    assert!(barrier.clock_regressed());
+    assert_eq!(barrier.revision(), 1);
+    assert_eq!(barrier.generation(), 0);
+    assert!(!barrier.advance(2));
+    assert!(!barrier.dispose());
+    assert!(!barrier.observe_clock(6));
+    assert_eq!(
+        barrier.wait_after(0, |_| RevisionCheck::Satisfied, None, None),
+        RevisionWaitOutcome::Unavailable { revision: 1 },
+    );
+}
+
+#[test]
+fn disposal_wins_over_a_later_clock_observation() {
+    let barrier = RevisionBarrier::new(3);
+
+    assert!(barrier.dispose());
+    assert!(!barrier.observe_clock(1));
+    assert!(!barrier.clock_regressed());
+    assert_eq!(
+        barrier.wait_after(2, |_| RevisionCheck::Satisfied, None, None),
+        RevisionWaitOutcome::Disposed { revision: 3 },
+    );
+}
