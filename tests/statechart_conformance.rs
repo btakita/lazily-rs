@@ -48,14 +48,13 @@ fn assert_active(ctx: &Context, chart: &StateChart, expected: &Value, msg: &str)
 
 fn assert_matches(ctx: &Context, chart: &StateChart, step: &Expect) {
     // `matches` keys are state ids — data, not assertion names — so the map is
-    // consumed wholesale.
-    let Some(obj) = step["matches"].as_object() else {
-        return;
-    };
-    for (id, expected) in obj {
-        let want = expected.as_bool().expect("matches value is bool");
-        assert_eq!(chart.matches(ctx, id), want, "matches({id}) mismatch");
-    }
+    // compared wholesale. Optional per step, hence bound to the key's presence.
+    step.assert_key_if_present("matches", |want| {
+        for (id, expected) in want.as_object().expect("matches object") {
+            let want = expected.as_bool().expect("matches value is bool");
+            assert_eq!(chart.matches(ctx, id), want, "matches({id}) mismatch");
+        }
+    });
 }
 
 /// A statechart fixture has no separate `expected` block — the step object *is*
@@ -67,31 +66,50 @@ fn run_fixture(name: &str) {
     let (ctx, chart) = build_chart(&fixture);
 
     let fx = Expect::new(format!("{SPEC_DIR}/{name}"), "<fixture>", &fixture);
-    fx.declared_exception(
+    fx.prose(
         "description",
         "prose for the human reader, not an assertion",
     );
-    fx.declared_exception("kind", "corpus routing tag, consumed by the coverage guard");
-    let _ = fx["chart"]; // consumed by build_chart above
+    fx.excuse_key("kind", "corpus routing tag, consumed by the coverage guard");
+    fx.excuse_key(
+        "chart",
+        "the chart definition under test, built by build_chart — an input, not a \
+         value to compare",
+    );
+    fx.excuse_key(
+        "steps",
+        "the event sequence replayed; each step is guarded on its own below",
+    );
 
     // initial_active (asserted once before any step).
-    assert_active(&ctx, &chart, &fx["initial_active"], "initial_active");
+    fx.assert_key_with("initial_active", |want| {
+        assert_active(&ctx, &chart, want, "initial_active")
+    });
 
     // initial_actions (optional).
-    if let Value::Array(initial) = &fx["initial_actions"] {
-        let want: Vec<String> = initial
+    fx.assert_key_if_present("initial_actions", |want| {
+        let want: Vec<String> = want
+            .as_array()
+            .expect("initial_actions")
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect();
         assert_eq!(chart.last_actions(), want, "initial_actions");
-    }
+    });
 
-    let steps = fx["steps"].as_array().expect("steps");
+    let steps = fx.raw()["steps"].as_array().expect("steps");
     for (i, step) in steps.iter().enumerate() {
         let step = fx.nested(format!("steps[{i}]"), step);
-        step.declared_exception("note", "prose for the human reader, not an assertion");
-        let event = step["event"].as_str().expect("event");
-        let guards: HashMap<String, bool> = step["guards"]
+        step.prose("note", "prose for the human reader, not an assertion");
+        // `event` and `guards` are the step's *inputs* — they drive the send, and
+        // what the send produced is asserted below.
+        step.excuse_key("event", "the event sent; an input, not a value to compare");
+        step.excuse_key(
+            "guards",
+            "the guard valuation supplied to the send; an input, not a value to compare",
+        );
+        let event = step.raw()["event"].as_str().expect("event");
+        let guards: HashMap<String, bool> = step.raw()["guards"]
             .as_object()
             .map(|o| {
                 o.iter()
@@ -101,24 +119,22 @@ fn run_fixture(name: &str) {
             .unwrap_or_default();
 
         let accepted = chart.send(&ctx, event, &guards);
-        let want_accepted = step["accepted"].as_bool().expect("accepted");
-        assert_eq!(accepted, want_accepted, "step {i} `{event}` accepted");
+        step.assert_key_at("accepted", accepted, &format!("step {i} `{event}`"));
 
-        assert_active(
-            &ctx,
-            &chart,
-            &step["active"],
-            &format!("step {i} `{event}` active"),
-        );
+        step.assert_key_with("active", |want| {
+            assert_active(&ctx, &chart, want, &format!("step {i} `{event}` active"))
+        });
         assert_matches(&ctx, &chart, &step);
 
-        if let Value::Array(actions) = &step["actions"] {
-            let want: Vec<String> = actions
+        step.assert_key_if_present("actions", |want| {
+            let want: Vec<String> = want
+                .as_array()
+                .expect("actions")
                 .iter()
                 .map(|v| v.as_str().unwrap().to_string())
                 .collect();
             assert_eq!(chart.last_actions(), want, "step {i} `{event}` actions");
-        }
+        });
     }
 }
 

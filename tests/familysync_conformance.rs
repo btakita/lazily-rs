@@ -91,12 +91,10 @@ fn family_sync_materialize_on_ingest_conformance() {
 
         if scenario["reingest"].as_bool().unwrap_or(false) {
             let reapplied = target.ingest(&ctx_t, &frame, 1_001);
-            let expected = expect["reingest_applied"]
-                .as_u64()
-                .expect("reingest_applied");
-            assert_eq!(
-                reapplied as u64, expected,
-                "[{name}] re-ingest is idempotent"
+            expect.assert_key_at(
+                "reingest_applied",
+                reapplied as u64,
+                &format!("{name}: re-ingest is idempotent"),
             );
         }
 
@@ -107,31 +105,33 @@ fn family_sync_materialize_on_ingest_conformance() {
             .map(suffix_of)
             .collect();
         got_keys.sort();
-        let mut want_keys: Vec<String> = expect["target_keys"]
-            .as_array()
-            .expect("target_keys")
-            .iter()
-            .map(|k| k.as_str().unwrap().to_string())
-            .collect();
-        want_keys.sort();
-        assert_eq!(got_keys, want_keys, "[{name}] materialized key set");
+        expect.assert_key_with("target_keys", |want| {
+            let mut want_keys: Vec<String> = want
+                .as_array()
+                .expect("target_keys")
+                .iter()
+                .map(|k| k.as_str().unwrap().to_string())
+                .collect();
+            want_keys.sort();
+            assert_eq!(got_keys, want_keys, "[{name}] materialized key set");
+        });
 
-        assert_eq!(
+        expect.assert_key_at(
+            "target_present_count",
             target.family_keys(namespace).len() as u64,
-            expect["target_present_count"]
-                .as_u64()
-                .expect("present_count"),
-            "[{name}] present count"
+            &format!("{name}: present count"),
         );
 
         // Value adoption / LWW convergence.
-        for (key, want) in expect["target_values"].as_object().expect("target_values") {
-            assert_eq!(
-                target.family_value_lww::<bool>(namespace, key),
-                Some(want.as_bool().unwrap()),
-                "[{name}] value for {key}"
-            );
-        }
+        expect.assert_key_with("target_values", |want| {
+            for (key, want) in want.as_object().expect("target_values") {
+                assert_eq!(
+                    target.family_value_lww::<bool>(namespace, key),
+                    Some(want.as_bool().unwrap()),
+                    "[{name}] value for {key}"
+                );
+            }
+        });
 
         // Derived aggregate transparency: count of `true` entries converges.
         let count_true = target
@@ -139,18 +139,19 @@ fn family_sync_materialize_on_ingest_conformance() {
             .iter()
             .filter(|k| target.family_value_lww::<bool>(namespace, &suffix_of(*k)) == Some(true))
             .count();
-        assert_eq!(
+        expect.assert_key_at(
+            "target_count_true",
             count_true as u64,
-            expect["target_count_true"].as_u64().expect("count_true"),
-            "[{name}] derived count of true entries"
+            &format!("{name}: derived count of true entries"),
         );
 
-        if expect["target_epoch_bumped"].as_bool().unwrap_or(false) {
-            assert_ne!(
-                epoch_before,
-                ctx_t.get(&epoch),
-                "[{name}] membership epoch bumped on materialize"
-            );
-        }
+        // Both directions. Gating an `assert_ne!` on the fixture value asserted
+        // nothing when the fixture said `false` (`#lzconsumednotasserted`); the
+        // observable is whether the epoch moved, so compare that.
+        expect.assert_key_at(
+            "target_epoch_bumped",
+            ctx_t.get(&epoch) != epoch_before,
+            &format!("{name}: membership epoch bumped on materialize"),
+        );
     }
 }

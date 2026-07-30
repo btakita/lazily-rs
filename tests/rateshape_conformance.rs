@@ -64,19 +64,17 @@ fn run<F>(
         );
         let inv = exp.sub("invalidates");
         assert_eq!(emitted, ret(step), "emit for {step}");
-        assert_eq!(
-            output,
-            exp["output"].as_str().map(|s| s.to_string()),
-            "output for {step}"
-        );
+        exp.assert_key_with("output", |want| {
+            assert_eq!(
+                output,
+                want.as_str().map(|s| s.to_string()),
+                "output for {step}"
+            )
+        });
 
         let was_cached = ctx.is_set(&observed);
         let _ = observed.get(ctx);
-        assert_eq!(
-            !was_cached,
-            inv["output"].as_bool().unwrap(),
-            "invalidation for {step}"
-        );
+        inv.assert_key_at("output", !was_cached, &format!("step {step}"));
     }
 }
 

@@ -48,6 +48,23 @@ fn expect<'a>(fixture: &str, sc: &'a serde_json::Value) -> Expect<'a> {
     )
 }
 
+/// A fixture array of epochs / of strings.
+fn u64s(want: &serde_json::Value) -> Vec<u64> {
+    want.as_array()
+        .expect("array of u64")
+        .iter()
+        .map(|v| v.as_u64().expect("u64"))
+        .collect()
+}
+
+fn strs(want: &serde_json::Value) -> Vec<String> {
+    want.as_array()
+        .expect("array of strings")
+        .iter()
+        .map(|v| v.as_str().expect("string").to_string())
+        .collect()
+}
+
 /// The node -> bytes view a receiver holds after applying a frame stream. The
 /// corpus states `state_after` / `converged_nodes` in exactly this shape, so a
 /// runner that only tracks epochs cannot consume those keys at all.
@@ -161,15 +178,11 @@ fn multi_epoch_delta_fixture() {
         "assertions",
         &fx["assertions"],
     );
-    assert_eq!(wire.base_epoch, a["base_epoch"].as_u64().unwrap());
-    assert_eq!(wire.epoch, a["epoch"].as_u64().unwrap());
-    assert_eq!(wire.span(), a["span"].as_u64().unwrap());
-    assert_eq!(
-        wire.span() > 1,
-        a["is_multi_epoch"].as_bool().unwrap(),
-        "is_multi_epoch"
-    );
-    assert_eq!(wire.ops.len() as u64, a["op_count"].as_u64().unwrap());
+    a.assert_key("base_epoch", wire.base_epoch);
+    a.assert_key("epoch", wire.epoch);
+    a.assert_key("span", wire.span());
+    a.assert_key_at("is_multi_epoch", wire.span() > 1, "is_multi_epoch");
+    a.assert_key("op_count", wire.ops.len() as u64);
     a.finish();
 
     // span_3_applies_equal_to_unit_fold: receiver at 40 applies a base=40,epoch=43 delta.
@@ -183,20 +196,17 @@ fn multi_epoch_delta_fixture() {
     let start = sc["receiver_last_epoch"].as_u64().unwrap();
     let mut coord = ResyncCoordinator::with_epoch(start);
     let action = coord.ingest_delta(&d);
-    assert_eq!(action_name(&action), exp["action"].as_str().unwrap());
-    assert_eq!(
-        action == ResyncAction::Apply,
-        exp["applied"].as_bool().unwrap()
-    );
-    let after = exp["receiver_last_epoch_after"].as_u64().unwrap();
-    assert_eq!(coord.last_epoch(), after);
+    exp.assert_key("action", action_name(&action));
+    exp.assert_key("applied", action == ResyncAction::Apply);
+    exp.assert_key("receiver_last_epoch_after", coord.last_epoch());
+    let after = coord.last_epoch();
     // `atomic_advance`: the span lands in ONE step. A receiver that walked the
     // span epoch by epoch would satisfy `receiver_last_epoch_after` and still
     // violate this, which is why the key exists.
-    assert_eq!(
+    exp.assert_key_at(
+        "atomic_advance",
         coord.last_epoch() == after && start == base,
-        exp["atomic_advance"].as_bool().unwrap(),
-        "a multi-epoch delta advances the cursor in one move"
+        "a multi-epoch delta advances the cursor in one move",
     );
     // `fold_equivalent`: the fixture's `equivalent_unit_fold` must leave a fresh
     // receiver in the same place, with the same node state.
@@ -209,10 +219,10 @@ fn multi_epoch_delta_fixture() {
         assert_eq!(fold_coord.ingest_delta(&u), ResyncAction::Apply);
         apply_frame(&mut fold_state, &IpcMessage::Delta(u));
     }
-    assert_eq!(
+    exp.assert_key_at(
+        "fold_equivalent",
         fold_coord.last_epoch() == coord.last_epoch() && fold_state == span_state,
-        exp["fold_equivalent"].as_bool().unwrap(),
-        "batch delta == fold of the unit deltas"
+        "batch delta == fold of the unit deltas",
     );
 
     // gap_rule_unchanged_under_span: a span-3 delta whose base != last is still a gap.
@@ -225,21 +235,17 @@ fn multi_epoch_delta_fixture() {
     );
     let mut coord = ResyncCoordinator::with_epoch(sc["receiver_last_epoch"].as_u64().unwrap());
     let action = coord.ingest_delta(&d);
-    assert_eq!(action_name(&action), exp["action"].as_str().unwrap());
-    assert_eq!(
-        action == ResyncAction::Apply,
-        exp["applied"].as_bool().unwrap()
-    );
-    assert_eq!(
-        action,
-        ResyncAction::RequestSnapshot {
-            from_epoch: exp["request_from"].as_u64().unwrap()
-        }
-    );
-    assert_eq!(
-        coord.last_epoch(),
-        exp["receiver_last_epoch_after"].as_u64().unwrap()
-    );
+    exp.assert_key("action", action_name(&action));
+    exp.assert_key("applied", action == ResyncAction::Apply);
+    exp.assert_key_with("request_from", |want| {
+        assert_eq!(
+            action,
+            ResyncAction::RequestSnapshot {
+                from_epoch: want.as_u64().expect("request_from")
+            }
+        )
+    });
+    exp.assert_key("receiver_last_epoch_after", coord.last_epoch());
     assert_eq!(
         coord.last_epoch(),
         sc["receiver_last_epoch"].as_u64().unwrap()
@@ -315,19 +321,18 @@ fn resync_gap_converge_fixture() {
         last_epochs.push(coord.last_epoch());
         converged.push(state);
     }
-    assert_eq!(last_epochs[0], exp["final_last_epoch"].as_u64().unwrap());
-    assert_eq!(
-        requests,
-        exp["resync_requests_emitted"].as_u64().unwrap() as usize
-    );
+    exp.assert_key("final_last_epoch", last_epochs[0]);
+    exp.assert_key("resync_requests_emitted", requests as u64);
     // `converged_nodes`: the post-resync VIEW, not just the cursor. A receiver
     // that requested a snapshot and then discarded it would still land on epoch 4.
-    assert_eq!(converged[0], want_state(&exp["converged_nodes"]));
+    exp.assert_key_with("converged_nodes", |want| {
+        assert_eq!(converged[0], want_state(want))
+    });
     // `equals_no_drop_receiver`: the dropped-suffix receiver ends where a
     // receiver that lost nothing ends — the point of the resync.
-    assert_eq!(
+    exp.assert_key(
+        "equals_no_drop_receiver",
         converged[0] == converged[1] && last_epochs[0] == last_epochs[1],
-        exp["equals_no_drop_receiver"].as_bool().unwrap()
     );
 
     // single_request_per_gap: while resyncing, ahead-of-cursor deltas are Ignored (one request).
@@ -341,14 +346,8 @@ fn resync_gap_converge_fixture() {
             requests += 1;
         }
     }
-    assert_eq!(
-        coord.last_epoch(),
-        exp["final_last_epoch"].as_u64().unwrap()
-    );
-    assert_eq!(
-        requests,
-        exp["resync_requests_emitted"].as_u64().unwrap() as usize
-    );
+    exp.assert_key("final_last_epoch", coord.last_epoch());
+    exp.assert_key("resync_requests_emitted", requests as u64);
 }
 
 // ---------------------------------------------------------------------------
@@ -383,19 +382,14 @@ fn idempotent_redelivery_fixture() {
                 frame["last_epoch_after"].as_u64().unwrap()
             );
         }
-        assert_eq!(
-            coord.last_epoch(),
-            exp["final_last_epoch"].as_u64().unwrap()
-        );
-        assert_eq!(
-            state,
-            want_state(&exp["state_after"]),
-            "{name}: state_after"
-        );
-        assert_eq!(
+        exp.assert_key("final_last_epoch", coord.last_epoch());
+        exp.assert_key_with("state_after", |want| {
+            assert_eq!(state, want_state(want), "{name}: state_after")
+        });
+        exp.assert_key_at(
+            "net_effect_unchanged",
             state == before,
-            exp["net_effect_unchanged"].as_bool().unwrap(),
-            "{name}: net_effect_unchanged"
+            &format!("{name}: net_effect_unchanged"),
         );
     }
 }
@@ -519,14 +513,11 @@ fn outbox_replay_after_crash_fixture() {
     mem.ack_through(ack);
     file.ack_through(ack);
 
-    let expect_retained: Vec<u64> = exp["retained_after_ack"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_u64().unwrap())
-        .collect();
-    assert_eq!(mem.retained_epochs(), expect_retained);
-    assert_eq!(file.retained_epochs(), expect_retained);
+    exp.assert_key_with("retained_after_ack", |want| {
+        let expect_retained = u64s(want);
+        assert_eq!(mem.retained_epochs(), expect_retained);
+        assert_eq!(file.retained_epochs(), expect_retained);
+    });
 
     // "Crash": drop the in-memory outbox; the file outbox is durable — reopen it.
     drop(mem);
@@ -534,23 +525,17 @@ fn outbox_replay_after_crash_fixture() {
 
     let replay = file.replay_from(cursor);
     let replay_epochs: Vec<u64> = replay.iter().map(|(e, _)| *e).collect();
-    let expect_replay: Vec<u64> = exp["replayed_from_cursor"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_u64().unwrap())
-        .collect();
-    assert_eq!(replay_epochs, expect_replay);
+    let expect_replay = exp.assert_key_with("replayed_from_cursor", |want| {
+        let expect_replay = u64s(want);
+        assert_eq!(replay_epochs, expect_replay);
+        expect_replay
+    });
     // `replay_order` is a separate claim from the replayed SET: an outbox that
     // returned {43, 42} would satisfy `replayed_from_cursor` as a set and break
     // the receiver's gap rule.
-    let expect_order: Vec<u64> = exp["replay_order"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_u64().unwrap())
-        .collect();
-    assert_eq!(replay_epochs, expect_order, "replay is ascending by epoch");
+    exp.assert_key_with("replay_order", |want| {
+        assert_eq!(replay_epochs, u64s(want), "replay is ascending by epoch")
+    });
 
     // Feed the replay to a receiver already at the reconnect cursor: applies each once.
     let mut coord = ResyncCoordinator::with_epoch(cursor);
@@ -560,17 +545,8 @@ fn outbox_replay_after_crash_fixture() {
             applied.push(coord.last_epoch());
         }
     }
-    let expect_applies: Vec<u64> = exp["receiver_applies"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_u64().unwrap())
-        .collect();
-    assert_eq!(applied, expect_applies);
-    assert_eq!(
-        coord.last_epoch(),
-        exp["receiver_last_epoch_after"].as_u64().unwrap()
-    );
+    exp.assert_key_with("receiver_applies", |want| assert_eq!(applied, u64s(want)));
+    exp.assert_key("receiver_last_epoch_after", coord.last_epoch());
     // The crash-replay contract stated as counts: nothing dropped, nothing
     // applied twice, so the effect is exactly-once across the reconnect.
     let mut seen = applied.clone();
@@ -579,12 +555,12 @@ fn outbox_replay_after_crash_fixture() {
     deduped.dedup();
     let lost = expect_replay.iter().filter(|e| !seen.contains(e)).count() as u64;
     let doubled = (seen.len() - deduped.len()) as u64;
-    assert_eq!(lost, exp["ops_lost"].as_u64().unwrap(), "ops_lost");
-    assert_eq!(doubled, exp["ops_doubled"].as_u64().unwrap(), "ops_doubled");
-    assert_eq!(
+    exp.assert_key_at("ops_lost", lost, "ops_lost");
+    exp.assert_key_at("ops_doubled", doubled, "ops_doubled");
+    exp.assert_key_at(
+        "exactly_once_effect",
         lost == 0 && doubled == 0,
-        exp["exactly_once_effect"].as_bool().unwrap(),
-        "exactly_once_effect"
+        "exactly_once_effect",
     );
 
     // send_failure_retains_frame_for_next_tick: a failed send does not lose the frame.
@@ -595,18 +571,16 @@ fn outbox_replay_after_crash_fixture() {
     for (epoch, msg) in &appended {
         mem.append(*epoch, msg.clone()); // append succeeds; the "send" fails, frame stays
     }
-    let expect_retained: Vec<u64> = exp["retained"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_u64().unwrap())
-        .collect();
-    assert_eq!(mem.retained_epochs(), expect_retained);
+    let expect_retained = exp.assert_key_with("retained", |want| {
+        let expect_retained = u64s(want);
+        assert_eq!(mem.retained_epochs(), expect_retained);
+        expect_retained
+    });
     let appended_epochs: Vec<u64> = appended.iter().map(|(e, _)| *e).collect();
-    assert_eq!(
+    exp.assert_key_at(
+        "frame_retained_after_failed_send",
         mem.retained_epochs() == appended_epochs,
-        exp["frame_retained_after_failed_send"].as_bool().unwrap(),
-        "a failed send must not consume the frame"
+        "a failed send must not consume the frame",
     );
     // Re-sent on the next tick = still replayable from below its epoch.
     let resent: Vec<u64> = mem
@@ -615,21 +589,11 @@ fn outbox_replay_after_crash_fixture() {
         .map(|(e, _)| *e)
         .collect();
     assert_eq!(resent, expect_retained);
-    let expect_resent: Vec<u64> = exp["resent_on_next_tick"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_u64().unwrap())
-        .collect();
-    assert_eq!(resent, expect_resent);
+    exp.assert_key_with("resent_on_next_tick", |want| assert_eq!(resent, u64s(want)));
     // `permanent_gap`: a retained frame is only a gap if it can never be
     // replayed again. Every appended epoch is still reachable, so it is false.
     let unreachable = appended_epochs.iter().any(|e| !resent.contains(e));
-    assert_eq!(
-        unreachable,
-        exp["permanent_gap"].as_bool().unwrap(),
-        "permanent_gap"
-    );
+    exp.assert_key_at("permanent_gap", unreachable, "permanent_gap");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -677,15 +641,15 @@ fn liveness_orset_lww_fixture() {
     };
     let ops: Vec<&serde_json::Value> = sc["ops"].as_array().unwrap().iter().collect();
     let set = apply_orset(ops.clone());
-    assert_eq!(set.present(), exp["present"].as_bool().unwrap());
+    exp.assert_key("present", set.present());
     // `order_independent`: the same op multiset in reverse converges the same.
     // `remove_observed` only removes the tags it saw, so this is a real claim
     // about the OR-set, not a restatement of the line above.
     let reversed = apply_orset(ops.iter().rev().copied().collect());
-    assert_eq!(
+    exp.assert_key_at(
+        "order_independent",
         reversed.present() == set.present(),
-        exp["order_independent"].as_bool().unwrap(),
-        "order_independent"
+        "order_independent",
     );
     // `redeliver_applied_count`: replaying the whole op stream a second time
     // changes nothing (idempotent under redelivery).
@@ -704,10 +668,10 @@ fn liveness_orset_lww_fixture() {
         }
     }
     let changed = u64::from(redelivered.present() != set.present());
-    assert_eq!(
+    exp.assert_key_at(
+        "redeliver_applied_count",
         changed,
-        exp["redeliver_applied_count"].as_u64().unwrap(),
-        "redeliver_applied_count"
+        "redeliver_applied_count",
     );
 
     // lww_alive_highest_stamp_wins
@@ -719,22 +683,24 @@ fn liveness_orset_lww_fixture() {
     for op in &ops[1..] {
         reg.set(stamp(&op["stamp"]), op["value"].as_bool().unwrap());
     }
-    assert_eq!(*reg.value(), exp["value"].as_bool().unwrap());
+    exp.assert_key("value", *reg.value());
     // `resolution`: the winner is the op with the greatest stamp, asserted
     // against the op stream rather than assumed from `value` alone.
-    match exp["resolution"].as_str().unwrap() {
-        "max_stamp" => {
-            let winner = ops
-                .iter()
-                .max_by_key(|op| {
-                    let s = stamp(&op["stamp"]);
-                    (s.wall_time, s.logical, s.peer)
-                })
-                .unwrap();
-            assert_eq!(*reg.value(), winner["value"].as_bool().unwrap());
+    exp.assert_key_with("resolution", |want| {
+        match want.as_str().expect("resolution") {
+            "max_stamp" => {
+                let winner = ops
+                    .iter()
+                    .max_by_key(|op| {
+                        let s = stamp(&op["stamp"]);
+                        (s.wall_time, s.logical, s.peer)
+                    })
+                    .unwrap();
+                assert_eq!(*reg.value(), winner["value"].as_bool().unwrap());
+            }
+            other => panic!("unknown resolution {other}"),
         }
-        other => panic!("unknown resolution {other}"),
-    }
+    });
     // Order independence: applying the same set reversed converges identically.
     let mut reg_rev: Option<WireLwwRegister<bool>> = None;
     for op in ops.iter().rev() {
@@ -746,11 +712,11 @@ fn liveness_orset_lww_fixture() {
         }
     }
     let reverse_value = *reg_rev.unwrap().value();
-    assert_eq!(reverse_value, exp["value"].as_bool().unwrap());
-    assert_eq!(
+    exp.assert_key("value", reverse_value);
+    exp.assert_key_at(
+        "order_independent",
         reverse_value == *reg.value(),
-        exp["order_independent"].as_bool().unwrap(),
-        "order_independent"
+        "order_independent",
     );
 
     // whole_editor_death_cascades: one alive[pid]=false drops every doc that pid held.
@@ -799,13 +765,7 @@ fn liveness_orset_lww_fixture() {
         v
     };
     let before = live_of(&alive);
-    let expect_before: Vec<String> = exp["live_docs_before"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap().to_string())
-        .collect();
-    assert_eq!(before, expect_before);
+    exp.assert_key_with("live_docs_before", |want| assert_eq!(before, strs(want)));
 
     let op = &sc["op"];
     let pid = op["key"]
@@ -820,19 +780,9 @@ fn liveness_orset_lww_fixture() {
         .set(stamp(&op["stamp"]), op["value"].as_bool().unwrap());
     // Derived: doc is live iff some present (doc,pid) has alive[pid] == true.
     let live = live_of(&alive);
-    let expect_live: Vec<String> = exp["live_docs_after"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap().to_string())
-        .collect();
-    assert_eq!(live, expect_live);
+    exp.assert_key_with("live_docs_after", |want| assert_eq!(live, strs(want)));
     // `cascade`: ONE death dropped MORE THAN ONE doc. Without this, a binding
     // that dropped exactly the doc named in the op would still match
     // `live_docs_after` on a fixture with a single held doc.
-    assert_eq!(
-        before.len() - live.len() > 1,
-        exp["cascade"].as_bool().unwrap(),
-        "cascade"
-    );
+    exp.assert_key_at("cascade", before.len() - live.len() > 1, "cascade");
 }

@@ -521,51 +521,60 @@ async fn run_steps_fixture<M: MapModel>(name: &str) {
             "step {i}: expected.invalidates missing from {name}"
         );
         let survivors: HashSet<String> = model.keys().into_iter().collect();
-        let value_invalidated: HashSet<String> = invalidates["value"]
-            .as_array()
-            .map(|a| a.iter().map(|v| v.as_str().unwrap().to_string()).collect())
-            .unwrap_or_default();
-
-        for key in &survivors {
-            let Some(reader) = value_readers.get(key) else {
-                continue; // key added by this op: no reader existed to invalidate
-            };
-            let cached = model.value_cached(reader);
-            if value_invalidated.contains(key) {
-                assert!(
-                    !cached,
-                    "{flavor} step {i}: value reader for `{key}` should have been invalidated"
-                );
-            } else {
-                assert!(
-                    cached,
-                    "{flavor} step {i}: value reader for `{key}` should have stayed cached \
-                     (unrelated change)"
-                );
+        invalidates.assert_key_with("value", |want| {
+            let value_invalidated: HashSet<String> = want
+                .as_array()
+                .map(|a| a.iter().map(|v| v.as_str().unwrap().to_string()).collect())
+                .unwrap_or_default();
+            for key in &survivors {
+                let Some(reader) = value_readers.get(key) else {
+                    continue; // key added by this op: no reader existed to invalidate
+                };
+                let cached = model.value_cached(reader);
+                if value_invalidated.contains(key) {
+                    assert!(
+                        !cached,
+                        "{flavor} step {i}: value reader for `{key}` should have been invalidated"
+                    );
+                } else {
+                    assert!(
+                        cached,
+                        "{flavor} step {i}: value reader for `{key}` should have stayed cached \
+                         (unrelated change)"
+                    );
+                }
             }
-        }
+        });
 
-        let membership_expected = invalidates["membership"].as_bool().unwrap_or(false);
-        assert_eq!(
-            !model.membership_cached(&membership_reader),
-            membership_expected,
-            "{flavor} step {i}: membership reader invalidation mismatch \
-             (a pure reorder must NOT invalidate set-identity readers)"
-        );
+        invalidates.assert_key_with("membership", |want| {
+            assert_eq!(
+                !model.membership_cached(&membership_reader),
+                want.as_bool().unwrap_or(false),
+                "{flavor} step {i}: membership reader invalidation mismatch \
+                 (a pure reorder must NOT invalidate set-identity readers)"
+            )
+        });
 
-        let order_expected = invalidates["order"].as_bool().unwrap_or(false);
-        assert_eq!(
-            !model.order_cached(&order_reader),
-            order_expected,
-            "{flavor} step {i}: order reader invalidation mismatch"
-        );
+        invalidates.assert_key_with("order", |want| {
+            assert_eq!(
+                !model.order_cached(&order_reader),
+                want.as_bool().unwrap_or(false),
+                "{flavor} step {i}: order reader invalidation mismatch"
+            )
+        });
 
         // -- handle stability (atomic move keeps node identity) ----------
-        if let Some(stable) = expected["handle_stable"].as_object() {
-            for (key, want) in stable {
-                if !want.as_bool().unwrap_or(false) {
-                    continue;
-                }
+        expected.assert_key_if_present("handle_stable", |stable| {
+            for (key, want) in stable.as_object().expect("handle_stable") {
+                // A named skip here would be a read-then-discard
+                // (`#lzconsumednotasserted`): the corpus only ever claims
+                // stability, so `false` is a fixture this runner cannot check
+                // rather than a silent pass.
+                assert!(
+                    want.as_bool() == Some(true),
+                    "{flavor} step {i}: handle_stable{{{key}}}: only `true` has a \
+                     defined meaning here (got {want})"
+                );
                 let before = handles_before
                     .get(key)
                     .unwrap_or_else(|| panic!("no handle captured for `{key}` before op"));
@@ -580,26 +589,30 @@ async fn run_steps_fixture<M: MapModel>(name: &str) {
                      across an atomic move (remove + re-mint instead of reorder)"
                 );
             }
-        }
+        });
 
         // -- resulting state ---------------------------------------------
-        if let Some(order) = expected["order"].as_array() {
+        expected.assert_key_if_present("order", |order| {
             let want: Vec<String> = order
+                .as_array()
+                .expect("order")
                 .iter()
                 .map(|v| v.as_str().unwrap().to_string())
                 .collect();
             assert_eq!(model.keys(), want, "{flavor} step {i}: order mismatch");
-        }
-        if let Some(membership) = expected["membership"].as_array() {
+        });
+        expected.assert_key_if_present("membership", |membership| {
             let want: HashSet<String> = membership
+                .as_array()
+                .expect("membership")
                 .iter()
                 .map(|v| v.as_str().unwrap().to_string())
                 .collect();
             let got: HashSet<String> = model.keys().into_iter().collect();
             assert_eq!(got, want, "{flavor} step {i}: membership mismatch");
-        }
-        if let Some(values) = expected["values"].as_object() {
-            for (key, val) in values {
+        });
+        expected.assert_key_if_present("values", |values| {
+            for (key, val) in values.as_object().expect("values") {
                 let want = val
                     .as_i64()
                     .unwrap_or_else(|| panic!("non-integer value for {key}"));
@@ -608,7 +621,7 @@ async fn run_steps_fixture<M: MapModel>(name: &str) {
                     .unwrap_or_else(|| panic!("{flavor} step {i}: missing key {key} after op"));
                 assert_eq!(got, want, "{flavor} step {i}: value mismatch for {key}");
             }
-        }
+        });
     }
 }
 

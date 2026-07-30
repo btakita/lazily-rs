@@ -149,11 +149,14 @@ fn anti_entropy_converge_conformance() {
         let mut rt = seeded_runtime(&ctx, &ops);
 
         let applied = ingest_ops(&mut rt, &ctx, &ops);
-        let want = exp["applied_count"].as_u64().expect("applied_count") as usize;
-        assert_eq!(
-            applied, want,
-            "{name}: applied_count. A superseded op still counts — it entered the \
-             log. Counting only ops that changed the winner is the lazily-cpp bug."
+        exp.assert_key_at(
+            "applied_count",
+            applied as u64,
+            &format!(
+                "{name}: applied_count. A superseded op still counts — it entered \
+                 the log. Counting only ops that changed the winner is the \
+                 lazily-cpp bug."
+            ),
         );
         checked_counts += 1;
 
@@ -163,10 +166,11 @@ fn anti_entropy_converge_conformance() {
             .unwrap_or(false)
         {
             let again = ingest_ops(&mut rt, &ctx, &ops);
-            let want_rd = exp["redeliver_applied_count"]
-                .as_u64()
-                .expect("redeliver_applied_count") as usize;
-            assert_eq!(again, want_rd, "{name}: redelivery must apply {want_rd}");
+            exp.assert_key_at(
+                "redeliver_applied_count",
+                again as u64,
+                &format!("{name}: redelivery"),
+            );
             checked_redeliver += 1;
         }
 
@@ -179,32 +183,43 @@ fn anti_entropy_converge_conformance() {
         // rather than trusting the converged payloads alone — a binding that
         // resolved by arrival order could still match `converged` on a stream
         // whose arrival order happens to agree with stamp order.
-        match exp["resolution"].as_str().expect("resolution") {
-            "max_stamp" => {
-                let got = rt.converged();
-                for (node, key, want_state) in max_stamp_winners(&ops) {
-                    let found = got
-                        .iter()
-                        .find(|e| e.node == node && e.key == key)
-                        .unwrap_or_else(|| panic!("{name}: no converged entry for {node:?}"));
-                    assert_eq!(
-                        found.state, want_state,
-                        "{name}: resolution=max_stamp — the greatest (wall_time, \
-                         logical, peer) stamp must win for {node:?}"
-                    );
+        exp.assert_key_with("resolution", |want| {
+            match want.as_str().expect("resolution") {
+                "max_stamp" => {
+                    let got = rt.converged();
+                    for (node, key, want_state) in max_stamp_winners(&ops) {
+                        let found = got
+                            .iter()
+                            .find(|e| e.node == node && e.key == key)
+                            .unwrap_or_else(|| panic!("{name}: no converged entry for {node:?}"));
+                        assert_eq!(
+                            found.state, want_state,
+                            "{name}: resolution=max_stamp — the greatest (wall_time, \
+                             logical, peer) stamp must win for {node:?}"
+                        );
+                    }
                 }
+                other => panic!("{name}: unknown resolution rule {other}"),
             }
-            other => panic!("{name}: unknown resolution rule {other}"),
-        }
+        });
 
         // `order_independent` + the scenario's `reverse_order_equivalent` input:
         // replay the same ops backwards into a fresh runtime and require the same
         // converged view. Both keys were previously unread.
-        if exp["order_independent"].as_bool().unwrap_or(false) {
+        // Gating the reversed replay on the flag asserted nothing when the flag
+        // was `false` (`#lzconsumednotasserted`). The reversal is always run and
+        // its outcome compared to the flag, so both directions are load-bearing.
+        // The reversal is driven by the scenario's own `reverse_order_equivalent`
+        // input; its OUTCOME is then compared to `order_independent`. Gating the
+        // whole block on the expectation asserted nothing whenever the flag was
+        // `false` (`#lzconsumednotasserted`).
+        if exp.raw().get("order_independent").is_some() {
             assert!(
                 sc["reverse_order_equivalent"].as_bool().unwrap_or(false),
                 "{name}: expect.order_independent without reverse_order_equivalent"
             );
+        }
+        if sc["reverse_order_equivalent"].as_bool().unwrap_or(false) {
             let reversed: Vec<CrdtOp> = ops.iter().rev().cloned().collect();
             let rev_ctx = Context::new();
             let mut rev_rt = seeded_runtime(&rev_ctx, &reversed);
@@ -213,23 +228,20 @@ fn anti_entropy_converge_conformance() {
             let mut b = rev_rt.converged();
             a.sort_by_key(|e| (e.node.0, format!("{:?}", e.key)));
             b.sort_by_key(|e| (e.node.0, format!("{:?}", e.key)));
-            assert_eq!(
-                a.len(),
-                b.len(),
-                "{name}: order_independent — reversed replay converged differently"
+            let reversal_agrees = a.len() == b.len()
+                && a.iter()
+                    .zip(&b)
+                    .all(|(x, y)| (x.node, &x.key, &x.state) == (y.node, &y.key, &y.state));
+            exp.assert_key_at(
+                "order_independent",
+                reversal_agrees,
+                &format!("{name}: reversed replay convergence"),
             );
-            for (x, y) in a.iter().zip(&b) {
-                assert_eq!(
-                    (x.node, &x.key, &x.state),
-                    (y.node, &y.key, &y.state),
-                    "{name}: order_independent — reversed replay converged differently"
-                );
-            }
         }
 
-        if let Some(want_entries) = exp["converged"].as_array() {
+        exp.assert_key_if_present("converged", |want_entries| {
             let got = rt.converged();
-            for entry in want_entries {
+            for entry in want_entries.as_array().expect("converged") {
                 let node = NodeId(entry["node"].as_u64().expect("node"));
                 let want_bytes: Vec<u8> = entry["state"]["Inline"]
                     .as_array()
@@ -251,7 +263,7 @@ fn anti_entropy_converge_conformance() {
                 );
                 checked_converged += 1;
             }
-        }
+        });
     }
 
     // Positive proof, not an absence guard: a runner that silently skipped every
@@ -298,51 +310,73 @@ fn crdt_sync_frames_conformance() {
             format!("frames[{fi}].assertions"),
             &frame["assertions"],
         );
-        if let Some(want) = assertions["frontier_len"].as_u64() {
-            assert_eq!(
-                sync.frontier.len() as u64,
-                want,
-                "{label}: frontier_len after wire round-trip"
-            );
+        // Each key is optional per frame, so the comparison is bound to the key's
+        // presence rather than to a bare read (`#lzconsumednotasserted`).
+        if assertions
+            .assert_key_if_present("frontier_len", |want| {
+                assert_eq!(
+                    sync.frontier.len() as u64,
+                    want.as_u64().expect("frontier_len"),
+                    "{label}: frontier_len after wire round-trip"
+                )
+            })
+            .is_some()
+        {
             checked += 1;
         }
-        if let Some(want) = assertions["op_count"].as_u64() {
-            assert_eq!(
-                sync.ops.len() as u64,
-                want,
-                "{label}: op_count after wire round-trip"
-            );
+        if assertions
+            .assert_key_if_present("op_count", |want| {
+                assert_eq!(
+                    sync.ops.len() as u64,
+                    want.as_u64().expect("op_count"),
+                    "{label}: op_count after wire round-trip"
+                )
+            })
+            .is_some()
+        {
             checked += 1;
         }
 
         // `frontier_omitted`: the wire object carries no `frontier` at all, and
         // the decoded value must default to empty rather than to a placeholder.
-        if let Some(want) = assertions["frontier_omitted"].as_bool() {
-            assert_eq!(
-                wire.get("frontier").is_none(),
-                want,
-                "{label}: frontier_omitted describes the wire shape"
-            );
-            assert!(
-                sync.frontier.is_empty(),
-                "{label}: an omitted frontier must decode as empty"
-            );
+        if assertions
+            .assert_key_if_present("frontier_omitted", |want| {
+                assert_eq!(
+                    wire.get("frontier").is_none(),
+                    want.as_bool().expect("frontier_omitted"),
+                    "{label}: frontier_omitted describes the wire shape"
+                );
+                assert!(
+                    sync.frontier.is_empty(),
+                    "{label}: an omitted frontier must decode as empty"
+                );
+            })
+            .is_some()
+        {
             checked += 1;
         }
-        if let Some(want) = assertions["has_keyed_op"].as_bool() {
-            assert_eq!(
-                sync.ops.iter().any(|o| o.key.is_some()),
-                want,
-                "{label}: has_keyed_op"
-            );
+        if assertions
+            .assert_key_if_present("has_keyed_op", |want| {
+                assert_eq!(
+                    sync.ops.iter().any(|o| o.key.is_some()),
+                    want.as_bool().expect("has_keyed_op"),
+                    "{label}: has_keyed_op"
+                )
+            })
+            .is_some()
+        {
             checked += 1;
         }
-        if let Some(want) = assertions["has_keyless_op"].as_bool() {
-            assert_eq!(
-                sync.ops.iter().any(|o| o.key.is_none()),
-                want,
-                "{label}: has_keyless_op"
-            );
+        if assertions
+            .assert_key_if_present("has_keyless_op", |want| {
+                assert_eq!(
+                    sync.ops.iter().any(|o| o.key.is_none()),
+                    want.as_bool().expect("has_keyless_op"),
+                    "{label}: has_keyless_op"
+                )
+            })
+            .is_some()
+        {
             checked += 1;
         }
 

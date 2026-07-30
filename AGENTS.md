@@ -117,20 +117,31 @@ this repo.
   on any canonical fixture the suite did not OPEN — and on a missing manifest,
   which is missing evidence rather than evidence of absence. The static grep it
   replaced could not tell a replayed fixture from a hand-transcribed one
-- `tests/common/expect.rs` — the assertion-key consumption guard
-  (`#lzassertunknownkeys`), one level below the manifest: having OPENED a
-  fixture, did the runner actually CONSUME the keys it asserts? `Expect` wraps
-  one `expected` / `expect` / `assertions` block, records every key the runner
-  reads through it, and panics on drop naming any key left untouched — so a
-  corpus key no binding implements fails loudly instead of being invisibly
-  skipped (the defect found in lazily-kt, where `delta_zero_copy_arrow.json`'s
-  `backend` discriminator was never read). Observational, not declarative: only a
-  key really read counts. `Expect::sub` descends into nested assertion blocks
-  (`invalidates`, `final_state`); `get` consumes data maps keyed by ids or peer
-  names wholesale. `Expect::prose` marks documentation keys (`note`, `reason`);
-  `Expect::declared_exception` marks a key whose capability this binding does not
-  have, with a required reason at the call site. Self-tested in
-  `tests/expect_guard.rs`
+- `tests/common/expect.rs` — the assertion-key guard
+  (`#lzassertunknownkeys`, `#lzconsumednotasserted`), the two rungs below the
+  manifest. Rung 2: having OPENED a fixture, did the runner CONSUME the keys it
+  asserts? Rung 3: having read a key, did it reach a comparison against the
+  fixture's own value? `Expect` wraps one `expected` / `expect` / `assertions`
+  block and panics on drop on any of three conditions — a key never read, a key
+  read and then discarded, or an excuse the same run made redundant.
+  Observational, not declarative: a key becomes **asserted** only by passing
+  through `Expect::assert_key` (equality, compared inside the guard),
+  `Expect::assert_key_with` (fixture value handed to the caller's own check, for
+  tolerances / containment / decode-then-compare), or
+  `Expect::assert_key_if_present` (same, for a key that is optional per fixture —
+  an absent key carries no obligation, and binding the comparison to presence is
+  what stops `if let Some(x) = exp["k"].as_bool()` from consuming a key it never
+  compares). `Expect::get` / `Index` still mark a key READ, for a value that
+  drives the replay rather than one that is compared, and a read alone is now a
+  failure. `Expect::sub` descends into nested assertion blocks (`invalidates`,
+  `final_state`) and satisfies the parent key structurally. `Expect::prose` marks
+  documentation keys (`note`, `reason`) — exempt from all three checks.
+  `Expect::excuse_key` (formerly `declared_exception`) marks a key that genuinely
+  cannot be compared at this call site, with a required reason; it runs in BOTH
+  directions, so excusing a key the same run also asserts fails as a stale
+  excuse. Self-tested in `tests/expect_guard.rs`, including one case per
+  read-then-discard shape (named skip in a consuming loop, value bound but never
+  compared, comparison against a literal)
 - `tests/integration.rs` — 13 integration tests
 - `tests/spec_compliance.rs` — 68 spec compliance tests
 - `tests/conformance.rs` — cross-language IPC fixture round-trip tests (lazily-spec/conformance)

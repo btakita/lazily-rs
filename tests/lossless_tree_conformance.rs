@@ -213,31 +213,39 @@ fn apply_op(world: &mut World, on: &str, op: &Value) {
 }
 
 fn assert_expect(world: &World, expect: &Expect, scenario: &str) {
-    if let Some(text) = expect["render"].as_str() {
+    // Each key is optional per scenario, so the comparison is bound to the key's
+    // *presence* rather than reached through a bare read that a missing key would
+    // silently skip (`#lzconsumednotasserted`).
+    expect.assert_key_if_present("render", |want| {
         assert_eq!(
             world.replicas["a"].render(),
-            text,
+            want.as_str().expect("render"),
             "{scenario}: render on `a`"
         );
-    }
-    if let Some(per) = expect["render_on"].as_object() {
-        for (name, text) in per {
+    });
+    expect.assert_key_if_present("render_on", |want| {
+        for (name, text) in want.as_object().expect("render_on") {
             assert_eq!(
                 world.replicas[name].render(),
                 text.as_str().unwrap(),
                 "{scenario}: render on `{name}`"
             );
         }
-    }
-    if let Some(n) = expect["live_nodes"].as_u64() {
+    });
+    expect.assert_key_if_present("live_nodes", |want| {
         assert_eq!(
             world.replicas["a"].live_node_count() as u64,
-            n,
+            want.as_u64().expect("live_nodes"),
             "{scenario}: live_nodes on `a`"
         );
-    }
-    if let Some(names) = expect["converged"].as_array() {
-        let names: Vec<&str> = names.iter().map(|v| v.as_str().unwrap()).collect();
+    });
+    expect.assert_key_if_present("converged", |want| {
+        let names: Vec<&str> = want
+            .as_array()
+            .expect("converged")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         let first = world.replicas[names[0]].render();
         for name in &names[1..] {
             assert_eq!(
@@ -247,7 +255,7 @@ fn assert_expect(world: &World, expect: &Expect, scenario: &str) {
                 names[0]
             );
         }
-    }
+    });
 }
 
 fn run_fixture(name: &str) {

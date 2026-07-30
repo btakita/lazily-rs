@@ -225,7 +225,12 @@ fn run_corpus<M: GraphModel>() {
 
         // `observationally_equal`: the named scenarios must agree on every
         // observable, not merely each satisfy `expected` independently.
-        if let Some(pair) = fixture_expected["observationally_equal"].as_array() {
+        if let Some(pair) = fixture_expected
+            .assert_key_if_present("observationally_equal", |want| {
+                want.as_array().expect("observationally_equal").clone()
+            })
+            .as_ref()
+        {
             let names: Vec<&str> = fx["scenarios"]
                 .as_array()
                 .unwrap()

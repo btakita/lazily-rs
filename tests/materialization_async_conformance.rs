@@ -52,9 +52,8 @@ fn str_array(v: &Value, path: &str) -> Vec<String> {
 }
 
 /// `str_array` against a guarded assertion block, so the key is recorded.
-fn exp_strs(e: &Expect, key: &str) -> Vec<String> {
-    e[key]
-        .as_array()
+fn want_strs(want: &Value, key: &str) -> Vec<String> {
+    want.as_array()
         .unwrap_or_else(|| panic!("missing array {key}"))
         .iter()
         .map(|k| k.as_str().expect("array of strings").to_string())
@@ -111,20 +110,43 @@ async fn eventual_transparency_async() {
         "expected",
         fixture.get("expected").unwrap(),
     );
-    assert_eq!(expected["default_mode"].as_str(), Some("eager"));
-
     let ctx_e = AsyncContext::new();
     let eager = eager_computed_map(&ctx_e, keys.clone(), entries.clone());
     let ctx_l = AsyncContext::new();
     let lazy: AsyncComputedMap<String, V> = AsyncComputedMap::new(&ctx_l);
-    let lookup = lookup_fn(entries);
+    let lookup = lookup_fn(entries.clone());
+
+    // default_mode_eager. The named strategy *selects the build*; the asserted
+    // fact is that a map built that way is materialized at build time, so editing
+    // the fixture changes the outcome (`#lzconsumednotasserted`).
+    expected.assert_key_with("default_mode", |want| {
+        let mode = want.as_str().expect("default_mode");
+        let default_present = match mode {
+            "eager" => {
+                let c = AsyncContext::new();
+                eager_computed_map(&c, keys.clone(), entries.clone()).present_count()
+            }
+            "lazy" => {
+                let c = AsyncContext::new();
+                AsyncComputedMap::<String, V>::new(&c).present_count()
+            }
+            other => panic!("unknown default_mode {other}"),
+        };
+        assert_eq!(
+            default_present,
+            keys.len(),
+            "a map built the fixture's default way ({mode}) is materialized at build"
+        );
+    });
 
     // Present-set laws (allocation axis, unchanged by async resolution).
     assert_eq!(eager.present_count(), keys.len());
-    assert_eq!(
-        as_set(&eager.present_keys()),
-        as_set(&exp_strs(&expected, "eager_present"))
-    );
+    expected.assert_key_with("eager_present", |want| {
+        assert_eq!(
+            as_set(&eager.present_keys()),
+            as_set(&want_strs(want, "eager_present"))
+        )
+    });
     assert_eq!(lazy.present_count(), 0);
 
     // The read sequence, asserted here so `lazy_present_after_reads` is consumed
@@ -135,14 +157,18 @@ async fn eventual_transparency_async() {
     for k in str_array(&fixture, "reads") {
         let _ = reads_map.get_or_insert_handle(&ctx_r, k, read_lookup.clone());
     }
-    assert_eq!(
-        as_set(&reads_map.present_keys()),
-        as_set(&exp_strs(&expected, "lazy_present_after_reads"))
-    );
+    expected.assert_key_with("lazy_present_after_reads", |want| {
+        assert_eq!(
+            as_set(&reads_map.present_keys()),
+            as_set(&want_strs(want, "lazy_present_after_reads"))
+        )
+    });
 
     // Eventual transparency: drive each slot; resolved value = canonical, and the
-    // eager and lazy maps agree.
-    for (k, want) in expected["observe"].as_object().unwrap() {
+    // eager and lazy maps agree. The awaits keep this out of a closure, so the
+    // key is marked through `assert_key_with` around the borrow of the block.
+    let observe = expected.assert_key_with("observe", |want| want.as_object().unwrap().clone());
+    for (k, want) in &observe {
         let want = want.as_i64().unwrap();
         let ve = ctx_e.get_async(&eager.handle(k).unwrap()).await;
         let vl = ctx_l
@@ -170,15 +196,15 @@ async fn deferral_not_deallocation_async() {
         "expected",
         fixture.get("expected").unwrap(),
     );
-    expected.declared_exception(
+    expected.excuse_key(
         "default_mode",
         "asserted by eventual_transparency_async in this binary, under its own guard",
     );
-    expected.declared_exception(
+    expected.excuse_key(
         "eager_present",
         "asserted by eventual_transparency_async in this binary, under its own guard",
     );
-    expected.declared_exception(
+    expected.excuse_key(
         "observe",
         "asserted by eventual_transparency_async in this binary, under its own guard",
     );
@@ -190,8 +216,10 @@ async fn deferral_not_deallocation_async() {
     for k in str_array(&fixture, "reads") {
         let _ = lazy.get_or_insert_handle(&ctx, k, lookup.clone());
     }
-    assert_eq!(
-        as_set(&lazy.present_keys()),
-        as_set(&exp_strs(&expected, "lazy_present_after_reads"))
-    );
+    expected.assert_key_with("lazy_present_after_reads", |want| {
+        assert_eq!(
+            as_set(&lazy.present_keys()),
+            as_set(&want_strs(want, "lazy_present_after_reads"))
+        )
+    });
 }

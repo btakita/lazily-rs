@@ -82,31 +82,31 @@ fn membership_lifecycle() {
             &step["expected"],
         );
         // Per-peer state. `states` keys are peer ids — data, not assertion
-        // names — so the map is consumed wholesale.
-        for (peer, want) in exp["states"].as_object().unwrap() {
-            let id: u64 = peer.parse().unwrap();
-            assert_eq!(
-                m.state(&id).map(state_name),
-                Some(want.as_str().unwrap()),
-                "state of peer {id} after {op}"
-            );
-        }
+        // names — so the map is compared wholesale.
+        exp.assert_key_with("states", |want| {
+            for (peer, want) in want.as_object().unwrap() {
+                let id: u64 = peer.parse().unwrap();
+                assert_eq!(
+                    m.state(&id).map(state_name),
+                    Some(want.as_str().unwrap()),
+                    "state of peer {id} after {op}"
+                );
+            }
+        });
         // Alive set.
-        let want_set: BTreeSet<u64> = exp["alive_set"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_u64().unwrap())
-            .collect();
-        assert_eq!(m.peer_set(&ctx), want_set, "alive_set after {op}");
+        exp.assert_key_with("alive_set", |want| {
+            let want_set: BTreeSet<u64> = want
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap())
+                .collect();
+            assert_eq!(m.peer_set(&ctx), want_set, "alive_set after {op}");
+        });
 
         // PeerSet invalidation.
         let was_cached = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(
-            !was_cached,
-            exp["invalidates"].as_bool().unwrap(),
-            "invalidation after {op}"
-        );
+        exp.assert_key_at("invalidates", !was_cached, &format!("op {op}"));
     }
 }

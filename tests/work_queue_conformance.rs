@@ -32,118 +32,92 @@ fn as_u64(value: &Value, label: &str) -> u64 {
 /// field the fixture asserts and this runner never reads fails the fixture.
 fn assert_state(ctx: &Context, queue: &WorkQueueCell<String>, exp: &Expect) {
     let pending = queue.pending();
-    let expected_pending = exp["pending"].as_array().expect("pending array");
-    assert_eq!(pending.len(), expected_pending.len());
-    for (j, (actual, want)) in pending.iter().zip(expected_pending).enumerate() {
-        let want = exp.nested(format!("pending[{j}]"), want);
-        assert_eq!(actual.item_id, as_u64(&want["item_id"], "item_id"));
-        assert_eq!(actual.value, want["value"].as_str().expect("value"));
-        assert_eq!(
-            u64::from(actual.attempts),
-            as_u64(&want["attempts"], "attempts")
-        );
-    }
+    exp.assert_key_with("pending", |expected_pending| {
+        let expected_pending = expected_pending.as_array().expect("pending array");
+        assert_eq!(pending.len(), expected_pending.len());
+        for (j, (actual, want)) in pending.iter().zip(expected_pending).enumerate() {
+            let want = exp.nested(format!("pending[{j}]"), want);
+            want.assert_key("item_id", actual.item_id);
+            want.assert_key("value", actual.value.as_str());
+            want.assert_key("attempts", u64::from(actual.attempts));
+        }
+    });
 
     let in_flight = queue.in_flight();
-    let expected_in_flight = exp["in_flight"].as_array().expect("in_flight array");
-    assert_eq!(in_flight.len(), expected_in_flight.len());
-    for (j, (actual, want)) in in_flight.iter().zip(expected_in_flight).enumerate() {
-        let want = exp.nested(format!("in_flight[{j}]"), want);
-        assert_eq!(
-            actual.delivery_id,
-            as_u64(&want["delivery_id"], "delivery_id")
-        );
-        assert_eq!(actual.item_id, as_u64(&want["item_id"], "item_id"));
-        assert_eq!(actual.value, want["value"].as_str().expect("value"));
-        assert_eq!(actual.worker, want["worker"].as_str().expect("worker"));
-        assert_eq!(
-            u64::from(actual.attempt),
-            as_u64(&want["attempt"], "attempt")
-        );
-        assert_eq!(actual.deadline, as_u64(&want["deadline"], "deadline"));
-    }
+    exp.assert_key_with("in_flight", |expected_in_flight| {
+        let expected_in_flight = expected_in_flight.as_array().expect("in_flight array");
+        assert_eq!(in_flight.len(), expected_in_flight.len());
+        for (j, (actual, want)) in in_flight.iter().zip(expected_in_flight).enumerate() {
+            let want = exp.nested(format!("in_flight[{j}]"), want);
+            want.assert_key("delivery_id", actual.delivery_id);
+            want.assert_key("item_id", actual.item_id);
+            want.assert_key("value", actual.value.as_str());
+            want.assert_key("worker", actual.worker.as_str());
+            want.assert_key("attempt", u64::from(actual.attempt));
+            want.assert_key("deadline", actual.deadline);
+        }
+    });
 
     let dead_letters = queue.dead_letters();
-    let expected_dead_letters = exp["dead_letters"].as_array().expect("dead_letters array");
-    assert_eq!(dead_letters.len(), expected_dead_letters.len());
-    for (j, (actual, want)) in dead_letters.iter().zip(expected_dead_letters).enumerate() {
-        let want = exp.nested(format!("dead_letters[{j}]"), want);
-        assert_eq!(actual.item_id, as_u64(&want["item_id"], "item_id"));
-        assert_eq!(actual.value, want["value"].as_str().expect("value"));
-        assert_eq!(
-            u64::from(actual.attempts),
-            as_u64(&want["attempts"], "attempts")
-        );
-        let reason = match actual.reason {
-            WorkQueueDeadLetterReason::Nack => "nack",
-            WorkQueueDeadLetterReason::Expired => "expired",
-        };
-        assert_eq!(reason, want["reason"].as_str().expect("reason"));
-    }
+    exp.assert_key_with("dead_letters", |expected_dead_letters| {
+        let expected_dead_letters = expected_dead_letters
+            .as_array()
+            .expect("dead_letters array");
+        assert_eq!(dead_letters.len(), expected_dead_letters.len());
+        for (j, (actual, want)) in dead_letters.iter().zip(expected_dead_letters).enumerate() {
+            let want = exp.nested(format!("dead_letters[{j}]"), want);
+            want.assert_key("item_id", actual.item_id);
+            want.assert_key("value", actual.value.as_str());
+            want.assert_key("attempts", u64::from(actual.attempts));
+            let reason = match actual.reason {
+                WorkQueueDeadLetterReason::Nack => "nack",
+                WorkQueueDeadLetterReason::Expired => "expired",
+            };
+            want.assert_key("reason", reason);
+        }
+    });
 
     let reads = exp.sub("reads");
-    assert_eq!(
-        queue.pending_len(ctx) as u64,
-        as_u64(&reads["pending_len"], "pending_len")
-    );
-    assert_eq!(
-        queue.is_empty(ctx),
-        reads["is_empty"].as_bool().expect("is_empty")
-    );
-    assert_eq!(
-        queue.in_flight_len(ctx) as u64,
-        as_u64(&reads["in_flight_len"], "in_flight_len")
-    );
-    assert_eq!(
-        queue.dead_letter_len(ctx) as u64,
-        as_u64(&reads["dead_letter_len"], "dead_letter_len")
-    );
+    reads.assert_key("pending_len", queue.pending_len(ctx) as u64);
+    reads.assert_key("is_empty", queue.is_empty(ctx));
+    reads.assert_key("in_flight_len", queue.in_flight_len(ctx) as u64);
+    reads.assert_key("dead_letter_len", queue.dead_letter_len(ctx) as u64);
 }
 
 fn assert_invalidations(ctx: &Context, queue: &WorkQueueCell<String>, exp: &Expect) {
     let handles = queue.reader_handles();
     let invalidates = exp.sub("invalidates");
-    assert_eq!(
+    invalidates.assert_key_at(
+        "pending_len",
         !ctx.is_set(&handles.pending_len),
-        invalidates["pending_len"]
-            .as_bool()
-            .expect("pending invalidation")
+        "pending invalidation",
     );
-    assert_eq!(
+    invalidates.assert_key_at(
+        "is_empty",
         !ctx.is_set(&handles.is_empty),
-        invalidates["is_empty"]
-            .as_bool()
-            .expect("empty invalidation")
+        "empty invalidation",
     );
-    assert_eq!(
+    invalidates.assert_key_at(
+        "in_flight_len",
         !ctx.is_set(&handles.in_flight_len),
-        invalidates["in_flight_len"]
-            .as_bool()
-            .expect("in-flight invalidation")
+        "in-flight invalidation",
     );
-    assert_eq!(
+    invalidates.assert_key_at(
+        "dead_letter_len",
         !ctx.is_set(&handles.dead_letter_len),
-        invalidates["dead_letter_len"]
-            .as_bool()
-            .expect("dead-letter invalidation")
+        "dead-letter invalidation",
     );
 }
 
 /// `returns` for a `claim` is a delivery record — an assertion block in its own
 /// right, so it is guarded too.
 fn assert_delivery(actual: &lazily::WorkQueueDelivery<String>, expected: &Expect) {
-    assert_eq!(
-        actual.delivery_id,
-        as_u64(&expected["delivery_id"], "delivery_id")
-    );
-    assert_eq!(actual.item_id, as_u64(&expected["item_id"], "item_id"));
-    assert_eq!(actual.value, expected["value"].as_str().expect("value"));
-    assert_eq!(actual.worker, expected["worker"].as_str().expect("worker"));
-    assert_eq!(
-        u64::from(actual.attempt),
-        as_u64(&expected["attempt"], "attempt")
-    );
-    assert_eq!(actual.deadline, as_u64(&expected["deadline"], "deadline"));
+    expected.assert_key("delivery_id", actual.delivery_id);
+    expected.assert_key("item_id", actual.item_id);
+    expected.assert_key("value", actual.value.as_str());
+    expected.assert_key("worker", actual.worker.as_str());
+    expected.assert_key("attempt", u64::from(actual.attempt));
+    expected.assert_key("deadline", actual.deadline);
 }
 
 fn run_fixture(name: &str) {

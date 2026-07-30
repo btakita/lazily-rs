@@ -70,16 +70,18 @@ fn circuit_breaker() {
             }
             other => panic!("unknown op {other}"),
         }
-        let want = match exp["state"].as_str().unwrap() {
-            "Closed" => BreakerState::Closed,
-            "Open" => BreakerState::Open,
-            "HalfOpen" => BreakerState::HalfOpen,
-            s => panic!("bad state {s}"),
-        };
-        assert_eq!(cb.state(), want, "state for {step}");
+        exp.assert_key_with("state", |want| {
+            let want = match want.as_str().unwrap() {
+                "Closed" => BreakerState::Closed,
+                "Open" => BreakerState::Open,
+                "HalfOpen" => BreakerState::HalfOpen,
+                s => panic!("bad state {s}"),
+            };
+            assert_eq!(cb.state(), want, "state for {step}");
+        });
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inv["state"].as_bool().unwrap(), "inval for {step}");
+        inv.assert_key_at("state", !was, &format!("step {step}"));
     }
 }
 
@@ -105,10 +107,10 @@ fn retry() {
         let inv = exp.sub("invalidates");
         let got = r.next_delay(&ctx);
         assert_eq!(got, step["returns"].as_u64().unwrap(), "delay for {step}");
-        assert_eq!(r.delay(&ctx), exp["delay"].as_u64().unwrap());
+        exp.assert_key_at("delay", r.delay(&ctx), &format!("step {step}"));
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inv["delay"].as_bool().unwrap(), "inval for {step}");
+        inv.assert_key_at("delay", !was, &format!("step {step}"));
     }
 }
 
@@ -132,10 +134,10 @@ fn bulkhead() {
             "release" => b.release(&ctx),
             other => panic!("unknown op {other}"),
         }
-        assert_eq!(b.permits_in_use(&ctx), exp["in_use"].as_u64().unwrap());
+        exp.assert_key_at("in_use", b.permits_in_use(&ctx), &format!("step {step}"));
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inv["in_use"].as_bool().unwrap(), "inval for {step}");
+        inv.assert_key_at("in_use", !was, &format!("step {step}"));
     }
 }
 
@@ -165,13 +167,13 @@ fn timeout() {
             other => panic!("unknown op {other}"),
         };
         assert_eq!(got, step["returns"].as_bool().unwrap(), "edge for {step}");
-        assert_eq!(t.is_timed_out(&ctx), exp["is_timed_out"].as_bool().unwrap());
+        exp.assert_key_at(
+            "is_timed_out",
+            t.is_timed_out(&ctx),
+            &format!("step {step}"),
+        );
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(
-            !was,
-            inv["is_timed_out"].as_bool().unwrap(),
-            "inval for {step}"
-        );
+        inv.assert_key_at("is_timed_out", !was, &format!("step {step}"));
     }
 }

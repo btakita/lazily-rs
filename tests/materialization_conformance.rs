@@ -47,10 +47,9 @@ fn str_array(v: &Value, path: &str) -> Vec<String> {
         .collect()
 }
 
-/// `str_array` against a guarded assertion block, so the key is recorded.
-fn exp_strs(e: &Expect, key: &str) -> Vec<String> {
-    e[key]
-        .as_array()
+/// `str_array` against the value an assertion key carries.
+fn want_strs(want: &Value, key: &str) -> Vec<String> {
+    want.as_array()
         .unwrap_or_else(|| panic!("missing array {key}"))
         .iter()
         .map(|k| k.as_str().expect("array of strings").to_string())
@@ -122,34 +121,53 @@ fn check_val_fixture(name: &str) -> Value {
         fixture.get("expected").expect("expected"),
     );
 
-    // default_mode_eager: eager is the default materialization strategy.
-    assert_eq!(expected["default_mode"].as_str(), Some("eager"));
-
     let ctx = Context::new();
     let eager = eager_computed_map(&ctx, keys.clone(), entries.clone());
     let lazy = lazy_computed_map(&ctx);
 
+    // default_mode_eager. The strategy named by the fixture *selects the build*,
+    // and the fact asserted is that a map built that way is fully materialized at
+    // build time — so editing the fixture changes the outcome. Comparing the key
+    // to the literal `"eager"` asserted nothing about the library
+    // (`#lzconsumednotasserted`).
+    expected.assert_key_with("default_mode", |want| {
+        let mode = want.as_str().expect("default_mode");
+        let default_present = match mode {
+            "eager" => eager_computed_map(&ctx, keys.clone(), entries.clone()).present_count(),
+            "lazy" => lazy_computed_map(&ctx).present_count(),
+            other => panic!("unknown default_mode {other}"),
+        };
+        assert_eq!(
+            default_present,
+            keys.len(),
+            "a map built the fixture's default way ({mode}) is materialized at build"
+        );
+    });
+
     // eager_materializes_all
     assert_eq!(eager.present_count(), keys.len());
-    assert_eq!(
-        as_set(&eager.present_keys()),
-        as_set(&exp_strs(&expected, "eager_present"))
-    );
+    expected.assert_key_with("eager_present", |want| {
+        assert_eq!(
+            as_set(&eager.present_keys()),
+            as_set(&want_strs(want, "eager_present"))
+        )
+    });
     // Lazy defers every derived slot: nothing present at build.
     assert_eq!(lazy.present_count(), 0);
 
     // observe_canonical / eager_lazy_observationally_equivalent
-    let observe = expected["observe"].as_object().expect("expected.observe");
     let lookup = lookup_fn(entries.clone());
-    for (k, want) in observe {
-        let want = want.as_i64().expect("observe int");
-        assert_eq!(eager.get(&ctx, k).unwrap(), want, "eager observe {k}");
-        assert_eq!(
-            lazy.get_or_insert_with(&ctx, k.clone(), lookup.clone()),
-            want,
-            "lazy observe {k}"
-        );
-    }
+    expected.assert_key_with("observe", |observe| {
+        for (k, want) in observe.as_object().expect("expected.observe") {
+            let want = want.as_i64().expect("observe int");
+            assert_eq!(eager.get(&ctx, k).unwrap(), want, "eager observe {k}");
+            assert_eq!(
+                lazy.get_or_insert_with(&ctx, k.clone(), lookup.clone()),
+                want,
+                "lazy observe {k}"
+            );
+        }
+    });
 
     // The read sequence, asserted here so `lazy_present_after_reads` and
     // `present_after_each_read` are consumed by the same guard as the rest.
@@ -161,18 +179,25 @@ fn check_val_fixture(name: &str) -> Value {
         fresh.get_or_insert_with(&fresh_ctx, k, lookup.clone());
         sizes.push(fresh.present_count());
     }
-    assert_eq!(
-        as_set(&fresh.present_keys()),
-        as_set(&exp_strs(&expected, "lazy_present_after_reads"))
-    );
-    if let Some(want_sizes) = expected.get_opt("present_after_each_read") {
-        let want: Vec<usize> = want_sizes
-            .as_array()
-            .expect("present_after_each_read")
-            .iter()
-            .map(|n| n.as_u64().expect("size") as usize)
-            .collect();
-        assert_eq!(sizes, want, "cumulative present-set sizes");
+    expected.assert_key_with("lazy_present_after_reads", |want| {
+        assert_eq!(
+            as_set(&fresh.present_keys()),
+            as_set(&want_strs(want, "lazy_present_after_reads"))
+        )
+    });
+    // Peek through `raw` rather than `get_opt`: only fixtures that carry the key
+    // owe an assertion for it, and a read on the ones that do not would itself be
+    // a read-then-discard.
+    if expected.raw().get("present_after_each_read").is_some() {
+        expected.assert_key_with("present_after_each_read", |want_sizes| {
+            let want: Vec<usize> = want_sizes
+                .as_array()
+                .expect("present_after_each_read")
+                .iter()
+                .map(|n| n.as_u64().expect("size") as usize)
+                .collect();
+            assert_eq!(sizes, want, "cumulative present-set sizes");
+        });
     }
 
     // The guard's Drop must run before `fixture` moves out.
@@ -294,8 +319,6 @@ fn entry_kind_orthogonal_to_mode() {
         "expected",
         fixture.get("expected").unwrap(),
     );
-    assert_eq!(expected["default_mode"].as_str(), Some("eager"));
-
     let spec_entries = fixture
         .get("spec")
         .and_then(|s| s.get("entries"))
@@ -341,7 +364,23 @@ fn entry_kind_orthogonal_to_mode() {
     assert_eq!(eager_slots.entry_kind(), EntryKind::Computed);
     let mut eager_present = as_set(&eager_cells.present_keys());
     eager_present.extend(eager_slots.present_keys());
-    assert_eq!(eager_present, as_set(&exp_strs(&expected, "eager_present")));
+    expected.assert_key_with("eager_present", |want| {
+        assert_eq!(eager_present, as_set(&want_strs(want, "eager_present")))
+    });
+    // default_mode_eager across kinds: the strategy the fixture names is the one
+    // whose build has every declared entry present.
+    expected.assert_key_with("default_mode", |want| {
+        let mode = want.as_str().expect("default_mode");
+        assert_eq!(
+            mode, "eager",
+            "only the eager build materializes both kinds"
+        );
+        assert_eq!(
+            eager_present.len(),
+            cell_keys.len() + slot_keys.len(),
+            "the fixture's default mode ({mode}) materializes every entry at build"
+        );
+    });
 
     // Lazy build: cells present at build (input cells are always materialized),
     // slots deferred until read.
@@ -355,10 +394,12 @@ fn entry_kind_orthogonal_to_mode() {
         lazy_slots.present_keys().is_empty(),
         "slots deferred at build"
     );
-    assert_eq!(
-        present_at_build,
-        as_set(&exp_strs(&expected, "lazy_present_at_build"))
-    );
+    expected.assert_key_with("lazy_present_at_build", |want| {
+        assert_eq!(
+            present_at_build,
+            as_set(&want_strs(want, "lazy_present_at_build"))
+        )
+    });
 
     // Reads (slot pulls) grow only the slot present set.
     for k in str_array(&fixture, "reads") {
@@ -370,24 +411,27 @@ fn entry_kind_orthogonal_to_mode() {
     }
     let mut lazy_after = as_set(&lazy_cells.present_keys());
     lazy_after.extend(lazy_slots.present_keys());
-    assert_eq!(
-        lazy_after,
-        as_set(&exp_strs(&expected, "lazy_present_after_reads"))
-    );
+    expected.assert_key_with("lazy_present_after_reads", |want| {
+        assert_eq!(
+            lazy_after,
+            as_set(&want_strs(want, "lazy_present_after_reads"))
+        )
+    });
 
     // Observational transparency across kinds.
-    let observe = expected["observe"].as_object().unwrap();
-    for (k, want) in observe {
-        let want = want.as_i64().unwrap();
-        if cell_keys.contains(k) {
-            assert_eq!(eager_cells.get(&ctx, k), Some(want));
-            assert_eq!(lazy_cells.get(&ctx, k), Some(want));
-        } else {
-            assert_eq!(eager_slots.get(&ctx, k), Some(want));
-            assert_eq!(
-                lazy_slots.get_or_insert_with(&ctx, k.clone(), lookup.clone()),
-                want
-            );
+    expected.assert_key_with("observe", |observe| {
+        for (k, want) in observe.as_object().unwrap() {
+            let want = want.as_i64().unwrap();
+            if cell_keys.contains(k) {
+                assert_eq!(eager_cells.get(&ctx, k), Some(want));
+                assert_eq!(lazy_cells.get(&ctx, k), Some(want));
+            } else {
+                assert_eq!(eager_slots.get(&ctx, k), Some(want));
+                assert_eq!(
+                    lazy_slots.get_or_insert_with(&ctx, k.clone(), lookup.clone()),
+                    want
+                );
+            }
         }
-    }
+    });
 }

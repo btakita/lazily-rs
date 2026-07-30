@@ -437,7 +437,7 @@ mod thread_safe_flavor {
             );
 
             // `invalidates` BEFORE any read — reading revalidates.
-            if let Some(inv) = expected.get_opt("invalidates") {
+            expected.assert_key_if_present("invalidates", |inv| {
                 for (key, node_valid) in [
                     ("head", ctx.is_set(&r.head)),
                     ("len", ctx.is_set(&r.len)),
@@ -453,7 +453,7 @@ mod thread_safe_flavor {
                         );
                     }
                 }
-            }
+            });
 
             if let Some(want) = step.get("returns").and_then(|v| v.as_str()) {
                 let got = got_returns.as_deref().unwrap_or("");
@@ -463,40 +463,56 @@ mod thread_safe_flavor {
                 );
             }
 
-            if let Some(want) = expected["len"].as_u64() {
-                assert_eq!(q.len(&ctx) as u64, want, "{name} step {i}: len");
-            }
-            if let Some(want) = expected["is_empty"].as_bool() {
-                assert_eq!(q.is_empty(&ctx), want, "{name} step {i}: is_empty");
-            }
-            if let Some(want) = expected["is_full"].as_bool() {
-                assert_eq!(q.is_full(&ctx), want, "{name} step {i}: is_full");
-            }
-            if let Some(want) = expected["closed"].as_bool() {
-                assert_eq!(q.closed(&ctx), want, "{name} step {i}: closed");
-            }
-            match expected.get_opt("head") {
-                Some(Value::String(want)) => {
-                    assert_eq!(
-                        q.head(&ctx).as_deref(),
-                        Some(want.as_str()),
-                        "{name} step {i}: head"
-                    )
-                }
-                Some(Value::Null) => assert_eq!(q.head(&ctx), None, "{name} step {i}: head"),
-                _ => {}
-            }
+            expected.assert_key_if_present("len", |want| {
+                assert_eq!(
+                    q.len(&ctx) as u64,
+                    want.as_u64().expect("len"),
+                    "{name} step {i}: len"
+                );
+            });
+            expected.assert_key_if_present("is_empty", |want| {
+                assert_eq!(
+                    q.is_empty(&ctx),
+                    want.as_bool().expect("is_empty"),
+                    "{name} step {i}: is_empty"
+                );
+            });
+            expected.assert_key_if_present("is_full", |want| {
+                assert_eq!(
+                    q.is_full(&ctx),
+                    want.as_bool().expect("is_full"),
+                    "{name} step {i}: is_full"
+                );
+            });
+            expected.assert_key_if_present("closed", |want| {
+                assert_eq!(
+                    q.closed(&ctx),
+                    want.as_bool().expect("closed"),
+                    "{name} step {i}: closed"
+                );
+            });
+            expected.assert_key_if_present("head", |want| match want {
+                Value::String(want) => assert_eq!(
+                    q.head(&ctx).as_deref(),
+                    Some(want.as_str()),
+                    "{name} step {i}: head"
+                ),
+                Value::Null => assert_eq!(q.head(&ctx), None, "{name} step {i}: head"),
+                other => panic!("{name} step {i}: head must be a string or null, got {other}"),
+            });
             // `elements`: the whole buffered FIFO sequence. The single-threaded
             // replay always asserted it; this flavor never read the key, so the
             // total-order claim went unchecked on exactly the flavor where it is
             // hardest to get right (`#lzassertunknownkeys`).
-            if let Some(want) = expected["elements"].as_array() {
+            expected.assert_key_if_present("elements", |want| {
                 let want: Vec<String> = want
+                    .as_array()
+                    .expect("elements")
                     .iter()
                     .map(|v| v.as_str().expect("element").to_string())
                     .collect();
                 assert_eq!(q.elements(), want, "{name} step {i}: elements");
-            }
+            });
         }
         steps.len()
     }
@@ -710,7 +726,7 @@ mod async_flavor {
 
             // `invalidates` BEFORE any read — reading revalidates. `closed` is a
             // source rather than a derive, so it is asserted by value below.
-            if let Some(inv) = expected.get_opt("invalidates") {
+            expected.assert_key_if_present("invalidates", |inv| {
                 for (key, node_valid) in [
                     ("head", ctx.is_set(&r.head)),
                     ("len", ctx.is_set(&r.len)),
@@ -725,7 +741,7 @@ mod async_flavor {
                         );
                     }
                 }
-            }
+            });
 
             if let Some(want) = step.get("returns").and_then(|v| v.as_str()) {
                 let got = got_returns.as_deref().unwrap_or("");
@@ -734,38 +750,56 @@ mod async_flavor {
                     "{name} step {i}: returns `{got}`, fixture says `{want}`"
                 );
             }
-            if let Some(want) = expected["len"].as_u64() {
-                assert_eq!(q.len(&ctx) as u64, want, "{name} step {i}: len");
-            }
-            if let Some(want) = expected["is_empty"].as_bool() {
-                assert_eq!(q.is_empty(&ctx), want, "{name} step {i}: is_empty");
-            }
-            if let Some(want) = expected["is_full"].as_bool() {
-                assert_eq!(q.is_full(&ctx), want, "{name} step {i}: is_full");
-            }
-            if let Some(want) = expected["closed"].as_bool() {
-                assert_eq!(q.closed(&ctx), want, "{name} step {i}: closed");
-            }
-            match expected.get_opt("head") {
-                Some(Value::String(want)) => assert_eq!(
+            expected.assert_key_if_present("len", |want| {
+                assert_eq!(
+                    q.len(&ctx) as u64,
+                    want.as_u64().expect("len"),
+                    "{name} step {i}: len"
+                );
+            });
+            expected.assert_key_if_present("is_empty", |want| {
+                assert_eq!(
+                    q.is_empty(&ctx),
+                    want.as_bool().expect("is_empty"),
+                    "{name} step {i}: is_empty"
+                );
+            });
+            expected.assert_key_if_present("is_full", |want| {
+                assert_eq!(
+                    q.is_full(&ctx),
+                    want.as_bool().expect("is_full"),
+                    "{name} step {i}: is_full"
+                );
+            });
+            expected.assert_key_if_present("closed", |want| {
+                assert_eq!(
+                    q.closed(&ctx),
+                    want.as_bool().expect("closed"),
+                    "{name} step {i}: closed"
+                );
+            });
+            expected.assert_key_if_present("head", |want| match want {
+                Value::String(want) => assert_eq!(
                     q.head(&ctx).as_deref(),
                     Some(want.as_str()),
                     "{name} step {i}: head"
                 ),
-                Some(Value::Null) => assert_eq!(q.head(&ctx), None, "{name} step {i}: head"),
-                _ => {}
-            }
+                Value::Null => assert_eq!(q.head(&ctx), None, "{name} step {i}: head"),
+                other => panic!("{name} step {i}: head must be a string or null, got {other}"),
+            });
             // `elements`: the whole buffered FIFO sequence. The single-threaded
             // replay always asserted it; this flavor never read the key, so the
             // total-order claim went unchecked on exactly the flavor where it is
             // hardest to get right (`#lzassertunknownkeys`).
-            if let Some(want) = expected["elements"].as_array() {
+            expected.assert_key_if_present("elements", |want| {
                 let want: Vec<String> = want
+                    .as_array()
+                    .expect("elements")
                     .iter()
                     .map(|v| v.as_str().expect("element").to_string())
                     .collect();
                 assert_eq!(q.elements(), want, "{name} step {i}: elements");
-            }
+            });
         }
         steps.len()
     }
@@ -974,8 +1008,8 @@ mod topic_flavors {
             );
 
             // `invalidates` BEFORE any read — a read revalidates the node.
-            if let Some(inv) = expected["invalidates"].as_object() {
-                for (id, want) in inv {
+            expected.assert_key_if_present("invalidates", |inv| {
+                for (id, want) in inv.as_object().expect("invalidates object") {
                     let want = want.as_bool().expect("invalidates flag");
                     assert_eq!(
                         !topic.is_reader_valid(id),
@@ -984,7 +1018,7 @@ mod topic_flavors {
                          the canonical fixture"
                     );
                 }
-            }
+            });
             assert!(
                 step.get("invalidates").is_none(),
                 "{name} step {i}: `invalidates` at STEP level would be silently \
@@ -1004,21 +1038,22 @@ mod topic_flavors {
                 }
             }
 
-            if let Some(want) = expected["base_offset"].as_u64() {
+            expected.assert_key_if_present("base_offset", |want| {
                 assert_eq!(
                     topic.base_offset(),
-                    want,
+                    want.as_u64().expect("base_offset"),
                     "{flavor} {name} step {i}: base_offset"
                 );
-            }
-            if let Some(want) = expected.get_opt("elements") {
+            });
+            expected.assert_key_if_present("elements", |want| {
                 assert_eq!(
                     topic.elements(),
                     strings(want),
                     "{flavor} {name} step {i}: retained elements"
                 );
-            }
-            if let Some(subs) = expected["subscriptions"].as_object() {
+            });
+            expected.assert_key_if_present("subscriptions", |subs| {
+                let subs = subs.as_object().expect("subscriptions object");
                 for (id, want) in subs {
                     let got = topic.subscription(id).unwrap_or_else(|| {
                         panic!("{flavor} {name} step {i}: no subscription {id}")
@@ -1051,16 +1086,16 @@ mod topic_flavors {
                         );
                     }
                 }
-            }
-            if let Some(reads) = expected["reads"].as_object() {
-                for (id, want) in reads {
+            });
+            expected.assert_key_if_present("reads", |reads| {
+                for (id, want) in reads.as_object().expect("reads object") {
                     assert_eq!(
                         topic.read_stream(id),
                         strings(want),
                         "{flavor} {name} step {i}: {id} read stream"
                     );
                 }
-            }
+            });
         }
         steps.len()
     }
@@ -1574,91 +1609,97 @@ mod work_queue_flavors {
             );
 
             // Invalidation BEFORE the value reads below, which revalidate.
-            let invalidates = &expected["invalidates"];
             let validity = queue.reader_validity();
-            for (kind, valid) in READER_KINDS.iter().zip(validity) {
-                let want = invalidates[*kind]
-                    .as_bool()
-                    .unwrap_or_else(|| panic!("{name} step {i}: no invalidates.{kind}"));
-                assert_eq!(
-                    !valid, want,
-                    "{flavor} {name} step {i}: invalidates.{kind} disagrees with the \
-                     canonical fixture"
-                );
-            }
+            expected.assert_key_with("invalidates", |invalidates| {
+                for (kind, valid) in READER_KINDS.iter().zip(validity) {
+                    let want = invalidates[*kind]
+                        .as_bool()
+                        .unwrap_or_else(|| panic!("{name} step {i}: no invalidates.{kind}"));
+                    assert_eq!(
+                        !valid, want,
+                        "{flavor} {name} step {i}: invalidates.{kind} disagrees with the \
+                         canonical fixture"
+                    );
+                }
+            });
 
             let pending = queue.pending();
-            let want_pending = expected["pending"].as_array().expect("pending array");
-            assert_eq!(
-                pending.len(),
-                want_pending.len(),
-                "{flavor} {name} step {i}: pending length"
-            );
-            for (actual, want) in pending.iter().zip(want_pending) {
-                assert_eq!(actual.item_id, as_u64(&want["item_id"], "item_id"));
-                assert_eq!(actual.value, want["value"].as_str().expect("value"));
+            expected.assert_key_with("pending", |want_pending| {
+                let want_pending = want_pending.as_array().expect("pending array");
                 assert_eq!(
-                    u64::from(actual.attempts),
-                    as_u64(&want["attempts"], "attempts")
+                    pending.len(),
+                    want_pending.len(),
+                    "{flavor} {name} step {i}: pending length"
                 );
-            }
+                for (actual, want) in pending.iter().zip(want_pending) {
+                    assert_eq!(actual.item_id, as_u64(&want["item_id"], "item_id"));
+                    assert_eq!(actual.value, want["value"].as_str().expect("value"));
+                    assert_eq!(
+                        u64::from(actual.attempts),
+                        as_u64(&want["attempts"], "attempts")
+                    );
+                }
+            });
 
             let in_flight = queue.in_flight();
-            let want_in_flight = expected["in_flight"].as_array().expect("in_flight array");
-            assert_eq!(
-                in_flight.len(),
-                want_in_flight.len(),
-                "{flavor} {name} step {i}: in_flight length"
-            );
-            for (actual, want) in in_flight.iter().zip(want_in_flight) {
-                assert_delivery(actual, want, &format!("{flavor} {name} step {i} in_flight"));
-            }
+            expected.assert_key_with("in_flight", |want_in_flight| {
+                let want_in_flight = want_in_flight.as_array().expect("in_flight array");
+                assert_eq!(
+                    in_flight.len(),
+                    want_in_flight.len(),
+                    "{flavor} {name} step {i}: in_flight length"
+                );
+                for (actual, want) in in_flight.iter().zip(want_in_flight) {
+                    assert_delivery(actual, want, &format!("{flavor} {name} step {i} in_flight"));
+                }
+            });
 
             let dead_letters = queue.dead_letters();
-            let want_dead = expected["dead_letters"]
-                .as_array()
-                .expect("dead_letters array");
-            assert_eq!(
-                dead_letters.len(),
-                want_dead.len(),
-                "{flavor} {name} step {i}: dead_letters length"
-            );
-            for (actual, want) in dead_letters.iter().zip(want_dead) {
-                assert_eq!(actual.item_id, as_u64(&want["item_id"], "item_id"));
-                assert_eq!(actual.value, want["value"].as_str().expect("value"));
+            expected.assert_key_with("dead_letters", |want_dead| {
+                let want_dead = want_dead.as_array().expect("dead_letters array");
                 assert_eq!(
-                    u64::from(actual.attempts),
-                    as_u64(&want["attempts"], "attempts")
+                    dead_letters.len(),
+                    want_dead.len(),
+                    "{flavor} {name} step {i}: dead_letters length"
                 );
-                let reason = match actual.reason {
-                    WorkQueueDeadLetterReason::Nack => "nack",
-                    WorkQueueDeadLetterReason::Expired => "expired",
-                };
-                assert_eq!(reason, want["reason"].as_str().expect("reason"));
-            }
+                for (actual, want) in dead_letters.iter().zip(want_dead) {
+                    assert_eq!(actual.item_id, as_u64(&want["item_id"], "item_id"));
+                    assert_eq!(actual.value, want["value"].as_str().expect("value"));
+                    assert_eq!(
+                        u64::from(actual.attempts),
+                        as_u64(&want["attempts"], "attempts")
+                    );
+                    let reason = match actual.reason {
+                        WorkQueueDeadLetterReason::Nack => "nack",
+                        WorkQueueDeadLetterReason::Expired => "expired",
+                    };
+                    assert_eq!(reason, want["reason"].as_str().expect("reason"));
+                }
+            });
 
-            let want_reads = &expected["reads"];
             let (pending_len, is_empty, in_flight_len, dead_letter_len) = queue.reads();
-            assert_eq!(
-                pending_len,
-                as_u64(&want_reads["pending_len"], "pending_len"),
-                "{flavor} {name} step {i}: reads.pending_len"
-            );
-            assert_eq!(
-                is_empty,
-                want_reads["is_empty"].as_bool().expect("is_empty"),
-                "{flavor} {name} step {i}: reads.is_empty"
-            );
-            assert_eq!(
-                in_flight_len,
-                as_u64(&want_reads["in_flight_len"], "in_flight_len"),
-                "{flavor} {name} step {i}: reads.in_flight_len"
-            );
-            assert_eq!(
-                dead_letter_len,
-                as_u64(&want_reads["dead_letter_len"], "dead_letter_len"),
-                "{flavor} {name} step {i}: reads.dead_letter_len"
-            );
+            expected.assert_key_with("reads", |want_reads| {
+                assert_eq!(
+                    pending_len,
+                    as_u64(&want_reads["pending_len"], "pending_len"),
+                    "{flavor} {name} step {i}: reads.pending_len"
+                );
+                assert_eq!(
+                    is_empty,
+                    want_reads["is_empty"].as_bool().expect("is_empty"),
+                    "{flavor} {name} step {i}: reads.is_empty"
+                );
+                assert_eq!(
+                    in_flight_len,
+                    as_u64(&want_reads["in_flight_len"], "in_flight_len"),
+                    "{flavor} {name} step {i}: reads.in_flight_len"
+                );
+                assert_eq!(
+                    dead_letter_len,
+                    as_u64(&want_reads["dead_letter_len"], "dead_letter_len"),
+                    "{flavor} {name} step {i}: reads.dead_letter_len"
+                );
+            });
         }
         steps.len()
     }

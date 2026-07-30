@@ -69,22 +69,20 @@ fn timer_single_shot() {
 
         let exp = expected("timer_single_shot.json", i, step);
         let inv = exp.sub("invalidates");
-        assert_eq!(timer.has_fired(&ctx), exp["fired"].as_bool().unwrap());
-        match exp["value"].as_str() {
+        exp.assert_key_at("fired", timer.has_fired(&ctx), &format!("step {step}"));
+        exp.assert_key_with("value", |want| match want.as_str() {
             Some("()") => assert_eq!(timer.value(&ctx), Some(())),
             _ => assert_eq!(timer.value(&ctx), None),
-        }
-        assert_eq!(timer.next_fire(), exp["next_fire"].as_u64());
+        });
+        exp.assert_key_with("next_fire", |want| {
+            assert_eq!(timer.next_fire(), want.as_u64())
+        });
 
         let was_cached = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
         // The reader must have been invalidated (cache dropped) exactly when the
         // fixture says so.
-        assert_eq!(
-            !was_cached,
-            inv["fired"].as_bool().unwrap(),
-            "invalidation for {step}"
-        );
+        inv.assert_key_at("fired", !was_cached, &format!("step {step}"));
     }
 }
 
@@ -107,12 +105,14 @@ fn interval_periodic() {
 
         let exp = expected("interval_periodic.json", i, step);
         let inv = exp.sub("invalidates");
-        assert_eq!(iv.count(&ctx), exp["count"].as_u64().unwrap());
-        assert_eq!(iv.next_fire(), exp["next_fire"].as_u64());
+        exp.assert_key_at("count", iv.count(&ctx), &format!("step {step}"));
+        exp.assert_key_with("next_fire", |want| {
+            assert_eq!(iv.next_fire(), want.as_u64())
+        });
 
         let was_cached = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was_cached, inv["count"].as_bool().unwrap(), "inval {step}");
+        inv.assert_key_at("count", !was_cached, &format!("step {step}"));
     }
 }
 
@@ -141,12 +141,14 @@ fn cron_pattern() {
 
         let exp = expected("cron_pattern.json", i, step);
         let inv = exp.sub("invalidates");
-        assert_eq!(cron.count(&ctx), exp["count"].as_u64().unwrap());
-        assert_eq!(cron.next_fire(), exp["next_fire"].as_u64());
+        exp.assert_key_at("count", cron.count(&ctx), &format!("step {step}"));
+        exp.assert_key_with("next_fire", |want| {
+            assert_eq!(cron.next_fire(), want.as_u64())
+        });
 
         let was_cached = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was_cached, inv["count"].as_bool().unwrap(), "inval {step}");
+        inv.assert_key_at("count", !was_cached, &format!("step {step}"));
     }
 }
 
@@ -171,17 +173,19 @@ fn deadline_expiry() {
         let exp = expected("deadline_expiry.json", i, step);
         let inv = exp.sub("invalidates");
         let state = d.state(&ctx);
-        let want_expired = exp["state"].as_str().unwrap() == "Expired";
-        assert_eq!(state.is_expired(), want_expired);
+        exp.assert_key_with("state", |want| {
+            let want_expired = want.as_str().unwrap() == "Expired";
+            assert_eq!(state.is_expired(), want_expired);
+        });
         assert_eq!(state.value(), &value); // value preserved across the flip
-        match state {
+        exp.assert_key_with("value", |want| match &state {
             Deadlined::Live(v) | Deadlined::Expired(v) => {
-                assert_eq!(v, exp["value"].as_str().unwrap())
+                assert_eq!(v, want.as_str().unwrap())
             }
-        }
+        });
 
         let was_cached = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was_cached, inv["state"].as_bool().unwrap(), "inval {step}");
+        inv.assert_key_at("state", !was_cached, &format!("step {step}"));
     }
 }

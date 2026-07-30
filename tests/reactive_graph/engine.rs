@@ -666,34 +666,50 @@ pub fn replay<'a, M: GraphModel>(
         // The fixture-level `expected` tail is guarded too (`#lzassertunknownkeys`);
         // its sub-blocks carry assertion names, so they are descended into.
         let fin = tail.sub("final_state");
-        for (id, v) in fin["dependents_of"].as_object().into_iter().flatten() {
-            let got = degree!(id.as_str(), dependents_of);
-            check!(
-                format!("final.dependents_of.{id}"),
-                got,
-                v.as_u64().unwrap() as usize
-            );
-            observation.degrees.insert(id.clone(), got);
-        }
-        for (id, v) in fin["readable"].as_object().into_iter().flatten() {
-            let alive = match nodes.get(id.as_str()) {
-                None => false,
-                Some(Ref::Effect(h)) => model.is_effect_active(*h),
-                Some(_) => read_id!(id.as_str()).is_ok(),
-            };
-            check!(format!("final.readable.{id}"), alive, v.as_bool().unwrap());
-            observation.readable.insert(id.clone(), alive);
-        }
-        for (id, v) in fin["read"].as_object().into_iter().flatten() {
-            let got = read_id!(id.as_str());
-            check!(format!("final.read.{id}"), got, Ok(v.as_i64().unwrap()));
-            observation
-                .reads
-                .insert(id.clone(), got.unwrap_or_default());
-        }
+        // Each sub-key is optional per fixture, so the comparison is bound to the
+        // key's presence — `fin["k"].as_object().into_iter().flatten()` marked the
+        // key consumed even when it iterated nothing (`#lzconsumednotasserted`).
+        fin.assert_key_if_present("dependents_of", |want| {
+            for (id, v) in want.as_object().into_iter().flatten() {
+                let got = degree!(id.as_str(), dependents_of);
+                check!(
+                    format!("final.dependents_of.{id}"),
+                    got,
+                    v.as_u64().unwrap() as usize
+                );
+                observation.degrees.insert(id.clone(), got);
+            }
+        });
+        fin.assert_key_if_present("readable", |want| {
+            for (id, v) in want.as_object().into_iter().flatten() {
+                let alive = match nodes.get(id.as_str()) {
+                    None => false,
+                    Some(Ref::Effect(h)) => model.is_effect_active(*h),
+                    Some(_) => read_id!(id.as_str()).is_ok(),
+                };
+                check!(format!("final.readable.{id}"), alive, v.as_bool().unwrap());
+                observation.readable.insert(id.clone(), alive);
+            }
+        });
+        fin.assert_key_if_present("read", |want| {
+            for (id, v) in want.as_object().into_iter().flatten() {
+                let got = read_id!(id.as_str());
+                check!(format!("final.read.{id}"), got, Ok(v.as_i64().unwrap()));
+                observation
+                    .reads
+                    .insert(id.clone(), got.unwrap_or_default());
+            }
+        });
 
         let publish = tail.sub("after_publish");
-        if let Some(pop) = publish.get_opt("op") {
+        if let Some(pop) = publish.raw().get("op") {
+            // `op` is the publish this block replays, not a value compared — its
+            // effects are what the sibling keys assert.
+            publish.excuse_key(
+                "op",
+                "the publish to replay, not a value to compare; its effects are \
+                 asserted by observed_by / read / dependents_of below",
+            );
             let id = pop["id"].as_str().unwrap();
             let before = log_snapshot(model.run_log()).len();
             match nodes[id] {
@@ -702,29 +718,35 @@ pub fn replay<'a, M: GraphModel>(
             }
             model.settle();
             observation.after_publish_observed = log_snapshot(model.run_log())[before..].to_vec();
-            check!(
-                "after_publish.observed_by",
-                observation.after_publish_observed.clone(),
-                strs(&publish["observed_by"])
-            );
-            for (rid, v) in publish["read"].as_object().into_iter().flatten() {
-                let got = read_id!(rid.as_str());
+            publish.assert_key_with("observed_by", |want| {
                 check!(
-                    format!("after_publish.read.{rid}"),
-                    got,
-                    Ok(v.as_i64().unwrap())
+                    "after_publish.observed_by",
+                    observation.after_publish_observed.clone(),
+                    strs(want)
                 );
-                observation
-                    .after_publish_reads
-                    .insert(rid.clone(), got.unwrap_or_default());
-            }
-            for (id, v) in publish["dependents_of"].as_object().into_iter().flatten() {
-                check!(
-                    format!("after_publish.dependents_of.{id}"),
-                    degree!(id.as_str(), dependents_of),
-                    v.as_u64().unwrap() as usize
-                );
-            }
+            });
+            publish.assert_key_if_present("read", |want| {
+                for (rid, v) in want.as_object().into_iter().flatten() {
+                    let got = read_id!(rid.as_str());
+                    check!(
+                        format!("after_publish.read.{rid}"),
+                        got,
+                        Ok(v.as_i64().unwrap())
+                    );
+                    observation
+                        .after_publish_reads
+                        .insert(rid.clone(), got.unwrap_or_default());
+                }
+            });
+            publish.assert_key_if_present("dependents_of", |want| {
+                for (id, v) in want.as_object().into_iter().flatten() {
+                    check!(
+                        format!("after_publish.dependents_of.{id}"),
+                        degree!(id.as_str(), dependents_of),
+                        v.as_u64().unwrap() as usize
+                    );
+                }
+            });
         }
     }
 

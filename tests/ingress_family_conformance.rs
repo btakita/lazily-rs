@@ -454,91 +454,93 @@ fn assert_state<Model: IngressModel>(
     where_: &str,
 ) {
     // `scopes` is keyed by SCOPE NAME — data, not assertion names — so it is
-    // consumed wholesale; each scope's RECORD is guarded, because those keys
+    // compared wholesale; each scope's RECORD is guarded, because those keys
     // (`lifecycle`, `window`, `readiness`, ...) are assertion names.
-    for (key, want) in expected["scopes"].as_object().expect("scopes") {
-        let want = expected.nested(format!("scopes.{key}"), want);
-        let view = model
-            .view(key)
-            .unwrap_or_else(|| panic!("{where_}: scope {key} absent"));
-        assert_eq!(
-            view.lifecycle,
-            lifecycle_of(want["lifecycle"].as_str().expect("lifecycle")),
-            "{where_}: {key} lifecycle"
-        );
-        assert_eq!(
-            view.generation,
-            want["generation"].as_u64().expect("generation"),
-            "{where_}: {key} generation"
-        );
-        assert_eq!(
-            view.delivered_through,
-            want["delivered_through"].as_u64(),
-            "{where_}: {key} watermark"
-        );
-        assert_eq!(
-            view.buffered,
-            want["buffered"].as_u64().expect("buffered") as usize,
-            "{where_}: {key} buffered"
-        );
-        assert_eq!(
-            view.consecutive_errors as u64,
-            want["consecutive_errors"].as_u64().expect("errors"),
-            "{where_}: {key} consecutive errors"
-        );
-        assert_eq!(
-            model.value(key),
-            want["window"].as_u64(),
-            "{where_}: {key} window"
-        );
-        assert_eq!(
-            model.readiness(key),
-            readiness_of(want["readiness"].as_str().expect("readiness")),
-            "{where_}: {key} readiness"
-        );
-        let authority = model.authority(key);
-        match want["authority"].as_object() {
-            None => assert_eq!(authority, None, "{where_}: {key} authority"),
-            Some(want) => assert_eq!(
-                authority,
-                Some(IngressAuthority {
-                    generation: want["generation"].as_u64().expect("generation"),
-                    delivered_through: want["delivered_through"].as_u64(),
-                    stamped_at: want["stamped_at"].as_u64().expect("stamped_at"),
-                }),
-                "{where_}: {key} authority"
-            ),
+    expected.assert_key_with("scopes", |scopes| {
+        for (key, want) in scopes.as_object().expect("scopes") {
+            let want = expected.nested(format!("scopes.{key}"), want);
+            let view = model
+                .view(key)
+                .unwrap_or_else(|| panic!("{where_}: scope {key} absent"));
+            want.assert_key_with("lifecycle", |w| {
+                assert_eq!(
+                    view.lifecycle,
+                    lifecycle_of(w.as_str().expect("lifecycle")),
+                    "{where_}: {key} lifecycle"
+                )
+            });
+            want.assert_key_at("generation", view.generation, &format!("{where_}: {key}"));
+            want.assert_key_with("delivered_through", |w| {
+                assert_eq!(
+                    view.delivered_through,
+                    w.as_u64(),
+                    "{where_}: {key} watermark"
+                )
+            });
+            want.assert_key_at(
+                "buffered",
+                view.buffered as u64,
+                &format!("{where_}: {key}"),
+            );
+            want.assert_key_at(
+                "consecutive_errors",
+                view.consecutive_errors as u64,
+                &format!("{where_}: {key}"),
+            );
+            want.assert_key_with("window", |w| {
+                assert_eq!(model.value(key), w.as_u64(), "{where_}: {key} window")
+            });
+            want.assert_key_with("readiness", |w| {
+                assert_eq!(
+                    model.readiness(key),
+                    readiness_of(w.as_str().expect("readiness")),
+                    "{where_}: {key} readiness"
+                )
+            });
+            let authority = model.authority(key);
+            want.assert_key_with("authority", |w| match w.as_object() {
+                None => assert_eq!(authority, None, "{where_}: {key} authority"),
+                Some(w) => assert_eq!(
+                    authority,
+                    Some(IngressAuthority {
+                        generation: w["generation"].as_u64().expect("generation"),
+                        delivered_through: w["delivered_through"].as_u64(),
+                        stamped_at: w["stamped_at"].as_u64().expect("stamped_at"),
+                    }),
+                    "{where_}: {key} authority"
+                ),
+            });
+            let retry = model.retry(key);
+            want.assert_key_with("retry", |w| match w.as_object() {
+                None => assert_eq!(retry, None, "{where_}: {key} retry"),
+                Some(w) => assert_eq!(
+                    retry,
+                    Some(IngressRetry {
+                        attempt: w["attempt"].as_u64().expect("attempt") as u32,
+                        backoff: w["backoff"].as_u64().expect("backoff"),
+                        resume_from: w["resume_from"].as_u64().expect("resume_from"),
+                    }),
+                    "{where_}: {key} retry"
+                ),
+            });
         }
-        let retry = model.retry(key);
-        match want["retry"].as_object() {
-            None => assert_eq!(retry, None, "{where_}: {key} retry"),
-            Some(want) => assert_eq!(
-                retry,
-                Some(IngressRetry {
-                    attempt: want["attempt"].as_u64().expect("attempt") as u32,
-                    backoff: want["backoff"].as_u64().expect("backoff"),
-                    resume_from: want["resume_from"].as_u64().expect("resume_from"),
-                }),
-                "{where_}: {key} retry"
-            ),
-        }
-    }
+    });
 
     let receipts = expected.sub("receipts");
-    assert_eq!(
+    receipts.assert_key_at(
+        "accepted",
         model.accepted_len(keys) as u64,
-        receipts["accepted"].as_u64().expect("accepted"),
-        "{where_}: accepted receipts"
+        &format!("{where_}: accepted receipts"),
     );
-    assert_eq!(
+    receipts.assert_key_at(
+        "dropped",
         model.dropped_len(keys) as u64,
-        receipts["dropped"].as_u64().expect("dropped"),
-        "{where_}: dropped receipts"
+        &format!("{where_}: dropped receipts"),
     );
-    assert_eq!(
+    receipts.assert_key_at(
+        "error",
         model.errors_len(keys) as u64,
-        receipts["error"].as_u64().expect("error"),
-        "{where_}: error receipts"
+        &format!("{where_}: error receipts"),
     );
 }
 
@@ -552,30 +554,32 @@ fn assert_invalidation(
 ) {
     let want = expected.sub("invalidates");
     const KINDS: [&str; 4] = ["value", "readiness", "authority", "retry"];
-    for (key, want_scope) in want["scopes"].as_object().expect("invalidates.scopes") {
-        let want_scope = want.nested(format!("scopes.{key}"), want_scope);
-        let before_scope = before.scopes.get(key).expect("probed key");
-        let after_scope = after.scopes.get(key).expect("probed key");
-        for (slot, kind) in KINDS.iter().enumerate() {
-            let expected = want_scope[*kind].as_bool().expect("invalidation flag");
-            let invalidated = before_scope[slot] && !after_scope[slot];
-            assert_eq!(
-                invalidated, expected,
-                "{where_}: {key}.{kind} invalidation (was valid={}, now valid={})",
-                before_scope[slot], after_scope[slot]
-            );
+    want.assert_key_with("scopes", |scopes| {
+        for (key, want_scope) in scopes.as_object().expect("invalidates.scopes") {
+            let want_scope = want.nested(format!("scopes.{key}"), want_scope);
+            let before_scope = before.scopes.get(key).expect("probed key");
+            let after_scope = after.scopes.get(key).expect("probed key");
+            for (slot, kind) in KINDS.iter().enumerate() {
+                let invalidated = before_scope[slot] && !after_scope[slot];
+                want_scope.assert_key_at(
+                    kind,
+                    invalidated,
+                    &format!(
+                        "{where_}: {key}.{kind} invalidation (was valid={}, now valid={})",
+                        before_scope[slot], after_scope[slot]
+                    ),
+                );
+            }
         }
-    }
+    });
     const CHANNELS: [&str; 3] = ["accepted", "dropped", "error"];
     let want_receipts = want.sub("receipts");
     for (slot, channel) in CHANNELS.iter().enumerate() {
-        let expected = want_receipts[*channel]
-            .as_bool()
-            .expect("receipt invalidation flag");
         let invalidated = before.receipts[slot] && !after.receipts[slot];
-        assert_eq!(
-            invalidated, expected,
-            "{where_}: receipts.{channel} invalidation"
+        want_receipts.assert_key_at(
+            channel,
+            invalidated,
+            &format!("{where_}: receipts.{channel} invalidation"),
         );
     }
 }

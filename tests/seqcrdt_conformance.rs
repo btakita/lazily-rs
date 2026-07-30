@@ -206,36 +206,48 @@ fn run_seqcrdt_fixture(name: &str) {
             format!("scenarios[{i}].expect"),
             scenario.get("expect").unwrap(),
         );
-        if let Some(order) = expect["order"].as_array() {
-            assert_order(&replicas["a"], order, &format!("scenario {i}"));
-        }
-        if let Some(gets) = expect["get"].as_object() {
-            for (id, val) in gets {
+        // Every key is optional per scenario, so each comparison is bound to the
+        // key's *presence*: a bare read that a missing key silently skipped would
+        // mark the key consumed while asserting nothing
+        // (`#lzconsumednotasserted`).
+        //
+        // `len` and `contains_all` apply to the converged replica — the first in
+        // the first `orders_equal` pair when present, else `a`. That lookup goes
+        // through `raw()` because it *selects a target*, not a value to compare;
+        // `orders_equal` is asserted on its own below.
+        let target = expect
+            .raw()
+            .get("orders_equal")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_str())
+            .unwrap_or("a");
+        expect.assert_key_if_present("order", |want| {
+            assert_order(
+                &replicas["a"],
+                want.as_array().expect("order"),
+                &format!("scenario {i}"),
+            );
+        });
+        expect.assert_key_if_present("get", |want| {
+            for (id, val) in want.as_object().expect("get") {
                 let got = replicas["a"]
                     .get(&id.to_string())
                     .unwrap_or_else(|| panic!("scenario {i}: get({id}) missing"));
                 assert_eq!(got, *val, "scenario {i}: get({id}) mismatch");
             }
-        }
-        if let Some(len) = expect["len"].as_u64() {
-            // `len` applies to the converged replica(s): the first replica in
-            // the first `orders_equal` pair when present (single-replica
-            // scenarios otherwise fall back to `a`).
-            let target = expect["orders_equal"]
-                .as_array()
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str())
-                .unwrap_or("a");
+        });
+        expect.assert_key_if_present("len", |want| {
             assert_eq!(
                 replicas[target].values().len() as u64,
-                len,
+                want.as_u64().expect("len"),
                 "scenario {i}: len mismatch on `{target}`"
             );
-        }
-        if let Some(pairs) = expect["orders_equal"].as_array() {
-            for pair in pairs {
+        });
+        expect.assert_key_if_present("orders_equal", |want| {
+            for pair in want.as_array().expect("orders_equal") {
                 let a = pair.get(0).and_then(|v| v.as_str()).unwrap();
                 let b = pair.get(1).and_then(|v| v.as_str()).unwrap();
                 assert_eq!(
@@ -244,18 +256,18 @@ fn run_seqcrdt_fixture(name: &str) {
                     "scenario {i}: `{a}`/`{b}` orders should converge"
                 );
             }
-        }
-        if let Some(per_replica) = expect["order_on"].as_object() {
-            for (name, order) in per_replica {
+        });
+        expect.assert_key_if_present("order_on", |want| {
+            for (name, order) in want.as_object().expect("order_on") {
                 assert_order(
                     &replicas[name],
                     order.as_array().unwrap(),
                     &format!("scenario {i} on `{name}`"),
                 );
             }
-        }
-        if let Some(per_replica) = expect["get_on"].as_object() {
-            for (name, gets) in per_replica {
+        });
+        expect.assert_key_if_present("get_on", |want| {
+            for (name, gets) in want.as_object().expect("get_on") {
                 for (id, val) in gets.as_object().unwrap() {
                     let got = replicas[name]
                         .get(&id.to_string())
@@ -263,27 +275,18 @@ fn run_seqcrdt_fixture(name: &str) {
                     assert_eq!(got, *val, "scenario {i}: get_on({name},{id}) mismatch");
                 }
             }
-        }
-        if let Some(contains_all) = expect["contains_all"].as_array() {
-            // `contains_all` applies to the converged replica: the first in the
-            // first `orders_equal` pair when present, else `a`.
-            let target = expect["orders_equal"]
-                .as_array()
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str())
-                .unwrap_or("a");
-            for id in contains_all {
+        });
+        expect.assert_key_if_present("contains_all", |want| {
+            for id in want.as_array().expect("contains_all") {
                 let s = id.as_str().unwrap();
                 assert!(
                     replicas[target].contains(&s.to_string()),
                     "scenario {i}: `{target}` should contain `{s}`"
                 );
             }
-        }
-        if let Some(per_replica) = expect["not_contains_on"].as_object() {
-            for (name, ids) in per_replica {
+        });
+        expect.assert_key_if_present("not_contains_on", |want| {
+            for (name, ids) in want.as_object().expect("not_contains_on") {
                 for id in ids.as_array().unwrap() {
                     let s = id.as_str().unwrap();
                     assert!(
@@ -292,7 +295,7 @@ fn run_seqcrdt_fixture(name: &str) {
                     );
                 }
             }
-        }
+        });
     }
 }
 

@@ -37,10 +37,9 @@ fn steps(fx: &Value) -> &Vec<Value> {
     fx["steps"].as_array().unwrap()
 }
 /// The live peer->value map. `present` is *data* — its keys are peer ids, not
-/// assertion names — so it is consumed wholesale rather than descended into.
-fn want_map(exp: &Expect) -> BTreeMap<u64, String> {
-    exp["present"]
-        .as_object()
+/// assertion names — so it is compared wholesale rather than descended into.
+fn want_map(want: &Value) -> BTreeMap<u64, String> {
+    want.as_object()
         .unwrap()
         .iter()
         .map(|(k, v)| (k.parse().unwrap(), v.as_str().unwrap().to_string()))
@@ -76,10 +75,12 @@ fn presence() {
         }
         let exp = expected("presence.json", i, step);
         let inv = exp.sub("invalidates");
-        assert_eq!(cell.present(&ctx), want_map(&exp), "present after {op}");
+        exp.assert_key_with("present", |want| {
+            assert_eq!(cell.present(&ctx), want_map(want), "present after {op}")
+        });
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inv["present"].as_bool().unwrap(), "inval after {op}");
+        inv.assert_key_at("present", !was, &format!("op {op}"));
     }
 }
 
@@ -111,10 +112,12 @@ fn awareness() {
         }
         let exp = expected("awareness.json", i, step);
         let inv = exp.sub("invalidates");
-        assert_eq!(cell.present(&ctx), want_map(&exp), "present after {op}");
+        exp.assert_key_with("present", |want| {
+            assert_eq!(cell.present(&ctx), want_map(want), "present after {op}")
+        });
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inv["present"].as_bool().unwrap(), "inval after {op}");
+        inv.assert_key_at("present", !was, &format!("op {op}"));
     }
 }
 
@@ -145,10 +148,12 @@ fn ephemeral() {
         }
         let exp = expected("ephemeral.json", i, step);
         let inv = exp.sub("invalidates");
-        let want = exp["value"].as_str().map(|s| s.to_string());
-        assert_eq!(cell.value(&ctx), want, "value after {op}");
+        exp.assert_key_with("value", |want| {
+            let want = want.as_str().map(|s| s.to_string());
+            assert_eq!(cell.value(&ctx), want, "value after {op}");
+        });
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inv["value"].as_bool().unwrap(), "inval after {op}");
+        inv.assert_key_at("value", !was, &format!("op {op}"));
     }
 }

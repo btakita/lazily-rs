@@ -44,10 +44,12 @@ fn check(
         &step["expected"],
     );
     let inv = exp.sub("invalidates");
-    assert_eq!(out, exp["output"].as_u64(), "output for {step}");
+    exp.assert_key_with("output", |want| {
+        assert_eq!(out, want.as_u64(), "output for {step}")
+    });
     let was = ctx.is_set(observed);
     let _ = observed.get(ctx);
-    assert_eq!(!was, inv["output"].as_bool().unwrap(), "inval for {step}");
+    inv.assert_key_at("output", !was, &format!("step {step}"));
 }
 
 #[test]

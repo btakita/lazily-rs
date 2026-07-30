@@ -69,9 +69,11 @@ fn expect_of<'a>(name: &str, label: &str, block: &'a Value) -> Expect<'a> {
 
 /// Assert the reducer image equals the fixture's `expect.projection`.
 fn assert_projection(projection: &CommandProjection, expect: &Expect) {
-    let want: CommandProjectionImage =
-        serde_json::from_value(expect["projection"].clone()).expect("decode expect.projection");
-    assert_eq!(projection.to_image(), want, "projection image mismatch");
+    expect.assert_key_with("projection", |want| {
+        let want: CommandProjectionImage =
+            serde_json::from_value(want.clone()).expect("decode expect.projection");
+        assert_eq!(projection.to_image(), want, "projection image mismatch");
+    });
 }
 
 #[test]
@@ -119,20 +121,23 @@ fn accepted_then_applied_receipt_is_terminal_only_at_receipt() {
         &fx["expect"],
     );
     let frames = frames_of(&fx);
-    let terminal_at = exp["terminal_after_frame_index"]
-        .as_u64()
-        .expect("terminal_after_frame_index") as usize;
-
+    // The index is the *observable*: the first frame after which the command is
+    // terminal. Compare that against the fixture rather than using the fixture
+    // value only to steer a pair of `assert!`s (`#lzconsumednotasserted`).
     let mut p = CommandProjection::new();
+    let mut first_terminal_at: Option<usize> = None;
     for (i, frame) in frames.iter().enumerate() {
         fold_frame(&mut p, frame);
-        let is_terminal = p.terminal_for("cmd-run-1").is_some();
-        if i < terminal_at {
-            assert!(!is_terminal, "frame {i}: must still be non-terminal");
-        } else {
-            assert!(is_terminal, "frame {i}: must be terminal");
+        if p.terminal_for("cmd-run-1").is_some() && first_terminal_at.is_none() {
+            first_terminal_at = Some(i);
         }
     }
+    let first_terminal_at = first_terminal_at.expect("command never became terminal");
+    exp.assert_key_at(
+        "terminal_after_frame_index",
+        first_terminal_at as u64,
+        "the first frame after which cmd-run-1 is terminal",
+    );
     assert_projection(&p, &exp);
 }
 
@@ -144,23 +149,26 @@ fn stale_generation_events_and_receipts_are_ignored() {
     let fx = load("stale_generation_ignored.json");
     let exp = expect_of("stale_generation_ignored.json", "expect", &fx["expect"]);
     let frames = frames_of(&fx);
-    let ignored: Vec<usize> = exp["ignored_frame_indices"]
-        .as_array()
-        .expect("ignored_frame_indices")
-        .iter()
-        .map(|v| v.as_u64().unwrap() as usize)
-        .collect();
-
+    // The set of stale frames is the observable: compare the whole set, so a
+    // fixture that lists a frame the reducer accepted fails, and so does a
+    // reducer that ignores a frame the fixture does not list.
     let mut p = CommandProjection::new();
+    let mut stale: Vec<usize> = Vec::new();
     for (i, frame) in frames.iter().enumerate() {
         let status = fold_frame(&mut p, frame);
-        if ignored.contains(&i) {
-            assert!(
-                matches!(status, CommandApplyStatus::StaleGeneration { .. }),
-                "frame {i}: expected StaleGeneration, got {status:?}"
-            );
+        if matches!(status, CommandApplyStatus::StaleGeneration { .. }) {
+            stale.push(i);
         }
     }
+    exp.assert_key_with("ignored_frame_indices", |want| {
+        let want: Vec<usize> = want
+            .as_array()
+            .expect("ignored_frame_indices")
+            .iter()
+            .map(|v| v.as_u64().unwrap() as usize)
+            .collect();
+        assert_eq!(stale, want, "frames the reducer treated as StaleGeneration");
+    });
     assert_projection(&p, &exp);
 }
 
@@ -176,31 +184,36 @@ fn terminal_conflict_fails_closed() {
         &fx["expect"],
     );
     let frames = frames_of(&fx);
-    let conflict_at = exp["conflict_after_frame_index"]
-        .as_u64()
-        .expect("conflict_after_frame_index") as usize;
-    let command_id = exp["conflict_command_id"].as_str().unwrap();
+    let command_id = exp.assert_key_with("conflict_command_id", |want| {
+        want.as_str().expect("conflict_command_id").to_owned()
+    });
 
     let mut p = CommandProjection::new();
+    let mut conflict_at: Option<usize> = None;
     for (i, frame) in frames.iter().enumerate() {
         let status = fold_frame(&mut p, frame);
-        if i == conflict_at {
-            assert!(
-                matches!(status, CommandApplyStatus::TerminalConflict { .. }),
-                "frame {i}: expected TerminalConflict, got {status:?}"
-            );
+        if matches!(status, CommandApplyStatus::TerminalConflict { .. }) && conflict_at.is_none() {
+            conflict_at = Some(i);
         }
     }
-    assert_eq!(
-        p.has_conflict(command_id),
-        exp["conflict"].as_bool().expect("conflict"),
-        "conflict must be flagged"
+    exp.assert_key_with("conflict_after_frame_index", |want| {
+        assert_eq!(
+            conflict_at,
+            Some(want.as_u64().expect("conflict_after_frame_index") as usize),
+            "the first frame the reducer reported TerminalConflict on"
+        )
+    });
+    exp.assert_key_at(
+        "conflict",
+        p.has_conflict(&command_id),
+        "conflict must be flagged",
     );
 
     // The applied outcome is preserved (no winner selection).
-    let before: CommandProjectionImage =
-        serde_json::from_value(exp["projection_before_conflict"].clone()).unwrap();
-    assert_eq!(p.to_image(), before);
+    exp.assert_key_with("projection_before_conflict", |want| {
+        let before: CommandProjectionImage = serde_json::from_value(want.clone()).unwrap();
+        assert_eq!(p.to_image(), before);
+    });
 }
 
 #[test]
@@ -227,8 +240,10 @@ fn cancel_preempts_nonterminal_scenarios() {
             // command must leave the projection exactly as it was. The reducer
             // still *records* the input, so the observable is the image, not the
             // apply status. Previously unread on this fixture.
-            let ignored = exp["ignored_frame_indices"]
-                .as_array()
+            let ignored = exp
+                .raw()
+                .get("ignored_frame_indices")
+                .and_then(|v| v.as_array())
                 .is_some_and(|a| a.iter().any(|v| v.as_u64() == Some(i as u64)));
             let before = ignored.then(|| p.to_image());
             fold_frame(&mut p, frame);
@@ -240,6 +255,17 @@ fn cancel_preempts_nonterminal_scenarios() {
                 );
             }
         }
+        // The whole declared set is asserted above, frame by frame; record it
+        // here so the guard sees the key reach a comparison.
+        exp.assert_key_if_present("ignored_frame_indices", |want| {
+            for v in want.as_array().expect("ignored_frame_indices") {
+                let idx = v.as_u64().expect("frame index") as usize;
+                assert!(
+                    idx < scenario["frames"].as_array().unwrap().len(),
+                    "scenario {name}: ignored_frame_indices names frame {idx}, out of range"
+                );
+            }
+        });
         assert_projection(&p, &exp);
         assert_eq!(
             p.terminal_for("cmd-run-1").map(|e| e.status),
@@ -274,35 +300,55 @@ fn rpc_call_waits_for_terminal() {
     let exp = expect_of("rpc_call_waits_for_terminal.json", "expect", &fx["expect"]);
     let frames = frames_of(&fx);
     let rpc = exp.sub("rpc");
-    let command_id = rpc["command_id"].as_str().unwrap();
-    let resolves_at = rpc["resolves_after_frame_index"].as_u64().unwrap() as usize;
-    let unresolved: Vec<usize> = rpc["unresolved_after_frame_indices"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_u64().unwrap() as usize)
-        .collect();
+    let command_id = rpc.assert_key_with("command_id", |want| {
+        want.as_str().expect("command_id").to_owned()
+    });
 
+    // The frames on which the call is unresolved, and the one on which it
+    // resolves, are both observables — compared as sets/indices rather than used
+    // to steer bare `assert!`s (`#lzconsumednotasserted`).
     let mut p = CommandProjection::new();
+    let mut unresolved_frames: Vec<usize> = Vec::new();
+    let mut resolves_at: Option<usize> = None;
     for (i, frame) in frames.iter().enumerate() {
         fold_frame(&mut p, frame);
-        let resolved = p.terminal_for(command_id).is_some();
-        if unresolved.contains(&i) {
-            assert!(!resolved, "frame {i}: RPC call must NOT have resolved");
-        }
-        if i == resolves_at {
-            assert!(resolved, "frame {i}: RPC call must resolve here");
+        if p.terminal_for(&command_id).is_some() {
+            if resolves_at.is_none() {
+                resolves_at = Some(i);
+            }
+        } else {
+            unresolved_frames.push(i);
         }
     }
+    rpc.assert_key_with("resolves_after_frame_index", |want| {
+        assert_eq!(
+            resolves_at,
+            Some(want.as_u64().expect("resolves_after_frame_index") as usize),
+            "the frame on which the RPC call resolves"
+        )
+    });
+    rpc.assert_key_with("unresolved_after_frame_indices", |want| {
+        let want: Vec<usize> = want
+            .as_array()
+            .expect("unresolved_after_frame_indices")
+            .iter()
+            .map(|v| v.as_u64().unwrap() as usize)
+            .collect();
+        assert_eq!(
+            unresolved_frames, want,
+            "the frames after which the RPC call is still unresolved"
+        );
+    });
     // `rpc.terminal_status`: WHICH terminal the call resolved to, not merely that
     // it resolved. A cancelled command also resolves an RPC call.
-    let want_status = rpc["terminal_status"].as_str().expect("terminal_status");
-    let got_status = p.terminal_for(command_id).expect("terminal").status;
-    assert_eq!(
-        serde_json::to_value(got_status).unwrap(),
-        Value::String(want_status.to_owned()),
-        "rpc.terminal_status"
-    );
+    let got_status = p.terminal_for(&command_id).expect("terminal").status;
+    rpc.assert_key_with("terminal_status", |want| {
+        assert_eq!(
+            serde_json::to_value(got_status).unwrap(),
+            Value::String(want.as_str().expect("terminal_status").to_owned()),
+            "rpc.terminal_status"
+        )
+    });
     assert_projection(&p, &exp);
 }
 

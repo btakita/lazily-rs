@@ -36,10 +36,9 @@ fn expected<'a>(name: &str, i: usize, step: &'a Value) -> Expect<'a> {
     )
 }
 /// A service->endpoint projection. Its keys are service names — data, not
-/// assertion names — so it is consumed wholesale rather than descended into.
-fn want_map(exp: &Expect, key: &str) -> BTreeMap<String, String> {
-    exp[key]
-        .as_object()
+/// assertion names — so it is compared wholesale rather than descended into.
+fn want_map(want: &Value) -> BTreeMap<String, String> {
+    want.as_object()
         .unwrap()
         .iter()
         .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
@@ -68,16 +67,18 @@ fn health() {
             op["up"].as_bool().unwrap(),
             op["critical"].as_bool().unwrap(),
         );
-        let want = match exp["health"].as_str().unwrap() {
-            "Healthy" => Health::Healthy,
-            "Degraded" => Health::Degraded,
-            "Unhealthy" => Health::Unhealthy,
-            s => panic!("bad health {s}"),
-        };
-        assert_eq!(h.health(), want, "health for {step}");
+        exp.assert_key_with("health", |want| {
+            let want = match want.as_str().unwrap() {
+                "Healthy" => Health::Healthy,
+                "Degraded" => Health::Degraded,
+                "Unhealthy" => Health::Unhealthy,
+                s => panic!("bad health {s}"),
+            };
+            assert_eq!(h.health(), want, "health for {step}");
+        });
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inv["health"].as_bool().unwrap(), "inval for {step}");
+        inv.assert_key_at("health", !was, &format!("step {step}"));
     }
 }
 
@@ -102,10 +103,10 @@ fn readiness() {
             op["name"].as_str().unwrap(),
             op["ready"].as_bool().unwrap(),
         );
-        assert_eq!(r.ready(), exp["ready"].as_bool().unwrap());
+        exp.assert_key_at("ready", r.ready(), &format!("step {step}"));
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inv["ready"].as_bool().unwrap(), "inval for {step}");
+        inv.assert_key_at("ready", !was, &format!("step {step}"));
     }
 }
 
@@ -140,18 +141,12 @@ fn discovery() {
             }
             other => panic!("unknown op {other}"),
         }
-        assert_eq!(
-            d.discovery(&ctx),
-            want_map(&exp, "discovery"),
-            "map for {step}"
-        );
+        exp.assert_key_with("discovery", |want| {
+            assert_eq!(d.discovery(&ctx), want_map(want), "map for {step}");
+        });
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(
-            !was,
-            inv["discovery"].as_bool().unwrap(),
-            "inval for {step}"
-        );
+        inv.assert_key_at("discovery", !was, &format!("step {step}"));
     }
 }
 
@@ -181,17 +176,15 @@ fn service_registry() {
             "replay" => reg.replay(&ctx),
             other => panic!("unknown op {other}"),
         }
-        assert_eq!(
-            reg.projection(&ctx),
-            want_map(&exp, "projection"),
-            "projection for {step}"
-        );
+        exp.assert_key_with("projection", |want| {
+            assert_eq!(
+                reg.projection(&ctx),
+                want_map(want),
+                "projection for {step}"
+            );
+        });
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(
-            !was,
-            inv["projection"].as_bool().unwrap(),
-            "inval for {step}"
-        );
+        inv.assert_key_at("projection", !was, &format!("step {step}"));
     }
 }

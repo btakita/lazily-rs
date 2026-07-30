@@ -58,22 +58,12 @@ where
             format!("scenarios[{si}].steps[{i}].expected"),
             &step["expected"],
         );
-        let want_value = exp["value"].as_i64().expect("value i64");
-        let want_inval = exp["invalidates"].as_bool().expect("invalidates bool");
-
         let before = runs.get();
         mc.merge(&ctx, op);
         let fired = runs.get() > before;
 
-        assert_eq!(
-            mc.get(&ctx),
-            want_value,
-            "value mismatch at step {i} (op {op})"
-        );
-        assert_eq!(
-            fired, want_inval,
-            "invalidation mismatch at step {i} (op {op})"
-        );
+        exp.assert_key_at("value", mc.get(&ctx), &format!("step {i} (op {op})"));
+        exp.assert_key_at("invalidates", fired, &format!("step {i} (op {op})"));
     }
 }
 
@@ -116,16 +106,8 @@ fn mergecell_algebra_fixture() {
             ),
             _ => unreachable!(),
         };
-        assert_eq!(
-            flags["commutative"].as_bool().unwrap(),
-            comm,
-            "commutative flag"
-        );
-        assert_eq!(
-            flags["idempotent"].as_bool().unwrap(),
-            idem,
-            "idempotent flag"
-        );
+        flags.assert_key_at("commutative", comm, "commutative flag");
+        flags.assert_key_at("idempotent", idem, "idempotent flag");
         seen += 1;
     }
     assert_eq!(seen, 3, "expected 3 policy scenarios");

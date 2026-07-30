@@ -99,23 +99,25 @@ fn assertions<'a>(name: &str, block: &'a serde_json::Value) -> Expect<'a> {
     Expect::new(fixture_path(name), "assertions", block)
 }
 
-fn assert_u64(v: &Expect, key: &str) -> u64 {
-    v[key]
-        .as_u64()
-        .unwrap_or_else(|| panic!("assertions should contain u64 field '{key}'"))
+/// Compare `actual` against the fixture's value for `key`, marking the key
+/// asserted. Reading a key and comparing by hand marks it consumed without
+/// proving anything reached a comparison (`#lzconsumednotasserted`), so every
+/// scalar assertion in this file goes through these three.
+fn assert_u64(v: &Expect, key: &str, actual: u64) {
+    v.assert_key(key, actual);
 }
 
-fn assert_str(v: &Expect, key: &str) -> String {
-    v[key]
-        .as_str()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| panic!("assertions should contain string field '{key}'"))
+fn assert_str(v: &Expect, key: &str, actual: &str) {
+    v.assert_key(key, actual);
 }
 
-fn assert_bool(v: &Expect, key: &str) -> bool {
-    v[key]
-        .as_bool()
-        .unwrap_or_else(|| panic!("assertions should contain bool field '{key}'"))
+fn assert_bool(v: &Expect, key: &str, actual: bool) {
+    v.assert_key(key, actual);
+}
+
+/// [`assert_bool`] with a `where` note carried into the failure message.
+fn assert_bool_at(v: &Expect, key: &str, actual: bool, where_: &str) {
+    v.assert_key_at(key, actual, where_);
 }
 
 /// The kind discriminator the corpus uses for a node's state.
@@ -214,14 +216,11 @@ fn conformance_snapshot_minimal() {
     };
 
     let a = assertions("snapshot_minimal.json", &fixture.assertions);
-    assert_eq!(snapshot.epoch, assert_u64(&a, "epoch"));
-    assert_eq!(snapshot.nodes.len(), assert_u64(&a, "node_count") as usize);
-    assert_eq!(snapshot.edges.len(), assert_u64(&a, "edge_count") as usize);
-    assert_eq!(snapshot.roots.len(), assert_u64(&a, "root_count") as usize);
-    assert_eq!(
-        snapshot.nodes[0].type_tag,
-        assert_str(&a, "first_node_type_tag")
-    );
+    assert_u64(&a, "epoch", snapshot.epoch);
+    assert_u64(&a, "node_count", snapshot.nodes.len() as u64);
+    assert_u64(&a, "edge_count", snapshot.edges.len() as u64);
+    assert_u64(&a, "root_count", snapshot.roots.len() as u64);
+    assert_str(&a, "first_node_type_tag", &snapshot.nodes[0].type_tag);
     assert!(matches!(snapshot.nodes[0].state, NodeState::Payload(_)));
 
     assert_round_trip_json(&message, &fixture);
@@ -240,24 +239,28 @@ fn conformance_snapshot_multi_node() {
     // Driven from the fixture rather than transcribed: a hardcoded 7/3/2/2 is
     // the same defect one level down — the fixture's own numbers go unread.
     let a = assertions("snapshot_multi_node.json", &fixture.assertions);
-    assert_eq!(snapshot.epoch, assert_u64(&a, "epoch"));
-    assert_eq!(snapshot.nodes.len(), assert_u64(&a, "node_count") as usize);
-    assert_eq!(snapshot.edges.len(), assert_u64(&a, "edge_count") as usize);
-    assert_eq!(snapshot.roots.len(), assert_u64(&a, "root_count") as usize);
+    assert_u64(&a, "epoch", snapshot.epoch);
+    assert_u64(&a, "node_count", snapshot.nodes.len() as u64);
+    assert_u64(&a, "edge_count", snapshot.edges.len() as u64);
+    assert_u64(&a, "root_count", snapshot.roots.len() as u64);
 
-    let opaque_id = assert_u64(&a, "opaque_node_id");
+    // The id names WHICH node must be opaque; the lookup below is the comparison.
+    let opaque_id = a.assert_key_with("opaque_node_id", |want| {
+        want.as_u64().expect("opaque_node_id")
+    });
     let opaque_node = snapshot
         .nodes
         .iter()
         .find(|n| n.node == NodeId(opaque_id))
         .expect("should find opaque node");
     assert!(matches!(opaque_node.state, NodeState::Opaque));
-    assert_eq!(
+    assert_bool(
+        &a,
+        "has_opaque_node",
         snapshot
             .nodes
             .iter()
             .any(|n| matches!(n.state, NodeState::Opaque)),
-        assert_bool(&a, "has_opaque_node")
     );
 
     assert_round_trip_json(&message, &fixture);
@@ -274,21 +277,22 @@ fn conformance_snapshot_shared_blob() {
     };
 
     let a = assertions("snapshot_shared_blob.json", &fixture.assertions);
-    assert_eq!(snapshot.epoch, assert_u64(&a, "epoch"));
-    assert_eq!(snapshot.nodes.len(), assert_u64(&a, "node_count") as usize);
-    assert_eq!(snapshot.edges.len(), assert_u64(&a, "edge_count") as usize);
-    assert_eq!(snapshot.roots.len(), assert_u64(&a, "root_count") as usize);
-    assert_eq!(
+    assert_u64(&a, "epoch", snapshot.epoch);
+    assert_u64(&a, "node_count", snapshot.nodes.len() as u64);
+    assert_u64(&a, "edge_count", snapshot.edges.len() as u64);
+    assert_u64(&a, "root_count", snapshot.roots.len() as u64);
+    assert_str(
+        &a,
+        "first_node_state_kind",
         node_state_kind(&snapshot.nodes[0].state),
-        assert_str(&a, "first_node_state_kind")
     );
 
     let NodeState::SharedBlob(ref blob) = snapshot.nodes[0].state else {
         panic!("expected SharedBlob state");
     };
-    assert_eq!(blob.offset, assert_u64(&a, "blob_offset"));
-    assert_eq!(blob.len, assert_u64(&a, "blob_len"));
-    assert_eq!(blob.epoch, assert_u64(&a, "blob_epoch"));
+    assert_u64(&a, "blob_offset", blob.offset);
+    assert_u64(&a, "blob_len", blob.len);
+    assert_u64(&a, "blob_epoch", blob.epoch);
 
     assert_round_trip_json(&message, &fixture);
 }
@@ -308,23 +312,22 @@ fn conformance_delta_sequential() {
     };
 
     let a = assertions("delta_sequential.json", &fixture.assertions);
-    let expected_base = assert_u64(&a, "base_epoch");
-    let expected_epoch = assert_u64(&a, "epoch");
-    assert_eq!(delta.base_epoch, expected_base);
-    assert_eq!(delta.epoch, expected_epoch);
-    assert_eq!(
-        delta.is_next_after(expected_base),
-        assert_bool(&a, "is_sequential")
-    );
+    assert_u64(&a, "base_epoch", delta.base_epoch);
+    assert_u64(&a, "epoch", delta.epoch);
+    // Proven equal to the fixture by the assertion above, so reusing it here is
+    // still driving off the fixture's value.
+    let expected_base = delta.base_epoch;
+    assert_bool(&a, "is_sequential", delta.is_next_after(expected_base));
     assert!(!delta.is_next_after(expected_base - 1));
 
-    assert_eq!(delta.ops.len(), assert_u64(&a, "op_count") as usize);
+    assert_u64(&a, "op_count", delta.ops.len() as u64);
 
     let seen_kinds: HashSet<&str> = delta.ops.iter().map(delta_op_kind).collect();
-    assert_eq!(
+    assert_bool_at(
+        &a,
+        "has_all_op_variants",
         seen_kinds.len() == 7,
-        assert_bool(&a, "has_all_op_variants"),
-        "should see all 7 DeltaOp variants"
+        "should see all 7 DeltaOp variants",
     );
 
     assert_round_trip_json(&message, &fixture);
@@ -341,17 +344,17 @@ fn conformance_delta_non_sequential() {
     };
 
     let a = assertions("delta_non_sequential.json", &fixture.assertions);
-    let base = assert_u64(&a, "base_epoch");
-    let epoch = assert_u64(&a, "epoch");
-    assert_eq!(delta.base_epoch, base);
-    assert_eq!(delta.epoch, epoch);
-    assert_eq!(delta.is_next_after(base), assert_bool(&a, "is_sequential"));
+    assert_u64(&a, "base_epoch", delta.base_epoch);
+    assert_u64(&a, "epoch", delta.epoch);
+    let base = delta.base_epoch;
+    assert_bool(&a, "is_sequential", delta.is_next_after(base));
     assert!(!delta.is_next_after(10));
 
     let status = delta.apply_status(10);
-    assert_eq!(
+    assert_bool(
+        &a,
+        "resync_after_epoch_10",
         matches!(status, DeltaApplyStatus::ResyncRequired { .. }),
-        assert_bool(&a, "resync_after_epoch_10")
     );
     assert!(matches!(
         status,
@@ -376,21 +379,15 @@ fn conformance_delta_shared_blob() {
     };
 
     let a = assertions("delta_shared_blob.json", &fixture.assertions);
-    assert_eq!(delta.base_epoch, assert_u64(&a, "base_epoch"));
-    assert_eq!(delta.epoch, assert_u64(&a, "epoch"));
-    assert_eq!(delta.ops.len(), assert_u64(&a, "op_count") as usize);
-    assert_eq!(
-        delta_op_kind(&delta.ops[0]),
-        assert_str(&a, "first_op_kind")
-    );
+    assert_u64(&a, "base_epoch", delta.base_epoch);
+    assert_u64(&a, "epoch", delta.epoch);
+    assert_u64(&a, "op_count", delta.ops.len() as u64);
+    assert_str(&a, "first_op_kind", delta_op_kind(&delta.ops[0]));
 
     let DeltaOp::SlotValue { payload, .. } = &delta.ops[0] else {
         panic!("expected SlotValue op");
     };
-    assert_eq!(
-        ipc_value_kind(payload),
-        assert_str(&a, "first_op_payload_kind")
-    );
+    assert_str(&a, "first_op_payload_kind", ipc_value_kind(payload));
     let lazily::IpcValue::SharedBlob(blob) = payload else {
         panic!("expected SharedBlob payload");
     };
@@ -417,21 +414,15 @@ fn conformance_delta_zero_copy_arrow() {
     };
 
     let a = assertions("delta_zero_copy_arrow.json", &fixture.assertions);
-    assert_eq!(delta.base_epoch, assert_u64(&a, "base_epoch"));
-    assert_eq!(delta.epoch, assert_u64(&a, "epoch"));
-    assert_eq!(delta.ops.len(), assert_u64(&a, "op_count") as usize);
-    assert_eq!(
-        delta_op_kind(&delta.ops[0]),
-        assert_str(&a, "first_op_kind")
-    );
+    assert_u64(&a, "base_epoch", delta.base_epoch);
+    assert_u64(&a, "epoch", delta.epoch);
+    assert_u64(&a, "op_count", delta.ops.len() as u64);
+    assert_str(&a, "first_op_kind", delta_op_kind(&delta.ops[0]));
 
     let DeltaOp::SlotValue { payload, .. } = &delta.ops[0] else {
         panic!("expected SlotValue op");
     };
-    assert_eq!(
-        ipc_value_kind(payload),
-        assert_str(&a, "first_op_payload_kind")
-    );
+    assert_str(&a, "first_op_payload_kind", ipc_value_kind(payload));
     let lazily::IpcValue::SharedBlob(blob) = payload else {
         panic!("expected SharedBlob payload");
     };
@@ -442,12 +433,10 @@ fn conformance_delta_zero_copy_arrow() {
     // receiver resolves against (vs the default `shm`). Validates against
     // schemas/delta.json. This is the key lazily-kt's runner never read
     // (#lzassertunknownkeys); here the guard proves it is consumed.
-    assert_eq!(
-        blob.backend,
-        lazily::BlobBackendKind::Arrow,
-        "backend discriminator should parse as Arrow"
-    );
-    assert_eq!(assert_str(&a, "first_op_payload_backend"), "arrow");
+    // Comparing the fixture's own string against the literal `"arrow"` asserted
+    // nothing about the decode (`#lzconsumednotasserted`); the DECODED backend is
+    // what the fixture pins, so that is what is compared.
+    assert_str(&a, "first_op_payload_backend", blob.backend.as_str());
 
     assert_round_trip_json(&message, &fixture);
 }
@@ -617,29 +606,29 @@ fn conformance_arena_blob_descriptor_and_header() {
     // only `input`/`expected`, so `magic`, `header_len`, `capacity`, `epoch`,
     // `payload_len` and the duplicate `descriptor` were all invisible.
     let a = assertions("arena_blob.json", &fixture.assertions);
-    assert_eq!(fixture.input.capacity as u64, assert_u64(&a, "capacity"));
-    assert_eq!(fixture.input.epoch, assert_u64(&a, "epoch"));
-    assert_eq!(
+    assert_u64(&a, "capacity", fixture.input.capacity as u64);
+    assert_u64(&a, "epoch", fixture.input.epoch);
+    a.assert_key_at(
+        "header_len",
         SHM_BLOB_HEADER_LEN as u64,
-        assert_u64(&a, "header_len"),
-        "header length is part of the cross-language byte contract"
+        "header length is part of the cross-language byte contract",
     );
-    assert_eq!(
-        fixture.input.payload.len() as u64,
-        assert_u64(&a, "payload_len")
-    );
-    let want_descriptor: ArenaDescriptor =
-        serde_json::from_value(a["descriptor"].clone()).expect("assertions.descriptor");
-    assert_eq!(*expected, want_descriptor, "assertions vs expected agree");
+    assert_u64(&a, "payload_len", fixture.input.payload.len() as u64);
+    a.assert_key_with("descriptor", |want| {
+        let want_descriptor: ArenaDescriptor =
+            serde_json::from_value(want.clone()).expect("assertions.descriptor");
+        assert_eq!(*expected, want_descriptor, "assertions vs expected agree");
+    });
 
     // 40-byte LZSH header byte-identical across rs / py / zig.
     let bytes = arena.bytes();
     // `magic` is spelled big-endian in the corpus ("LZSH") and stored
     // little-endian in the header, so the round trip is the assertion.
     let magic_le = u32::from_le_bytes(bytes[..4].try_into().unwrap());
-    assert_eq!(
-        String::from_utf8(magic_le.to_be_bytes().to_vec()).unwrap(),
-        assert_str(&a, "magic")
+    assert_str(
+        &a,
+        "magic",
+        core::str::from_utf8(&magic_le.to_be_bytes()).unwrap(),
     );
     assert_eq!(
         &bytes[..SHM_BLOB_HEADER_LEN],

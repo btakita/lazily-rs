@@ -161,33 +161,43 @@ fn assert_invalidation(ctx: &Context, readers: &Readers, invalidates: &Value) {
 
 /// Assert the observable queue state after a step.
 fn assert_state(ctx: &Context, q: &QueueCell<V>, expected: &Expect) {
-    if let Some(elems) = expected["elements"].as_array() {
-        let want: Vec<String> = elems
+    // Each key is optional per fixture, so every comparison is bound to the key's
+    // *presence*: `expected["k"].as_bool()` marked the key consumed even when the
+    // fixture did not carry it and nothing was compared
+    // (`#lzconsumednotasserted`).
+    expected.assert_key_if_present("elements", |want| {
+        let want: Vec<String> = want
+            .as_array()
+            .expect("elements")
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect();
         assert_eq!(q.elements(), want, "elements mismatch");
-    }
-    if let Some(head) = expected.get_opt("head") {
+    });
+    expected.assert_key_if_present("head", |head| {
         let want: Option<String> = if head.is_null() {
             None
         } else {
             Some(head.as_str().unwrap().to_string())
         };
         assert_eq!(q.head(ctx), want, "head mismatch");
-    }
-    if let Some(len) = expected["len"].as_u64() {
-        assert_eq!(q.len(ctx), len as usize, "len mismatch");
-    }
-    if let Some(is_empty) = expected["is_empty"].as_bool() {
-        assert_eq!(q.is_empty(ctx), is_empty, "is_empty mismatch");
-    }
-    if let Some(is_full) = expected["is_full"].as_bool() {
-        assert_eq!(q.is_full(ctx), is_full, "is_full mismatch");
-    }
-    if let Some(closed) = expected["closed"].as_bool() {
-        assert_eq!(q.is_closed(ctx), closed, "closed mismatch");
-    }
+    });
+    expected.assert_key_if_present("len", |want| {
+        assert_eq!(
+            q.len(ctx),
+            want.as_u64().expect("len") as usize,
+            "len mismatch"
+        );
+    });
+    expected.assert_key_if_present("is_empty", |want| {
+        assert_eq!(q.is_empty(ctx), want.as_bool().expect("is_empty"));
+    });
+    expected.assert_key_if_present("is_full", |want| {
+        assert_eq!(q.is_full(ctx), want.as_bool().expect("is_full"));
+    });
+    expected.assert_key_if_present("closed", |want| {
+        assert_eq!(q.is_closed(ctx), want.as_bool().expect("closed"));
+    });
 }
 
 /// Expected `returns` value for an op (an element string, or an error label).
@@ -218,7 +228,6 @@ fn run_fixture(ctx: &Context, name: &str, fixture: &Value) {
             format!("steps[{i}].expected"),
             step.get("expected").unwrap_or(&Value::Null),
         );
-        let invalidates = expected["invalidates"].clone();
 
         let got_returns = match op_type {
             "push" => {
@@ -277,7 +286,9 @@ fn run_fixture(ctx: &Context, name: &str, fixture: &Value) {
         }
 
         // Assert the per-reader-kind invalidation matrix.
-        assert_invalidation(ctx, &readers, &invalidates);
+        expected.assert_key_if_present("invalidates", |want| {
+            assert_invalidation(ctx, &readers, want)
+        });
     }
 }
 

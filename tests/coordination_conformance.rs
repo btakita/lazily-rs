@@ -79,13 +79,15 @@ fn lease() {
         }
         let exp = expected("lease.json", i, step);
         let inv = exp.sub("invalidates");
-        assert_eq!(lease.holder(now), exp["holder"].as_u64());
-        assert_eq!(lease.is_held(now), exp["held"].as_bool().unwrap());
-        assert_eq!(lease.fence(), exp["fence"].as_u64().unwrap());
+        exp.assert_key_with("holder", |want| {
+            assert_eq!(lease.holder(now), want.as_u64())
+        });
+        exp.assert_key("held", lease.is_held(now));
+        exp.assert_key("fence", lease.fence());
 
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inv["holder"].as_bool().unwrap(), "holder inval");
+        inv.assert_key_at("holder", !was, "holder inval");
     }
 }
 
@@ -118,22 +120,22 @@ fn leader() {
         };
         let exp = expected("leader.json", i, step);
         let inv = exp.sub("invalidates");
-        let want_role = match exp["role"].as_str().unwrap() {
-            "Leader" => LeaderRole::Leader,
-            "Follower" => LeaderRole::Follower,
-            "Candidate" => LeaderRole::Candidate,
-            r => panic!("bad role {r}"),
-        };
-        assert_eq!(role, want_role);
-        assert_eq!(leader.current_leader(now), exp["current_leader"].as_u64());
+        exp.assert_key_with("role", |want| {
+            let want_role = match want.as_str().unwrap() {
+                "Leader" => LeaderRole::Leader,
+                "Follower" => LeaderRole::Follower,
+                "Candidate" => LeaderRole::Candidate,
+                r => panic!("bad role {r}"),
+            };
+            assert_eq!(role, want_role);
+        });
+        exp.assert_key_with("current_leader", |want| {
+            assert_eq!(leader.current_leader(now), want.as_u64())
+        });
 
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(
-            !was,
-            inv["current_leader"].as_bool().unwrap(),
-            "leader inval"
-        );
+        inv.assert_key_at("current_leader", !was, "leader inval");
     }
 }
 
@@ -174,12 +176,12 @@ fn lock() {
         }
         let exp = expected("lock.json", i, step);
         let inv = exp.sub("invalidates");
-        assert_eq!(lock.is_locked(now), exp["is_locked"].as_bool().unwrap());
-        assert_eq!(lock.fence(), exp["fence"].as_u64().unwrap());
+        exp.assert_key("is_locked", lock.is_locked(now));
+        exp.assert_key("fence", lock.fence());
 
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inv["is_locked"].as_bool().unwrap(), "lock inval");
+        inv.assert_key_at("is_locked", !was, "lock inval");
     }
 }
 
@@ -204,18 +206,11 @@ fn semaphore() {
         }
         let exp = expected("semaphore.json", i, step);
         let inv = exp.sub("invalidates");
-        assert_eq!(
-            sem.permits_available(&ctx),
-            exp["permits_available"].as_u64().unwrap()
-        );
+        exp.assert_key("permits_available", sem.permits_available(&ctx));
 
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(
-            !was,
-            inv["permits_available"].as_bool().unwrap(),
-            "sem inval"
-        );
+        inv.assert_key_at("permits_available", !was, "sem inval");
     }
 }
 
@@ -237,11 +232,11 @@ fn quorum() {
         assert_eq!(got, step["returns"].as_bool().unwrap());
         let exp = expected("quorum.json", i, step);
         let inv = exp.sub("invalidates");
-        assert_eq!(q.count(), exp["votes"].as_u64().unwrap());
-        assert_eq!(q.is_open(&ctx), exp["is_open"].as_bool().unwrap());
+        exp.assert_key("votes", q.count());
+        exp.assert_key("is_open", q.is_open(&ctx));
 
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inv["is_open"].as_bool().unwrap(), "quorum inval");
+        inv.assert_key_at("is_open", !was, "quorum inval");
     }
 }

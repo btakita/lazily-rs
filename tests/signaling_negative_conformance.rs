@@ -98,43 +98,61 @@ fn assert_frame_assertions(case: &FrameCase, actual: &Value) {
         format!("frames[{}].assertions", case.label),
         &case.assertions,
     );
-    if let Some(want) = exp["peer"].as_u64() {
-        assert_eq!(actual["peer"].as_u64(), Some(want), "{}: peer", case.label);
-    }
-    if let Some(want) = exp["to"].as_u64() {
-        assert_eq!(actual["to"].as_u64(), Some(want), "{}: to", case.label);
-    }
-    if let Some(want) = exp["from"].as_u64() {
-        assert_eq!(actual["from"].as_u64(), Some(want), "{}: from", case.label);
-    }
-    if let Some(want) = exp["code"].as_str() {
-        assert_eq!(actual["code"].as_str(), Some(want), "{}: code", case.label);
-    }
-    if let Some(want) = exp["has_capabilities"].as_bool() {
+    // Each key is optional per frame, so every comparison is bound to the key's
+    // *presence*: a bare read on a frame that does not carry the key marked it
+    // consumed while comparing nothing (`#lzconsumednotasserted`).
+    exp.assert_key_if_present("peer", |want| {
+        assert_eq!(
+            actual["peer"].as_u64(),
+            want.as_u64(),
+            "{}: peer",
+            case.label
+        );
+    });
+    exp.assert_key_if_present("to", |want| {
+        assert_eq!(actual["to"].as_u64(), want.as_u64(), "{}: to", case.label);
+    });
+    exp.assert_key_if_present("from", |want| {
+        assert_eq!(
+            actual["from"].as_u64(),
+            want.as_u64(),
+            "{}: from",
+            case.label
+        );
+    });
+    exp.assert_key_if_present("code", |want| {
+        assert_eq!(
+            actual["code"].as_str(),
+            want.as_str(),
+            "{}: code",
+            case.label
+        );
+    });
+    exp.assert_key_if_present("has_capabilities", |want| {
         assert_eq!(
             actual.get("capabilities").is_some_and(|c| !c.is_null()),
-            want,
+            want.as_bool().expect("has_capabilities"),
             "{}: has_capabilities",
             case.label
         );
-    }
-    if let Some(want) = exp["capabilities"].as_array() {
+    });
+    exp.assert_key_if_present("capabilities", |want| {
         assert_eq!(
             actual["capabilities"].as_array(),
-            Some(want),
+            want.as_array(),
             "{}: capabilities",
             case.label
         );
-    }
-    if let Some(want) = exp["peers"].as_array() {
+    });
+    exp.assert_key_if_present("peers", |want| {
         assert_eq!(
             actual["peers"].as_array(),
-            Some(want),
+            want.as_array(),
             "{}: peers",
             case.label
         );
-    }
-    if let Some(want) = exp["roster_excludes_self"].as_bool() {
+    });
+    exp.assert_key_if_present("roster_excludes_self", |want| {
         // A welcome roster that lists the joining peer is the spoof this key
         // pins; `rejects` covers the wire-level form, this covers the decoded one.
         let self_peer = actual["peer"].as_u64();
@@ -143,15 +161,25 @@ fn assert_frame_assertions(case: &FrameCase, actual: &Value) {
             .expect("welcome carries a roster")
             .iter()
             .all(|p| p.as_u64() != self_peer);
-        assert_eq!(excluded, want, "{}: roster_excludes_self", case.label);
-    }
-    if let Some(want) = exp["server_stamped_from"].as_bool() {
+        assert_eq!(
+            excluded,
+            want.as_bool().expect("roster_excludes_self"),
+            "{}: roster_excludes_self",
+            case.label
+        );
+    });
+    exp.assert_key_if_present("server_stamped_from", |want| {
         // A forwarded frame carries `from` (stamped by the server) and never a
         // client-supplied `to` — mixing both is the anti-spoof reject.
         let stamped = actual.get("from").is_some_and(|v| !v.is_null())
             && !actual.get("to").is_some_and(|v| !v.is_null());
-        assert_eq!(stamped, want, "{}: server_stamped_from", case.label);
-    }
+        assert_eq!(
+            stamped,
+            want.as_bool().expect("server_stamped_from"),
+            "{}: server_stamped_from",
+            case.label
+        );
+    });
 }
 
 #[test]
@@ -173,7 +201,7 @@ fn anti_spoof_fixture_rejects_client_supplied_from() {
         "roster_excludes_self",
         "roster_sorted_ascending",
     ] {
-        exp.declared_exception(
+        exp.excuse_key(
             key,
             "server-session claim; the Rust crate ships the signalling CLIENT codec only \
              (the session model + its replay live in signaling/, TypeScript)",

@@ -25,6 +25,16 @@ fn expect<'a>(sc: &'a Value) -> Expect<'a> {
     )
 }
 
+/// A fixture array of epochs.
+fn u64s(want: &Value) -> Vec<u64> {
+    want.as_array()
+        .expect("array of epochs")
+        .iter()
+        .map(Value::as_u64)
+        .collect::<Option<Vec<_>>>()
+        .expect("array of epochs")
+}
+
 fn frame(epoch: u64) -> IpcMessage {
     IpcMessage::Delta(Delta::new(epoch.saturating_sub(1), epoch, vec![]))
 }
@@ -75,55 +85,31 @@ fn generic_outbox_replays_canonical_store_fixture() {
                 .into_iter()
                 .map(|(epoch, _)| epoch)
                 .collect::<Vec<_>>();
-            assert_eq!(
-                epochs,
-                expected["epochs"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(Value::as_u64)
-                    .collect::<Option<Vec<_>>>()
-                    .unwrap()
-            );
+            expected.assert_key_with("epochs", |want| assert_eq!(epochs, u64s(want)));
         }
         if let Some(acks) = scenario["ack_through"].as_array() {
             for ack in acks {
                 outbox.ack_through(ack.as_u64().unwrap());
             }
         }
-        if let Some(cursor) = expected["cursor"]
-            .as_u64()
-            .or_else(|| expected["loaded_cursor"].as_u64())
-        {
-            assert_eq!(outbox.acked_through(), cursor);
+        // `cursor` and `loaded_cursor` are two spellings of the same fact and
+        // `replay` / `replay_from_zero` likewise; whichever the scenario carries
+        // is asserted, and a scenario carrying neither owes nothing.
+        for key in ["cursor", "loaded_cursor"] {
+            expected.assert_key_if_present(key, |want| {
+                assert_eq!(outbox.acked_through(), want.as_u64().expect("cursor u64"))
+            });
         }
-        if let Some(retained) = expected["retained"].as_array() {
-            assert_eq!(
-                outbox.retained_epochs(),
-                retained
-                    .iter()
-                    .map(Value::as_u64)
-                    .collect::<Option<Vec<_>>>()
-                    .unwrap()
-            );
-        }
-        let replay = match expected["replay_from_zero"].as_array() {
-            Some(r) => Some(r),
-            None => expected["replay"].as_array(),
-        };
-        if let Some(replay) = replay {
-            assert_eq!(
-                outbox
-                    .replay_from(0)
-                    .into_iter()
-                    .map(|(epoch, _)| epoch)
-                    .collect::<Vec<_>>(),
-                replay
-                    .iter()
-                    .map(Value::as_u64)
-                    .collect::<Option<Vec<_>>>()
-                    .unwrap(),
-            );
+        expected.assert_key_if_present("retained", |want| {
+            assert_eq!(outbox.retained_epochs(), u64s(want))
+        });
+        let replayed = outbox
+            .replay_from(0)
+            .into_iter()
+            .map(|(epoch, _)| epoch)
+            .collect::<Vec<_>>();
+        for key in ["replay_from_zero", "replay"] {
+            expected.assert_key_if_present(key, |want| assert_eq!(replayed, u64s(want)));
         }
     }
 }
@@ -179,8 +165,11 @@ fn stale_sqlite_handle_cannot_regress_serialized_cursor() {
         }
     }
     let exp = expect(scenario);
-    let expected = exp["loaded_cursor"].as_u64().unwrap();
-    assert_eq!(stale.acked_through(), expected);
+    let expected = exp.assert_key_with("loaded_cursor", |want| {
+        let want = want.as_u64().expect("loaded_cursor u64");
+        assert_eq!(stale.acked_through(), want);
+        want
+    });
     drop(stale);
     drop(current);
 
