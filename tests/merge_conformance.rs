@@ -74,10 +74,16 @@ fn mergecell_algebra_fixture() {
         return;
     }
     let fixture = load_fixture("mergecell_algebra.json");
-    let scenarios = fixture["scenarios"].as_array().expect("scenarios array");
 
+    // Per-scenario replay ledger (`#lzscenariocoverage`). This is the ONE fixture
+    // in the corpus whose scenarios carry neither `id` nor `name` — they are
+    // distinguished only by `policy` — so the ledger falls back to the positional
+    // `#<n>` and the guard REPORTS that fallback. Adding the identifiers is a
+    // lazily-spec change and deliberately not made here.
     let mut seen = 0;
-    for (si, scenario) in scenarios.iter().enumerate() {
+    for (si, _id, scenario) in
+        common::scenarios(&format!("{SPEC_DIR}/mergecell_algebra.json"), &fixture)
+    {
         match scenario["policy"].as_str().expect("policy string") {
             "KeepLatest" => replay_scenario::<KeepLatest>(si, scenario),
             "Sum" => replay_scenario::<Sum>(si, scenario),

@@ -559,12 +559,10 @@ fn run_semtree_fixture(name: &str) {
         return;
     }
     let fixture = load_fixture(name);
-    let scenarios = fixture
-        .get("scenarios")
-        .and_then(|v| v.as_array())
-        .expect("semtree scenarios");
-
-    for (i, scenario) in scenarios.iter().enumerate() {
+    // Per-scenario replay ledger (`#lzscenariocoverage`): recording happens as
+    // the helper yields, so a scenario this loop never reaches is a build
+    // failure rather than an invisible gap under a fixture that "was opened".
+    for (i, _id, scenario) in common::scenarios(&format!("{SPEC_DIR}/{name}"), &fixture) {
         let fold = scenario
             .get("fold")
             .and_then(|v| v.as_str())
@@ -743,12 +741,10 @@ fn run_stableid_fixture(name: &str) {
         return;
     }
     let fixture = load_fixture(name);
-    let scenarios = fixture
-        .get("scenarios")
-        .and_then(|v| v.as_array())
-        .expect("stableid scenarios");
-
-    for (i, scenario) in scenarios.iter().enumerate() {
+    // Per-scenario replay ledger (`#lzscenariocoverage`): recording happens as
+    // the helper yields, so a scenario this loop never reaches is a build
+    // failure rather than an invisible gap under a fixture that "was opened".
+    for (i, _id, scenario) in common::scenarios(&format!("{SPEC_DIR}/{name}"), &fixture) {
         // Guard the scenario's `expect` block (`#lzassertunknownkeys`).
         let expect = Expect::new(
             format!("{SPEC_DIR}/{name}"),
@@ -892,12 +888,10 @@ fn run_textcrdt_fixture(name: &str) {
         return;
     }
     let fixture = load_fixture(name);
-    let scenarios = fixture
-        .get("scenarios")
-        .and_then(|v| v.as_array())
-        .expect("textcrdt scenarios");
-
-    for (i, scenario) in scenarios.iter().enumerate() {
+    // Per-scenario replay ledger (`#lzscenariocoverage`): recording happens as
+    // the helper yields, so a scenario this loop never reaches is a build
+    // failure rather than an invisible gap under a fixture that "was opened".
+    for (i, _id, scenario) in common::scenarios(&format!("{SPEC_DIR}/{name}"), &fixture) {
         let mut replicas: HashMap<String, TextCrdt> = HashMap::new();
 
         // Seed: either a peer-only replica (empty) or a seeded text replica.

@@ -120,17 +120,13 @@ fn anti_entropy_converge_conformance() {
         return;
     };
     assert_eq!(fixture["model"], "CrdtPlane");
-    let scenarios = fixture["scenarios"].as_array().expect("scenarios");
-    assert!(
-        !scenarios.is_empty(),
-        "a replay of zero scenarios is not a replay"
-    );
-
     let mut checked_counts = 0usize;
     let mut checked_redeliver = 0usize;
     let mut checked_converged = 0usize;
 
-    for (si, sc) in scenarios.iter().enumerate() {
+    // Per-scenario replay ledger (`#lzscenariocoverage`).
+    for (si, _id, sc) in common::scenarios(&format!("{SPEC}/anti_entropy_converge.json"), &fixture)
+    {
         let name = sc["name"].as_str().expect("name");
         // Guard the scenario's `expect` block (`#lzassertunknownkeys`): `resolution`
         // and `order_independent` were both present and both unread.

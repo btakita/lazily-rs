@@ -260,8 +260,8 @@ fn assert_expect(world: &World, expect: &Expect, scenario: &str) {
 
 fn run_fixture(name: &str) {
     let fixture = load_fixture(name);
-    let scenarios = fixture["scenarios"].as_array().expect("scenarios");
-    for (i, scenario) in scenarios.iter().enumerate() {
+    // Per-scenario replay ledger (`#lzscenariocoverage`).
+    for (i, _id, scenario) in common::scenarios(&format!("{SPEC_DIR}/{name}"), &fixture) {
         let label = scenario
             .get("name")
             .and_then(|v| v.as_str())

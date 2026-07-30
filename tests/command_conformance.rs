@@ -222,12 +222,11 @@ fn cancel_preempts_nonterminal_scenarios() {
         return;
     }
     let fx = load("cancel_preempts_nonterminal.json");
-    for (si, scenario) in fx["scenarios"]
-        .as_array()
-        .expect("scenarios")
-        .iter()
-        .enumerate()
-    {
+    // Per-scenario replay ledger (`#lzscenariocoverage`).
+    for (si, _id, scenario) in common::scenarios(
+        &format!("{FIXTURE_DIR}/cancel_preempts_nonterminal.json"),
+        &fx,
+    ) {
         let name = scenario["name"].as_str().unwrap();
         let exp = expect_of(
             "cancel_preempts_nonterminal.json",

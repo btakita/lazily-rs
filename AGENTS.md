@@ -116,7 +116,23 @@ this repo.
   `cargo test` is unaffected. `scripts/check-conformance-coverage.sh` then fails
   on any canonical fixture the suite did not OPEN — and on a missing manifest,
   which is missing evidence rather than evidence of absence. The static grep it
-  replaced could not tell a replayed fixture from a hand-transcribed one
+  replaced could not tell a replayed fixture from a hand-transcribed one.
+  The same file carries the **per-scenario replay ledger**
+  (`#lzscenariocoverage`), the rung above the manifest: a fixture with four
+  scenarios of which a runner replays three is green under the manifest alone —
+  `reliable-sync/liveness_orset_lww.json` was exactly that, and the key guards
+  cannot see it either, because an unreplayed scenario contributes no unconsumed
+  and no unasserted key. `common::scenarios` / `scenario_by_name` /
+  `scenario_at` record each id as it is replayed (resolution `id` -> `name` ->
+  positional `#<n>`, the order every binding shares) into
+  `$LAZILY_CONFORMANCE_SCENARIOS`, and the guard script compares that ledger with
+  the scenarios each OPENED fixture carries on disk, in both directions. The
+  excuse list `KNOWN_UNREPLAYED_SCENARIOS` ("fixture|id|reason") sits beside
+  `KNOWN_UNCOVERED` so there is one place to read what this binding does not
+  prove; it is currently EMPTY — every scenario of every opened fixture is
+  replayed. Positional-fallback ids are reported, not silently accepted
+  (`collections/mergecell_algebra.json` carries no identifier at all; adding one
+  is a lazily-spec change)
 - `tests/common/expect.rs` — the assertion-key guard
   (`#lzassertunknownkeys`, `#lzconsumednotasserted`), the two rungs below the
   manifest. Rung 2: having OPENED a fixture, did the runner CONSUME the keys it

@@ -28,13 +28,15 @@ fn load(name: &str) -> serde_json::Value {
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {path}: {e}"))
 }
 
-fn scenario<'a>(fx: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
-    fx["scenarios"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|s| s["name"] == name)
-        .unwrap_or_else(|| panic!("scenario {name} not found"))
+/// Address a scenario by name AND record it as replayed (`#lzscenariocoverage`).
+///
+/// This file addresses scenarios one at a time rather than looping, which is
+/// exactly the shape that let `derived_live_doc_aggregate_converges_under_retry`
+/// go unreplayed while `liveness_orset_lww.json` still counted as covered — the
+/// fixture manifest sees the file, not the scenario. The lookup and the ledger
+/// entry are the same call, so a scenario cannot be replayed unrecorded.
+fn scenario<'a>(fixture: &str, fx: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+    common::scenario_by_name(&format!("{SPEC_DIR}/{fixture}"), fx, name)
 }
 
 /// Guard a scenario's `expect` block (`#lzassertunknownkeys`). Every key the
@@ -186,7 +188,11 @@ fn multi_epoch_delta_fixture() {
     a.finish();
 
     // span_3_applies_equal_to_unit_fold: receiver at 40 applies a base=40,epoch=43 delta.
-    let sc = scenario(&fx, "span_3_applies_equal_to_unit_fold");
+    let sc = scenario(
+        "multi_epoch_delta.json",
+        &fx,
+        "span_3_applies_equal_to_unit_fold",
+    );
     let exp = expect("multi_epoch_delta.json", sc);
     let base = sc["delta"]["base_epoch"].as_u64().unwrap();
     let epoch = sc["delta"]["epoch"].as_u64().unwrap();
@@ -226,7 +232,11 @@ fn multi_epoch_delta_fixture() {
     );
 
     // gap_rule_unchanged_under_span: a span-3 delta whose base != last is still a gap.
-    let sc = scenario(&fx, "gap_rule_unchanged_under_span");
+    let sc = scenario(
+        "multi_epoch_delta.json",
+        &fx,
+        "gap_rule_unchanged_under_span",
+    );
     let exp = expect("multi_epoch_delta.json", sc);
     let d = lazily::Delta::new(
         sc["delta"]["base_epoch"].as_u64().unwrap(),
@@ -261,7 +271,11 @@ fn resync_gap_converge_fixture() {
     let fx = load("resync_gap_converge.json");
 
     // drop_suffix_then_resync_converges: replay the inbound stream through a coordinator.
-    let sc = scenario(&fx, "drop_suffix_then_resync_converges");
+    let sc = scenario(
+        "resync_gap_converge.json",
+        &fx,
+        "drop_suffix_then_resync_converges",
+    );
     let exp = expect("resync_gap_converge.json", sc);
     // `drop_suffix` is replayed twice: once as receiver A (the dropped delta
     // never arrives) and once as a receiver that saw everything, because
@@ -336,7 +350,7 @@ fn resync_gap_converge_fixture() {
     );
 
     // single_request_per_gap: while resyncing, ahead-of-cursor deltas are Ignored (one request).
-    let sc = scenario(&fx, "single_request_per_gap");
+    let sc = scenario("resync_gap_converge.json", &fx, "single_request_per_gap");
     let exp = expect("resync_gap_converge.json", sc);
     let mut coord = ResyncCoordinator::with_epoch(sc["start_last_epoch"].as_u64().unwrap());
     let mut requests = 0usize;
@@ -361,7 +375,7 @@ fn idempotent_redelivery_fixture() {
         "replayed_delta_is_ignored",
         "duplicate_current_head_is_ignored",
     ] {
-        let sc = scenario(&fx, name);
+        let sc = scenario("idempotent_redelivery.json", &fx, name);
         let exp = expect("idempotent_redelivery.json", sc);
         let mut coord = ResyncCoordinator::with_epoch(sc["start_last_epoch"].as_u64().unwrap());
         // `state_after` / `net_effect_unchanged` are about the VIEW, not the
@@ -491,7 +505,11 @@ fn frames_from(sc: &serde_json::Value, key: &str) -> Vec<(u64, IpcMessage)> {
 #[test]
 fn outbox_replay_after_crash_fixture() {
     let fx = load("outbox_replay_after_crash.json");
-    let sc = scenario(&fx, "crash_between_append_and_ack_replays_on_reconnect");
+    let sc = scenario(
+        "outbox_replay_after_crash.json",
+        &fx,
+        "crash_between_append_and_ack_replays_on_reconnect",
+    );
     let exp = expect("outbox_replay_after_crash.json", sc);
     let appended = frames_from(sc, "appended");
     let ack = sc["ack_through"].as_u64().unwrap();
@@ -564,7 +582,11 @@ fn outbox_replay_after_crash_fixture() {
     );
 
     // send_failure_retains_frame_for_next_tick: a failed send does not lose the frame.
-    let sc = scenario(&fx, "send_failure_retains_frame_for_next_tick");
+    let sc = scenario(
+        "outbox_replay_after_crash.json",
+        &fx,
+        "send_failure_retains_frame_for_next_tick",
+    );
     let exp = expect("outbox_replay_after_crash.json", sc);
     let appended = frames_from(sc, "appended");
     let mut mem = InMemoryOutbox::new();
@@ -611,12 +633,121 @@ fn stamp(v: &serde_json::Value) -> WireStamp {
     }
 }
 
+/// `alive/pid100` / `docA/pid100` -> `100`.
+fn pid_of(key: &str) -> u64 {
+    key.rsplit_once("/pid")
+        .unwrap_or_else(|| panic!("key {key} carries no /pid<n> holder"))
+        .1
+        .parse()
+        .unwrap_or_else(|e| panic!("key {key}: {e}"))
+}
+
+/// One replica of the liveness plane: an OR-set per `doc/pid` open entry, and an
+/// LWW `alive` register per pid. Both are semilattices, so the replica's whole
+/// state joins — which is what makes the DERIVED live-doc aggregate converge
+/// regardless of op order or re-delivery.
+#[derive(Clone, Default, PartialEq, Eq)]
+struct LivenessReplica {
+    open: BTreeMap<String, OrSet>,
+    alive: BTreeMap<u64, WireLwwRegister<bool>>,
+}
+
+impl LivenessReplica {
+    fn apply(&mut self, op: &serde_json::Value) {
+        match op["register_kind"].as_str().expect("register_kind") {
+            "orset" => {
+                let entry = self
+                    .open
+                    .entry(op["key"].as_str().expect("key").to_string())
+                    .or_default();
+                match op["op"].as_str().expect("op") {
+                    "add" => entry.add(op["tag"].as_str().expect("tag")),
+                    "remove" => entry.remove_observed(
+                        op["observed_tags"]
+                            .as_array()
+                            .expect("observed_tags")
+                            .iter()
+                            .map(|t| t.as_str().expect("tag")),
+                    ),
+                    other => panic!("unknown orset op {other}"),
+                }
+            }
+            "lww" => {
+                let pid = pid_of(op["key"].as_str().expect("key"));
+                let s = stamp(&op["stamp"]);
+                let v = op["value"].as_bool().expect("value");
+                match self.alive.get_mut(&pid) {
+                    Some(reg) => reg.set(s, v),
+                    None => {
+                        self.alive.insert(pid, WireLwwRegister::new(s, v));
+                    }
+                }
+            }
+            other => panic!("unknown register_kind {other}"),
+        }
+    }
+
+    /// The derived aggregate: a doc is live iff some present `(doc, pid)` entry
+    /// has `alive[pid] == true`.
+    fn live_docs(&self) -> Vec<String> {
+        let mut docs: Vec<String> = self
+            .open
+            .iter()
+            .filter(|(_key, set)| set.present())
+            .filter(|(key, _)| {
+                *self
+                    .alive
+                    .get(&pid_of(key))
+                    .map(|r| r.value())
+                    .unwrap_or(&false)
+            })
+            .map(|(key, _)| key.split_once('/').expect("doc/pid key").0.to_string())
+            .collect();
+        docs.sort();
+        docs.dedup();
+        docs
+    }
+
+    /// The replica restricted to the open entries of one doc. The `alive` plane
+    /// is shared — per-doc isolation is a claim about the OPEN sets, not about
+    /// each doc keeping its own copy of every editor's liveness.
+    fn only_doc(&self, doc: &str) -> Self {
+        let prefix = format!("{doc}/");
+        Self {
+            open: self
+                .open
+                .iter()
+                .filter(|(key, _)| key.starts_with(&prefix))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            alive: self.alive.clone(),
+        }
+    }
+
+    fn without_doc(&self, doc: &str) -> Self {
+        let prefix = format!("{doc}/");
+        Self {
+            open: self
+                .open
+                .iter()
+                .filter(|(key, _)| !key.starts_with(&prefix))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            alive: self.alive.clone(),
+        }
+    }
+}
+
 #[test]
 fn liveness_orset_lww_fixture() {
     let fx = load("liveness_orset_lww.json");
 
     // open_set_add_wins_over_stale_remove
-    let sc = scenario(&fx, "open_set_add_wins_over_stale_remove");
+    let sc = scenario(
+        "liveness_orset_lww.json",
+        &fx,
+        "open_set_add_wins_over_stale_remove",
+    );
     let exp = expect("liveness_orset_lww.json", sc);
     exp.prose(
         "reason",
@@ -675,7 +806,11 @@ fn liveness_orset_lww_fixture() {
     );
 
     // lww_alive_highest_stamp_wins
-    let sc = scenario(&fx, "lww_alive_highest_stamp_wins");
+    let sc = scenario(
+        "liveness_orset_lww.json",
+        &fx,
+        "lww_alive_highest_stamp_wins",
+    );
     let exp = expect("liveness_orset_lww.json", sc);
     let ops = sc["ops"].as_array().unwrap();
     let first = &ops[0];
@@ -720,7 +855,11 @@ fn liveness_orset_lww_fixture() {
     );
 
     // whole_editor_death_cascades: one alive[pid]=false drops every doc that pid held.
-    let sc = scenario(&fx, "whole_editor_death_cascades");
+    let sc = scenario(
+        "liveness_orset_lww.json",
+        &fx,
+        "whole_editor_death_cascades",
+    );
     let exp = expect("liveness_orset_lww.json", sc);
     exp.prose(
         "note",
@@ -785,4 +924,92 @@ fn liveness_orset_lww_fixture() {
     // that dropped exactly the doc named in the op would still match
     // `live_docs_after` on a fixture with a single held doc.
     exp.assert_key_at("cascade", before.len() - live.len() > 1, "cascade");
+
+    // derived_live_doc_aggregate_converges_under_retry: two replicas take the
+    // SAME ops in different orders and with re-delivery, and the derived live-doc
+    // aggregate lands identically.
+    //
+    // This scenario was replayed by NOTHING (`#lzscenariocoverage`). The fixture
+    // still counted as covered, because its three siblings above ran and the
+    // fixture manifest only ever asked whether the FILE was opened. It is the
+    // defect the per-scenario ledger exists for, and the reason the ledger is a
+    // runtime record rather than a declared list.
+    let sc = scenario(
+        "liveness_orset_lww.json",
+        &fx,
+        "derived_live_doc_aggregate_converges_under_retry",
+    );
+    let exp = expect("liveness_orset_lww.json", sc);
+    let ops: Vec<&serde_json::Value> = sc["ops"].as_array().expect("ops").iter().collect();
+    assert!(
+        sc["replicas"].as_array().expect("replicas").len() >= 2,
+        "the scenario is a claim about a PAIR of replicas"
+    );
+
+    let mut forward = LivenessReplica::default();
+    for op in &ops {
+        forward.apply(op);
+    }
+    let live_docs = forward.live_docs();
+
+    // `reverse_order_equivalent` drives the second replica: same op multiset,
+    // opposite order. The join is a semilattice, so the aggregate must not move.
+    assert!(
+        sc["reverse_order_equivalent"].as_bool().expect("flag"),
+        "fixture pins the reverse-order replica"
+    );
+    let mut reversed = LivenessReplica::default();
+    for op in ops.iter().rev() {
+        reversed.apply(op);
+    }
+
+    exp.assert_key_with("converged_live_docs", |want| {
+        let want = strs(want);
+        assert_eq!(live_docs, want, "forward replica");
+        assert_eq!(reversed.live_docs(), want, "reverse replica");
+    });
+    exp.assert_key_at(
+        "order_independent",
+        reversed.live_docs() == live_docs,
+        "order_independent",
+    );
+
+    // `redeliver_applied_count`: re-ingesting the whole stream applies zero NEW
+    // ops. Counted as replica-state transitions, not as calls — an implementation
+    // that re-inserted the same tag would still be at zero, which is the point of
+    // an idempotent join.
+    assert!(
+        sc["redeliver"].as_bool().expect("redeliver"),
+        "fixture pins re-delivery"
+    );
+    let mut applied = 0u64;
+    let mut redelivered = forward.clone();
+    for op in &ops {
+        let before = redelivered.clone();
+        redelivered.apply(op);
+        if redelivered != before {
+            applied += 1;
+        }
+    }
+    exp.assert_key_at(
+        "redeliver_applied_count",
+        applied,
+        "redeliver_applied_count",
+    );
+    assert_eq!(
+        redelivered.live_docs(),
+        live_docs,
+        "re-delivery must not move the aggregate"
+    );
+
+    // `per_doc_isolation`: the aggregate is per-doc. Restricting the open plane to
+    // one doc leaves exactly that doc live, and dropping one doc's entries drops
+    // exactly that doc — so docB's arrival cannot be what makes docA live.
+    let isolated = live_docs.iter().all(|doc| {
+        let alone = forward.only_doc(doc).live_docs();
+        let mut without = live_docs.clone();
+        without.retain(|d| d != doc);
+        alone == vec![doc.clone()] && forward.without_doc(doc).live_docs() == without
+    });
+    exp.assert_key_at("per_doc_isolation", isolated, "per_doc_isolation");
 }

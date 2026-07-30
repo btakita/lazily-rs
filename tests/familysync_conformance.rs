@@ -49,12 +49,8 @@ fn family_sync_materialize_on_ingest_conformance() {
         "this harness replays the bool value_type"
     );
 
-    for (si, scenario) in fixture["scenarios"]
-        .as_array()
-        .expect("scenarios")
-        .iter()
-        .enumerate()
-    {
+    // Per-scenario replay ledger (`#lzscenariocoverage`).
+    for (si, _id, scenario) in common::scenarios(FIXTURE, &fixture) {
         let name = scenario["name"].as_str().unwrap_or("<unnamed>");
         // Guard the scenario's `expect` block (`#lzassertunknownkeys`).
         let expect = Expect::new(

@@ -67,12 +67,17 @@ fn generic_outbox_replays_canonical_store_fixture() {
         return;
     };
     assert_eq!(fixture["model"], "OutboxStore");
-    for scenario in fixture["scenarios"].as_array().unwrap() {
+    for (index, scenario) in fixture["scenarios"].as_array().unwrap().iter().enumerate() {
         if scenario["save_cursor"].is_array() {
             // The shared in-memory adapter is owned by value; the serialized
             // multi-handle case is replayed against SQLite below.
             continue;
         }
+        // Recorded AFTER the `continue` (`#lzscenariocoverage`): a scenario this
+        // loop steps past must not record itself as replayed, or the skip becomes
+        // invisible again — which is the whole defect.
+        let (id, source) = common::scenario_id(scenario, index);
+        common::record_scenario(FIXTURE, &id, source);
         let mut outbox = InMemoryOutbox::default();
         for epoch in scenario["put_epochs"].as_array().unwrap() {
             let epoch = epoch.as_u64().unwrap();
@@ -146,12 +151,11 @@ fn stale_sqlite_handle_cannot_regress_serialized_cursor() {
     use lazily::SqliteOutbox;
 
     let fixture = fixture().expect("lazily-spec outbox-store fixture");
-    let scenario = fixture["scenarios"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|scenario| scenario["name"] == "stale handle cannot regress serialized cursor")
-        .expect("serialized stale-handle scenario");
+    let scenario = common::scenario_by_name(
+        FIXTURE,
+        &fixture,
+        "stale handle cannot regress serialized cursor",
+    );
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("stale-cursor.db");
     let mut stale = SqliteOutbox::open(&path, "doc").unwrap();

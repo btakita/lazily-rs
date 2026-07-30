@@ -209,14 +209,19 @@ fn run_corpus<M: GraphModel>() {
                 vec![replay(&models[0], name, arr(&fx["steps"]), None)]
             }
             Some("scenarios") => {
-                let scenarios = fx["scenarios"]
+                let count = fx["scenarios"]
                     .as_array()
-                    .unwrap_or_else(|| panic!("{name}: shape is `scenarios` but no scenarios"));
-                models = scenarios.iter().map(|_| M::create()).collect();
-                scenarios
-                    .iter()
+                    .unwrap_or_else(|| panic!("{name}: shape is `scenarios` but no scenarios"))
+                    .len();
+                models = (0..count).map(|_| M::create()).collect();
+                // Per-scenario replay ledger (`#lzscenariocoverage`): the helper
+                // records each id as it yields, so the ledger cannot claim a
+                // scenario this fold never reached.
+                common::scenarios(&format!("{SPEC_DIR}/{name}"), &fx)
                     .zip(&models)
-                    .map(|(s, m)| replay(m, name, arr(&s["steps"]), Some(&fixture_expected)))
+                    .map(|((_i, _id, s), m)| {
+                        replay(m, name, arr(&s["steps"]), Some(&fixture_expected))
+                    })
                     .collect()
             }
             Some(other) => panic!("{name}: unknown fixture shape {other}"),

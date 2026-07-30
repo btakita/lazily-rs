@@ -32,8 +32,12 @@ fn load(path: &str) -> Value {
     .unwrap_or_else(|error| panic!("parse {path}: {error}"))
 }
 
-fn scenarios(fixture: &Value) -> &[Value] {
-    fixture["scenarios"].as_array().expect("fixture scenarios")
+/// The fixture's scenarios, each RECORDED as replayed at the moment it is
+/// yielded (`#lzscenariocoverage`). These three fixtures key their scenarios by
+/// `id` rather than `name`, which is exactly why the ledger's id resolution is
+/// `id` -> `name` -> positional and not "the name field".
+fn scenarios<'a>(path: &str, fixture: &'a Value) -> common::Scenarios<'a> {
+    common::scenarios(path, fixture)
 }
 
 fn steps(scenario: &Value) -> &[Value] {
@@ -60,9 +64,9 @@ fn canonical_corpus_matches_production_and_an_independent_interpreter() {
     for (feature, path) in FIXTURES {
         let fixture = load(path);
         assert_eq!(fixture["feature"], feature);
-        replay_production(&fixture);
+        replay_production(path, &fixture);
         assert_eq!(
-            independent_failures(&fixture, None),
+            independent_failures(path, &fixture, None),
             BTreeSet::new(),
             "{feature} independent interpreter diverged from the canonical corpus"
         );
@@ -81,7 +85,7 @@ fn every_declared_mutation_is_observed_by_the_independent_interpreter() {
                 .iter()
                 .map(|value| value.as_str().expect("scenario id").to_owned())
                 .collect::<BTreeSet<_>>();
-            let failed = independent_failures(&fixture, Some(operator));
+            let failed = independent_failures(path, &fixture, Some(operator));
             assert!(
                 must_fail.is_subset(&failed),
                 "{} mutation {operator:?} escaped scenarios {:?}",
@@ -92,11 +96,11 @@ fn every_declared_mutation_is_observed_by_the_independent_interpreter() {
     }
 }
 
-fn replay_production(fixture: &Value) {
+fn replay_production(path: &str, fixture: &Value) {
     match fixture["feature"].as_str().expect("feature") {
-        "stdlib_timer_v1" => replay_timers(fixture),
-        "stdlib_timeout_v1" => replay_timeouts(fixture),
-        "stdlib_revision_barrier_v1" => replay_barriers(fixture),
+        "stdlib_timer_v1" => replay_timers(path, fixture),
+        "stdlib_timeout_v1" => replay_timeouts(path, fixture),
+        "stdlib_revision_barrier_v1" => replay_barriers(path, fixture),
         feature => panic!("unknown stdlib feature {feature}"),
     }
 }
@@ -110,8 +114,8 @@ fn assert_step(feature: &str, scenario: &Value, index: usize, actual: Value) {
     );
 }
 
-fn replay_timers(fixture: &Value) {
-    for scenario in scenarios(fixture) {
+fn replay_timers(path: &str, fixture: &Value) {
+    for (_index, _id, scenario) in scenarios(path, fixture) {
         let base = Instant::now();
         let mut timer = None;
         let mut logical_deadline = None;
@@ -163,8 +167,8 @@ fn replay_timers(fixture: &Value) {
     }
 }
 
-fn replay_timeouts(fixture: &Value) {
-    for scenario in scenarios(fixture) {
+fn replay_timeouts(path: &str, fixture: &Value) {
+    for (_index, _id, scenario) in scenarios(path, fixture) {
         let base = Instant::now();
         let mut timeout = None::<Timeout<String>>;
         let mut logical_deadline = None;
@@ -304,8 +308,8 @@ fn map_wait(outcome: RevisionWaitOutcome, barrier: &RevisionBarrier) -> Value {
     }
 }
 
-fn replay_barriers(fixture: &Value) {
-    for scenario in scenarios(fixture) {
+fn replay_barriers(path: &str, fixture: &Value) {
+    for (_index, _id, scenario) in scenarios(path, fixture) {
         let mut barrier = None;
         let mut required_revision = 0_u64;
         let mut deadline = None;
@@ -440,10 +444,10 @@ fn replay_barriers(fixture: &Value) {
     }
 }
 
-fn independent_failures(fixture: &Value, mutation: Option<&str>) -> BTreeSet<String> {
+fn independent_failures(path: &str, fixture: &Value, mutation: Option<&str>) -> BTreeSet<String> {
     let feature = fixture["feature"].as_str().expect("feature");
     let mut failures = BTreeSet::new();
-    for scenario in scenarios(fixture) {
+    for (_index, _id, scenario) in scenarios(path, fixture) {
         let mut state = Map::new();
         for step in steps(scenario) {
             let actual = independent_step(feature, &mut state, step, mutation);

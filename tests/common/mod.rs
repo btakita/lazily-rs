@@ -53,6 +53,33 @@
 //! Opening a fixture is one level above *consuming* its assertions. See
 //! [`expect`] (`#lzassertunknownkeys`) for the guard that fails a runner which
 //! replays a fixture while silently ignoring a key the fixture asserts.
+//!
+//! # Per-scenario accounting (`#lzscenariocoverage`)
+//!
+//! A fixture with several named scenarios can be PARTIALLY replayed and nothing
+//! above notices. The manifest asks only whether the FILE was opened — one
+//! scenario is enough — and the key guards only bind blocks a runner actually
+//! reaches, so an unreplayed scenario contributes no unconsumed key and no
+//! unasserted key. Skipping a whole scenario is invisible to a guard that only
+//! inspects the scenarios you ran.
+//!
+//! `reliable-sync/liveness_orset_lww.json` carries four scenarios; this binding
+//! replayed three, and the suite was green.
+//!
+//! So this module carries a second runtime ledger, on exactly the manifest's
+//! terms: [`record_scenario`] appends `fixture<TAB>id<TAB>source` to
+//! `$LAZILY_CONFORMANCE_SCENARIOS` at the point of replay, and
+//! `scripts/check-conformance-coverage.sh` compares it against the scenarios
+//! present in each opened fixture on disk, in both directions. Prefer the
+//! iteration helpers ([`scenarios`], [`scenario_by_name`], [`scenario_at`]) so a
+//! new runner cannot forget to record.
+//!
+//! Ids resolve `id` -> `name` -> positional `#<n>` (0-based), identically in
+//! every binding, because the corpus is not uniform: three `stdlib` fixtures key
+//! by `id`, 28 by `name`, and `collections/mergecell_algebra.json` carries no
+//! identifier at all. The positional fallback is *reported* by the guard rather
+//! than silently accepted — its visibility is what makes the corpus gap fixable
+//! upstream later.
 
 #![allow(dead_code)]
 
@@ -114,6 +141,163 @@ pub fn record_conformance_read(path: &Path) {
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&out) {
         let _ = f.write_all(format!("{id}\n").as_bytes());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Per-scenario replay ledger (#lzscenariocoverage)
+// ---------------------------------------------------------------------------
+
+/// Which field a scenario's id came from. Carried into the ledger so the guard
+/// can REPORT a positional fallback instead of silently accepting it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ScenarioIdSource {
+    /// The scenario carries an explicit `id` (the three `stdlib` fixtures).
+    Id,
+    /// The scenario carries a `name` (28 of the 31 scenario-bearing fixtures).
+    Name,
+    /// Neither — the id is the 0-based position, spelled `#<n>`.
+    Index,
+}
+
+impl ScenarioIdSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Id => "id",
+            Self::Name => "name",
+            Self::Index => "index",
+        }
+    }
+}
+
+/// Resolve a scenario's id: `id`, else `name`, else the positional `#<n>`.
+///
+/// The order is fixed and identical in every binding — a binding that preferred
+/// `name` over `id` would build a ledger that cannot be compared with anyone
+/// else's, and the whole point of the corpus is that the nine agree.
+pub fn scenario_id(scenario: &serde_json::Value, index: usize) -> (String, ScenarioIdSource) {
+    if let Some(id) = scenario.get("id").and_then(|v| v.as_str()) {
+        return (id.to_owned(), ScenarioIdSource::Id);
+    }
+    if let Some(name) = scenario.get("name").and_then(|v| v.as_str()) {
+        return (name.to_owned(), ScenarioIdSource::Name);
+    }
+    (format!("#{index}"), ScenarioIdSource::Index)
+}
+
+fn scenarios_seen() -> &'static Mutex<HashSet<String>> {
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    SEEN.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Record that the runner REPLAYED scenario `id` of the fixture at `path`.
+///
+/// Call it at the top of the loop body, *after* any `continue`, so a scenario
+/// the runner steps past does not record itself. Reads outside the canonical
+/// corpus are ignored, exactly as [`record_conformance_read`] ignores them.
+pub fn record_scenario(path: impl AsRef<Path>, id: &str, source: ScenarioIdSource) {
+    let Some(fixture) = conformance_id(path.as_ref()) else {
+        return;
+    };
+    let line = format!("{fixture}\t{id}\t{}", source.as_str());
+    {
+        let Ok(mut seen) = scenarios_seen().lock() else {
+            return;
+        };
+        if !seen.insert(line.clone()) {
+            return;
+        }
+    }
+    let Ok(out) = std::env::var("LAZILY_CONFORMANCE_SCENARIOS") else {
+        return;
+    };
+    if out.is_empty() {
+        return;
+    }
+    // Same contract as the fixture manifest: bookkeeping never fails a suite.
+    // An unwritable ledger surfaces downstream as missing evidence.
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&out) {
+        let _ = f.write_all(format!("{line}\n").as_bytes());
+    }
+}
+
+/// The scenarios of `fixture`, recording each id at the moment it is YIELDED.
+///
+/// This is the seam the contract prefers: recording is automatic, so a runner
+/// added later cannot forget it, and a runner that `break`s early records only
+/// what it reached.
+pub struct Scenarios<'a> {
+    path: String,
+    items: std::iter::Enumerate<std::slice::Iter<'a, serde_json::Value>>,
+}
+
+impl<'a> Iterator for Scenarios<'a> {
+    /// `(index, id, scenario)`.
+    type Item = (usize, String, &'a serde_json::Value);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (index, scenario) = self.items.next()?;
+        let (id, source) = scenario_id(scenario, index);
+        record_scenario(&self.path, &id, source);
+        Some((index, id, scenario))
+    }
+}
+
+/// Iterate `fixture["scenarios"]`, recording each scenario as replayed.
+///
+/// Panics when the fixture carries no `scenarios` array — a runner that reaches
+/// for the array is claiming there is one, and "zero scenarios" is not a replay.
+pub fn scenarios<'a>(path: &str, fixture: &'a serde_json::Value) -> Scenarios<'a> {
+    let items = fixture["scenarios"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{path}: fixture carries no `scenarios` array"));
+    assert!(
+        !items.is_empty(),
+        "{path}: a replay of zero scenarios is not a replay"
+    );
+    Scenarios {
+        path: path.to_owned(),
+        items: items.iter().enumerate(),
+    }
+}
+
+/// Look a scenario up by `name` (or `id`) and record it as replayed.
+///
+/// For the many runners that address scenarios individually rather than in a
+/// loop — the record still happens exactly once, at the point of replay.
+pub fn scenario_by_name<'a>(
+    path: &str,
+    fixture: &'a serde_json::Value,
+    name: &str,
+) -> &'a serde_json::Value {
+    let items = fixture["scenarios"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{path}: fixture carries no `scenarios` array"));
+    for (index, scenario) in items.iter().enumerate() {
+        let (id, source) = scenario_id(scenario, index);
+        if id == name {
+            record_scenario(path, &id, source);
+            return scenario;
+        }
+    }
+    panic!("{path}: scenario `{name}` not found");
+}
+
+/// Address a scenario by position and record it as replayed. For fixtures whose
+/// scenarios carry no identifier at all, and for runners that legitimately index.
+pub fn scenario_at<'a>(
+    path: &str,
+    fixture: &'a serde_json::Value,
+    index: usize,
+) -> &'a serde_json::Value {
+    let items = fixture["scenarios"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{path}: fixture carries no `scenarios` array"));
+    let scenario = items
+        .get(index)
+        .unwrap_or_else(|| panic!("{path}: no scenario at index {index}"));
+    let (id, source) = scenario_id(scenario, index);
+    record_scenario(path, &id, source);
+    scenario
 }
 
 fn conformance_id(path: &Path) -> Option<String> {

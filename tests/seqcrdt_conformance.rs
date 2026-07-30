@@ -105,12 +105,8 @@ fn assert_order(replica: &SeqCrdt<String, V>, expected: &[Value], msg: &str) {
 
 fn run_seqcrdt_fixture(name: &str) {
     let fixture = load_fixture(name);
-    let scenarios = fixture
-        .get("scenarios")
-        .and_then(|v| v.as_array())
-        .expect("seqcrdt scenarios");
-
-    for (i, scenario) in scenarios.iter().enumerate() {
+    // Per-scenario replay ledger (`#lzscenariocoverage`).
+    for (i, _id, scenario) in common::scenarios(&format!("{SPEC_DIR}/{name}"), &fixture) {
         let mut replicas: HashMap<String, SeqCrdt<String, V>> = HashMap::new();
 
         // Seed: either a `replica` (empty single-peer) or a `seed` with inserts.
