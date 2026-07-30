@@ -40,7 +40,17 @@ jobs:
       - name: Generate benchmark evidence
         run: cargo +stable bench --locked --features "instrumentation,async,tokio,thread-safe"
 
+      # Record the instrumentation profile plus a content fingerprint of the
+      # sources the step above measured (#vnmr). Without this the gate below sees
+      # evidence with no provenance and refuses it — it cannot tell "measured this
+      # tree" from "measured some tree". `--no-run` because the benches already
+      # ran; this only adds the deterministic profile and the manifest.
+      - name: Record evidence provenance
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: make benchmark-evidence-record
+
       - name: Enforce deterministic budgets
         env:
           RUSTUP_TOOLCHAIN: stable
-        run: make benchmark-check-strict
+        run: make benchmark-check

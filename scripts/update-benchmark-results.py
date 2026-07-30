@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime as _datetime
+import hashlib
 import json
 import math
 import subprocess
@@ -23,6 +25,47 @@ END_MARKER = "<!-- benchmark-results:end -->"
 INSERT_BEFORE = "\n## Multi-Language\n"
 BENCHMARKS_INSERT_BEFORE = "\n## Multi-Language\n"
 DEFAULT_PROFILE_OUTPUT = Path("target/lazily-instrumentation-profile.csv")
+DEFAULT_EVIDENCE_MANIFEST = Path("target/lazily-benchmark-evidence.json")
+EVIDENCE_MANIFEST_VERSION = 1
+
+# #vnmr: what the benchmark evidence is a measurement OF.
+#
+# The staleness signal is a content hash of these inputs, not an mtime. mtime is
+# not a property of the code: `git clone`/`git checkout` stamp "now" on files
+# that did not change, restoring a backup moves a timestamp BACKWARDS while the
+# bytes differ, and `touch` moves it forward while the bytes do not. Any of those
+# makes an mtime comparison answer a question nobody asked. A content hash
+# answers the only question the gate cares about — "were these numbers produced
+# by the code that is checked out right now?" — and it answers it identically on
+# a fresh clone, a dirty worktree, and a CI runner.
+#
+# It is also preferred over a recorded git commit, because a dirty worktree is
+# the normal state while developing: a commit id would call every uncommitted
+# edit "current" (the exact rot this gate exists to catch) or, if it compared
+# against a dirty flag, call every uncommitted tree "stale" regardless of whether
+# the edit could move a counter.
+#
+# The set is deliberately the measured surface plus its build inputs. `tests/`
+# and `docs/` are excluded: they cannot change a benchmark number, and including
+# them would invalidate evidence on every test edit, which is how a freshness
+# gate trains people to regenerate reflexively instead of reading it.
+EVIDENCE_SOURCE_GLOBS: tuple[str, ...] = (
+    "src/**/*.rs",
+    "benches/**/*.rs",
+    "macros/src/**/*.rs",
+    "examples/instrumentation_profile.rs",
+    "Cargo.toml",
+    "Cargo.lock",
+    "macros/Cargo.toml",
+)
+
+# Exit codes. `make check` only reads zero/non-zero, but the three non-zero modes
+# are distinct so a log or a wrapper can tell "never measured" from "measured the
+# wrong tree" from "measured, and red".
+EXIT_BUDGET_REGRESSION = 1
+EXIT_EVIDENCE_ABSENT = 2
+EXIT_EVIDENCE_STALE = 3
+
 GROUP_ORDER = {
     "cached_reads": 0,
     "cold_first_get": 1,
@@ -943,45 +986,220 @@ def replace_benchmarks_section(content: str, section: str) -> str:
     return content.rstrip() + "\n" + new_section + "\n"
 
 
-# Distinguishing "the budgets were never measured here" from "the budgets were
-# measured and are red".
+# #vnmr: evidence provenance.
 #
-# `--check` reuses whatever `target/criterion` holds. A pruned or fresh target
-# dir has no estimates, and hard-failing there made `make check` unreachable in
-# any clean checkout — the gate was red for a reason that has nothing to do with
-# the code, which is how a gate stops being read at all.
-#
-# The skip is deliberately narrow: it fires only when the criterion directory is
-# ABSENT. A directory that exists but yields no estimates is a broken or partial
-# bench run, not a fresh checkout, and still fails. And the skip is loud, because
-# a silent one would be an escape hatch: delete the directory, get a green check.
-# It says plainly that no budget was enforced.
-def evidence_missing_is_skippable(criterion_dir: Path, require_evidence: bool) -> bool:
-    if require_evidence:
-        return False
-    return not criterion_dir.exists()
+# There used to be a skip here: no `target/criterion` meant "fresh clone", which
+# printed a loud banner and exited 0. The banner was honest and the exit code was
+# not, and only one of those is what a caller reads. A green `make check` said
+# "budgets verified" to every reader who did not scroll. Absent evidence is now a
+# failure, and so is evidence that measured a different tree — because "measure,
+# then edit, then trust the old numbers" is the same lie with extra steps.
+def hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def warn_budgets_not_enforced(what: str) -> None:
+def source_file_hashes(root: Path = Path(".")) -> dict[str, str]:
+    """Content hash of every input a benchmark number can depend on."""
+    hashes: dict[str, str] = {}
+    for pattern in EVIDENCE_SOURCE_GLOBS:
+        for path in sorted(root.glob(pattern)):
+            if not path.is_file():
+                continue
+            hashes[path.as_posix()] = hash_file(path)
+    return hashes
+
+
+def source_fingerprint(hashes: dict[str, str]) -> str:
+    digest = hashlib.sha256()
+    for name in sorted(hashes):
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(hashes[name].encode("utf-8"))
+        digest.update(b"\0")
+    return "sha256:" + digest.hexdigest()
+
+
+def write_evidence_manifest(path: Path, mode: str, command: list[str]) -> None:
+    hashes = source_file_hashes()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "version": EVIDENCE_MANIFEST_VERSION,
+                "mode": mode,
+                "command": command,
+                "recorded_at": _datetime.datetime.now(
+                    _datetime.timezone.utc
+                ).isoformat(timespec="seconds"),
+                "source_fingerprint": source_fingerprint(hashes),
+                "source_files": hashes,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    print(f"recorded benchmark evidence provenance in {path} (mode={mode})")
+
+
+def read_evidence_manifest(path: Path) -> dict | None:
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    if manifest.get("version") != EVIDENCE_MANIFEST_VERSION:
+        return None
+    if "source_fingerprint" not in manifest:
+        return None
+    return manifest
+
+
+def fail_evidence_absent(missing: list[str]) -> int:
     print("", file=sys.stderr)
     print("=" * 72, file=sys.stderr)
-    print(f"SKIPPED: {what}", file=sys.stderr)
     print(
-        "NO BENCHMARK BUDGET WAS ENFORCED BY THIS RUN. This is not a pass — it is "
-        "the absence of a measurement.",
+        "BENCHMARK BUDGETS WERE NOT ENFORCED: this checkout has no benchmark "
+        "evidence.",
+        file=sys.stderr,
+    )
+    for item in missing:
+        print(f"  missing: {item}", file=sys.stderr)
+    print(
+        "Absent evidence is a FAILURE, not a skip. Exiting 0 here would report "
+        '"budgets verified" for budgets nothing measured.',
         file=sys.stderr,
     )
     print(
-        "Populate it with `make benchmark-update` (runs the benches), or re-run "
-        "with --require-evidence to make this a hard failure.",
-        file=sys.stderr,
-    )
-    print(
-        "The scheduled regressions workflow enforces these budgets with fresh "
-        "evidence; this local check skipped them because its evidence is absent.",
+        "Fix: run `make benchmark-evidence` (quick gating measurement, ~1 min), "
+        "or `make benchmark-evidence-full` for the full-fidelity run that also "
+        "backs BENCHMARKS.md.",
         file=sys.stderr,
     )
     print("=" * 72, file=sys.stderr)
+    return EXIT_EVIDENCE_ABSENT
+
+
+def fail_evidence_stale(manifest: dict, current: dict[str, str]) -> int:
+    recorded: dict[str, str] = manifest.get("source_files", {}) or {}
+    added = sorted(set(current) - set(recorded))
+    removed = sorted(set(recorded) - set(current))
+    modified = sorted(
+        name for name in set(current) & set(recorded) if current[name] != recorded[name]
+    )
+    changed = (
+        [f"M {name}" for name in modified]
+        + [f"A {name}" for name in added]
+        + [f"D {name}" for name in removed]
+    )
+
+    print("", file=sys.stderr)
+    print("=" * 72, file=sys.stderr)
+    print(
+        "BENCHMARK EVIDENCE IS STALE: it measured a different tree than the one "
+        "checked out.",
+        file=sys.stderr,
+    )
+    print(
+        f"  measured : {manifest.get('source_fingerprint')} "
+        f"(recorded {manifest.get('recorded_at', 'unknown')}, "
+        f"mode={manifest.get('mode', 'unknown')})",
+        file=sys.stderr,
+    )
+    print(f"  checkout : {source_fingerprint(current)}", file=sys.stderr)
+    print(
+        f"  {len(changed)} of {len(current)} measured source files changed since "
+        "the measurement:",
+        file=sys.stderr,
+    )
+    for line in changed[:20]:
+        print(f"    {line}", file=sys.stderr)
+    if len(changed) > 20:
+        print(f"    ... and {len(changed) - 20} more", file=sys.stderr)
+    print(
+        "Passing these budgets would be a statement about code that is no longer "
+        "here.",
+        file=sys.stderr,
+    )
+    print(
+        "Fix: re-measure with `make benchmark-evidence` (or "
+        "`make benchmark-evidence-full`).",
+        file=sys.stderr,
+    )
+    print("=" * 72, file=sys.stderr)
+    return EXIT_EVIDENCE_STALE
+
+
+def check_evidence(
+    criterion_dir: Path,
+    profile_output: Path,
+    manifest_path: Path,
+    results: list[BenchmarkResult],
+) -> int:
+    """0 when the evidence is present AND measures the current tree."""
+    missing: list[str] = []
+    if not results:
+        missing.append(
+            f"{criterion_dir} (Criterion estimates; the directory is "
+            + ("present but yielded none" if criterion_dir.exists() else "absent")
+            + ")"
+        )
+    if not profile_output.exists():
+        missing.append(f"{profile_output} (instrumentation counters)")
+    manifest = read_evidence_manifest(manifest_path)
+    if manifest is None:
+        missing.append(
+            f"{manifest_path} (evidence provenance; absent, unreadable, or written "
+            "by an older manifest version)"
+        )
+    if missing:
+        return fail_evidence_absent(missing)
+
+    assert manifest is not None
+    current = source_file_hashes()
+    if source_fingerprint(current) != manifest["source_fingerprint"]:
+        return fail_evidence_stale(manifest, current)
+    return 0
+
+
+def run_gating_benches(quick: bool) -> list[str]:
+    """The measurement the gate is a gate on.
+
+    Quick mode narrows to the benchmark groups the budgets and the required
+    latency rows actually read, and runs them under Criterion's `--quick`
+    sampling. It is a reduced-precision measurement, not a stub: the same code
+    paths execute and the same counters are produced. The full run stays the
+    source for BENCHMARKS.md, where the wall-clock precision matters.
+    """
+    if quick:
+        command = [
+            "cargo",
+            "bench",
+            "--locked",
+            "--features",
+            "instrumentation,thread-safe",
+            "--bench",
+            "context",
+            "--",
+            "--quick",
+            "thread_safe_",
+        ]
+    else:
+        # `scale-bench` enables the gated >=1M-node scale group.
+        command = [
+            "cargo",
+            "bench",
+            "--features",
+            "instrumentation,async,tokio,thread-safe,scale-bench",
+        ]
+    run(command)
+    return command
 
 
 def main() -> int:
@@ -1006,12 +1224,26 @@ def main() -> int:
         type=Path,
     )
     parser.add_argument(
-        "--require-evidence",
+        "--record-evidence",
         action="store_true",
         help=(
-            "treat missing benchmark evidence as a hard failure instead of a loud "
-            "skip; use wherever the budgets must actually be enforced"
+            "run the gating measurement (benches + instrumentation profile) and "
+            "record its source fingerprint; does not touch BENCHMARKS.md"
         ),
+    )
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help=(
+            "with --record-evidence, use Criterion's reduced-sample mode over the "
+            "benchmark groups the budgets read (a real measurement, lower precision)"
+        ),
+    )
+    parser.add_argument(
+        "--evidence-manifest",
+        default=DEFAULT_EVIDENCE_MANIFEST,
+        type=Path,
+        help="JSON path recording which source tree the evidence measured",
     )
     parser.add_argument(
         "--refresh-profile",
@@ -1036,68 +1268,89 @@ def main() -> int:
 
     if args.budgets_only and not args.check:
         parser.error("--budgets-only requires --check")
+    if args.quick and not args.record_evidence:
+        parser.error("--quick requires --record-evidence")
+    if args.record_evidence and args.check:
+        parser.error("--record-evidence and --check are separate steps")
+
+    if args.record_evidence:
+        # Generate, then record what was generated FROM. The manifest is written
+        # last on purpose: a crashed bench run leaves no provenance, so the next
+        # `--check` reports absent evidence rather than blessing a partial run.
+        command = [] if args.no_run else run_gating_benches(args.quick)
+        run_instrumentation_profile(args.profile_output)
+        write_evidence_manifest(
+            args.evidence_manifest,
+            "quick" if args.quick else "full",
+            command,
+        )
+        return 0
 
     if args.refresh_profile:
         run_instrumentation_profile(args.profile_output)
     elif args.check:
         pass
     elif not args.no_run:
-        # `scale-bench` enables the gated >=1M-node `scale` group (#lzscalebench).
-        run(["cargo", "bench", "--features", "instrumentation,async,tokio,thread-safe,scale-bench"])
+        command = run_gating_benches(quick=False)
         run_instrumentation_profile(args.profile_output)
+        write_evidence_manifest(args.evidence_manifest, "full", command)
     else:
         run_instrumentation_profile(args.profile_output)
 
     results = discover_results(args.criterion_dir)
-    if not results:
-        if evidence_missing_is_skippable(args.criterion_dir, args.require_evidence):
-            warn_budgets_not_enforced(
-                f"no benchmark evidence in this checkout ({args.criterion_dir} does "
-                "not exist)"
-            )
-            return 0
+    if args.check:
+        evidence_status = check_evidence(
+            args.criterion_dir,
+            args.profile_output,
+            args.evidence_manifest,
+            results,
+        )
+        if evidence_status != 0:
+            return evidence_status
+    elif not results:
         print(
             f"no Criterion estimates found under {args.criterion_dir}; run without --no-run",
             file=sys.stderr,
         )
-        return 2
+        return EXIT_EVIDENCE_ABSENT
     latencies = discover_latency_results(args.criterion_dir)
     latency_failures = required_latency_failures(latencies)
     if latency_failures:
         print("required latency evidence failure(s):", file=sys.stderr)
         for failure in latency_failures:
             print(f"- {failure}", file=sys.stderr)
-        return 1
+        print(
+            "Fix: re-measure with `make benchmark-evidence`.",
+            file=sys.stderr,
+        )
+        return EXIT_BUDGET_REGRESSION
     if not args.profile_output.exists():
-        if evidence_missing_is_skippable(args.criterion_dir, args.require_evidence):
-            warn_budgets_not_enforced(
-                f"no instrumentation profile in this checkout ({args.profile_output} "
-                "does not exist)"
-            )
-            return 0
         print(
             f"no instrumentation profile found at {args.profile_output}; run without --check",
             file=sys.stderr,
         )
-        return 2
+        return EXIT_EVIDENCE_ABSENT
     profiles = read_instrumentation_profiles(args.profile_output)
     if not profiles:
         print(
             f"no instrumentation profile rows found in {args.profile_output}",
             file=sys.stderr,
         )
-        return 2
+        return EXIT_EVIDENCE_ABSENT
     budget_failures = regression_budget_failures(profiles)
     if budget_failures:
         print("instrumentation regression budget failure(s):", file=sys.stderr)
         for failure in budget_failures:
             print(f"- {failure}", file=sys.stderr)
-        return 1
+        return EXIT_BUDGET_REGRESSION
 
     if args.budgets_only:
+        manifest = read_evidence_manifest(args.evidence_manifest) or {}
         print(
-            "benchmark regression budgets passed with fresh Criterion and "
-            "instrumentation evidence"
+            "benchmark regression budgets ENFORCED and green against evidence "
+            f"recorded {manifest.get('recorded_at', 'unknown')} "
+            f"(mode={manifest.get('mode', 'unknown')}, "
+            f"{manifest['source_fingerprint'][:19] if manifest.get('source_fingerprint') else 'unknown'})"
         )
         return 0
 
@@ -1110,10 +1363,10 @@ def main() -> int:
         if current != updated:
             print(
                 "BENCHMARKS.md benchmark results are stale; run "
-                "`python3 scripts/update-benchmark-results.py`",
+                "`make benchmark-update`",
                 file=sys.stderr,
             )
-            return 1
+            return EXIT_BUDGET_REGRESSION
         return 0
 
     args.benchmarks_file.write_text(updated, encoding="utf-8")

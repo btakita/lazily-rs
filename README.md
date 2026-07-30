@@ -109,7 +109,14 @@ make check
 ```
 
 The Makefile also exposes focused targets such as `make test-tokio`,
-`make test-loom`, `make benchmark-check`, and `make benchmark-update`.
+`make test-loom`, `make benchmark-evidence`, `make benchmark-check`, and
+`make benchmark-update`.
+
+`make check` measures the benchmark budgets rather than assuming them: it runs
+`benchmark-evidence` (a reduced-sample Criterion pass over the budgeted groups,
+plus the deterministic instrumentation profile) and then `benchmark-check`, which
+fails if that evidence is absent or if it measured a different source tree than
+the one checked out. There is no "budgets skipped" path that still exits 0.
 
 ## Usage
 

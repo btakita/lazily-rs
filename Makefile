@@ -57,12 +57,15 @@ test-ingress-family-conformance \
 	test-signaling-client \
 	test-webrtc \
 	test-websocket \
+	benchmark-evidence \
+	benchmark-evidence-full \
+	benchmark-evidence-record \
 	benchmark-check \
 	benchmark-check-strict \
 	benchmark-update \
 	instrumentation-profile
 
-	check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-reliable-sync-conformance test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-ingress-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-check conformance-coverage
+	check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-reliable-sync-conformance test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-ingress-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-evidence benchmark-check conformance-coverage
 
 fmt:
 >$(CARGO) fmt --all --check
@@ -282,22 +285,44 @@ test-webrtc-signaling:
 test-websocket:
 >$(CARGO) test --locked --features websocket
 
-# Reuses whatever `target/criterion` already holds. When that directory is ABSENT
-# (fresh clone, pruned target) it prints a loud "no budget was enforced" banner and
-# passes, because hard-failing there made `make check` unreachable for a reason
-# that has nothing to do with the code — and a gate that is always red stops being
-# read. The skip is narrow on purpose: a directory that EXISTS but yields no
-# estimates is a broken bench run, not a fresh checkout, and still fails, so
-# deleting it is not a way to turn a red budget green.
-benchmark-check:
->$(PYTHON) scripts/update-benchmark-results.py --check
+# Produce the evidence the budget gate is a gate on (#vnmr). Quick mode runs the
+# benchmark groups the budgets and required latency rows actually read under
+# Criterion's reduced-sample mode, then the deterministic instrumentation
+# profile, then records a content fingerprint of every source the measurement
+# depends on. Reduced precision, but a REAL measurement — the same code paths run
+# and the same counters come out. ~1 min wall clock on a warm target dir.
+benchmark-evidence:
+>$(PYTHON) scripts/update-benchmark-results.py --record-evidence --quick
 
-# The enforcing spelling: refresh the deterministic profile and hard-fail missing
-# Criterion evidence or budget regressions. Machine-specific wall-clock estimates
-# remain report data, not CI thresholds; the scheduled regressions workflow runs
-# the benches first, then invokes this target on a pinned runner image.
-benchmark-check-strict:
->$(PYTHON) scripts/update-benchmark-results.py --check --require-evidence --refresh-profile --budgets-only
+# Full-fidelity evidence: every bench group at full sampling. This is what backs
+# BENCHMARKS.md wall-clock numbers and what the scheduled regressions workflow
+# measures on its pinned runner image. Tens of minutes.
+benchmark-evidence-full:
+>$(PYTHON) scripts/update-benchmark-results.py --record-evidence
+
+# Provenance for benches that already ran under a caller-chosen feature set (the
+# scheduled regressions workflow picks its own). Adds the instrumentation profile
+# and the source fingerprint, without re-running Criterion.
+benchmark-evidence-record:
+>$(PYTHON) scripts/update-benchmark-results.py --record-evidence --no-run
+
+# Enforce the budgets. There is no skip: absent evidence exits 2 and evidence
+# that measured a different source tree exits 3, both naming the command that
+# regenerates. A green run here means the budgets were MEASURED against this
+# checkout, which is the only thing a green gate is allowed to mean (#vnmr).
+#
+# `--budgets-only` scopes it to the deterministic instrumentation counters and
+# the required latency evidence, and skips the BENCHMARKS.md wall-clock diff:
+# those timings are machine-specific, so comparing them would make this gate red
+# on every machine except whichever one last recorded the table.
+benchmark-check:
+>$(PYTHON) scripts/update-benchmark-results.py --check --budgets-only
+
+# Kept as an alias. It used to be the only enforcing spelling; `benchmark-check`
+# is now unconditionally enforcing, so the distinction it named is gone. What
+# differs between a local gate and the scheduled workflow is evidence FIDELITY
+# (`benchmark-evidence` vs `benchmark-evidence-full`), not the check.
+benchmark-check-strict: benchmark-check
 
 benchmark-update:
 >$(PYTHON) scripts/update-benchmark-results.py

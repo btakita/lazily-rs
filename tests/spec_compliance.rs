@@ -792,6 +792,7 @@ mod benchmark_report_harness {
     const BENCHMARKS_MD: &str = include_str!("../BENCHMARKS.md");
     const MAKEFILE: &str = include_str!("../Makefile");
     const REGRESSIONS_WORKFLOW: &str = include_str!("../.github/workflows/regressions.yml");
+    const CI_WORKFLOW: &str = include_str!("../.github/workflows/ci.yml");
     const UPDATE_SCRIPT: &str = include_str!("../scripts/update-benchmark-results.py");
 
     fn package_version() -> &'static str {
@@ -966,16 +967,42 @@ mod benchmark_report_harness {
         assert!(UPDATE_SCRIPT.contains("--check"));
         assert!(UPDATE_SCRIPT.contains("--budgets-only"));
         assert!(UPDATE_SCRIPT.contains("--refresh-profile"));
-        assert!(MAKEFILE.contains(
-            "scripts/update-benchmark-results.py --check --require-evidence \
-             --refresh-profile --budgets-only"
-        ));
+
+        // #vnmr: the gate is unconditionally enforcing. `--require-evidence` was
+        // the opt-in spelling of "actually fail"; its absence used to mean a
+        // pruned target dir exited 0. There is no opt-in any more, so the flag is
+        // gone — and it must not come back, because a flag that turns enforcement
+        // off is the escape hatch this gate exists without.
+        assert!(
+            !UPDATE_SCRIPT.contains("--require-evidence"),
+            "budget enforcement must not be opt-in"
+        );
+        assert!(
+            !UPDATE_SCRIPT.contains("NO BENCHMARK BUDGET WAS ENFORCED"),
+            "the skip-and-exit-0 banner must not come back"
+        );
+        assert!(MAKEFILE.contains("scripts/update-benchmark-results.py --check --budgets-only"));
+        // `make check` MEASURES before it gates, so the gate is satisfiable
+        // honestly on a fresh clone rather than by skipping.
+        assert!(MAKEFILE.contains("scripts/update-benchmark-results.py --record-evidence --quick"));
+        assert!(
+            MAKEFILE.contains("test-websocket benchmark-evidence benchmark-check"),
+            "`check` must generate evidence immediately before enforcing budgets"
+        );
+        assert!(UPDATE_SCRIPT.contains("EXIT_EVIDENCE_ABSENT"));
+        assert!(UPDATE_SCRIPT.contains("EXIT_EVIDENCE_STALE"));
+        assert!(UPDATE_SCRIPT.contains("BENCHMARK EVIDENCE IS STALE"));
+
         assert!(REGRESSIONS_WORKFLOW.contains(
             "cargo +stable bench --locked --features \
              \"instrumentation,async,tokio,thread-safe\""
         ));
-        assert!(REGRESSIONS_WORKFLOW.contains("run: make benchmark-check-strict"));
+        assert!(REGRESSIONS_WORKFLOW.contains("run: make benchmark-evidence-record"));
+        assert!(REGRESSIONS_WORKFLOW.contains("run: make benchmark-check"));
         assert!(REGRESSIONS_WORKFLOW.contains("runs-on: ubuntu-24.04"));
+        // Per-push CI must MEASURE the budgets, not defer them to the nightly.
+        assert!(CI_WORKFLOW.contains("run: make benchmark-evidence"));
+        assert!(CI_WORKFLOW.contains("run: make benchmark-check"));
         assert!(UPDATE_SCRIPT.contains("benchmark-results:start"));
     }
 }

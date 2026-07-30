@@ -195,10 +195,31 @@ make test-lean-formal    # Build ../lazily-spec/formal/lean with lake
 make test-lazily-formal  # Build ../lazily-formal with lake (full Harel chart + reactive graph + collections/tree/reconciliation/async proofs)
 make test-seqcrdt-conformance  # Replay ../lazily-spec/conformance/collections/seqcrdt_convergence.json (needs --features distributed)
 make test-queue-conformance   # Replay ../lazily-spec/conformance/collections/queuecell_*.json (needs --features serde)
-make benchmark-check # Verify generated benchmark results and instrumentation budgets
+make benchmark-evidence # Quick gating measurement (~1 min): reduced-sample Criterion over the budgeted groups + instrumentation profile + source fingerprint
+make benchmark-evidence-full # Full-fidelity measurement (tens of minutes); backs BENCHMARKS.md wall-clock numbers
+make benchmark-check # Enforce instrumentation budgets against that evidence
 make benchmark-update # Run python3 scripts/update-benchmark-results.py to regenerate BENCHMARKS.md
 make instrumentation-profile # Run examples/instrumentation_profile.rs with --features instrumentation
 ```
+
+### Benchmark budgets are never "skipped"
+
+`make check` runs `benchmark-evidence` then `benchmark-check`, so the budgets are
+measured against the tree in front of you every time. `benchmark-check` on its
+own has no skip path and three outcomes:
+
+| exit | meaning |
+| --- | --- |
+| 0 | budgets measured against THIS source tree and green |
+| 2 | no evidence — nothing was measured, so nothing can be green |
+| 3 | evidence is stale — it measured a different source tree |
+
+Staleness is a content hash (`target/lazily-benchmark-evidence.json`) over
+`src/`, `benches/`, `macros/src/`, `examples/instrumentation_profile.rs`, and the
+manifests — not an mtime, because `git checkout`, `touch`, and restoring a backup
+all move mtimes without any relationship to whether the code changed. Regenerate
+with `make benchmark-evidence`; deleting the evidence is not a way to turn a red
+budget green.
 
 ## Benchmark Skill
 

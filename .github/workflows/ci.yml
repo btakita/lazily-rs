@@ -131,6 +131,45 @@ jobs:
       - name: Test loom model
         run: cargo +stable test --locked --features loom --test thread_safe_loom
 
+  # The budget gate (#vnmr). `make benchmark-check` has no skip: absent evidence
+  # exits 2 and evidence measuring a different source tree exits 3. So CI has to
+  # MEASURE before it can gate, and this job does exactly that.
+  #
+  # Its own job rather than a step in `test`, for two reasons. It compiles under
+  # the bench profile, which shares nothing with `test`'s dev-profile artifacts,
+  # so appending it to `test` would serialize a cold compile onto the critical
+  # path; here it runs alongside and the added CI wall clock is only whatever it
+  # exceeds the `test` job by. And a red budget then reads as a red budget
+  # instead of hiding inside a job named "Rust".
+  #
+  # `benchmark-evidence` is Criterion's reduced-sample mode over the groups the
+  # budgets and required-latency rows read. That is lower precision, not a stub —
+  # the same benchmarks execute and the same deterministic instrumentation
+  # counters come out, and those counters are what the budgets are expressed in.
+  # Full-fidelity wall-clock numbers stay with the scheduled regressions workflow
+  # and BENCHMARKS.md, where precision is the point.
+  benchmark-budgets:
+    name: Benchmark budget gate (#vnmr)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Measure (quick gating evidence)
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: make benchmark-evidence
+
+      - name: Enforce budgets
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: make benchmark-check
+
   signaling:
     name: Signaling Worker (#yxjw)
     runs-on: ubuntu-latest
