@@ -25,8 +25,9 @@ jobs:
 
   benchmark-budgets:
     name: Benchmark regression budgets
-    # Pin the image generation. Pass/fail uses deterministic instrumentation
-    # counters; wall-clock Criterion timings remain diagnostic evidence only.
+    # Pin the image generation. Pass/fail uses instrumentation counters with
+    # spread-derived ceilings (#lzbenchbudgetheadroom); wall-clock Criterion
+    # timings remain diagnostic evidence only.
     runs-on: ubuntu-24.04
     timeout-minutes: 60
 
@@ -44,13 +45,13 @@ jobs:
       # sources the step above measured (#vnmr). Without this the gate below sees
       # evidence with no provenance and refuses it — it cannot tell "measured this
       # tree" from "measured some tree". `--no-run` because the benches already
-      # ran; this only adds the deterministic profile and the manifest.
+      # ran; this only adds the instrumentation profile and the manifest.
       - name: Record evidence provenance
         env:
           RUSTUP_TOOLCHAIN: stable
         run: make benchmark-evidence-record
 
-      - name: Enforce deterministic budgets
+      - name: Enforce spread-derived budgets
         env:
           RUSTUP_TOOLCHAIN: stable
         run: make benchmark-check

@@ -204,114 +204,181 @@ class LockAttribution:
     lock_hold_nanos: int
 
 
+# Every budget ceiling below is DERIVED from a recorded measurement sweep, never
+# hand-typed (#lzbenchbudgetheadroom). The old table typed each ceiling by hand,
+# which got the gate exactly backwards: it was loose where the counter is
+# perfectly deterministic (`dependency_edge <= 1600` for a counter that is always
+# 64 — a 25x regression passed) and tight where the counter is pure scheduling
+# noise (`set_cell_invalidation <= 16` for a counter observed from 1 to 256 — it
+# reddened on a busy machine). A gate that reddens on noise trains everyone to
+# ignore it, which is how a real regression gets waived as a flake.
+#
+# `--measure-budget-spread N` reruns the instrumentation profile N times and
+# prints the block below, so refreshing these numbers is a measurement rather
+# than a guess. The recorded spreads come from 750 runs spanning four
+# environments: idle (200), moderate load (200, 8 CPU burners), heavy load (200,
+# 24 burners on 32 cores) and 2-core-pinned (150, the shape of a GitHub runner).
+CLASS_DETERMINISTIC = "deterministic"
+CLASS_SCHEDULING_SENSITIVE = "scheduling_sensitive"
+CLASS_SCHEDULING_DOMINATED = "scheduling_dominated"
+
+
 @dataclass(frozen=True)
-class LockAttributionBudget:
+class ObservedSpread:
+    """A counter's measured range — the evidence a ceiling is derived from."""
+
+    samples: int
+    minimum: int
+    maximum: int
+
+    @property
+    def range(self) -> int:
+        return self.maximum - self.minimum
+
+    @property
+    def classification(self) -> str:
+        """Classify a counter by how much of its magnitude is scheduling noise.
+
+        Zero spread over a sweep that spans idle, loaded and 2-core-pinned runs
+        means the counter measures work items, not interleaving: it is
+        structural and portable, and every one of the 22 counters in this class
+        held the identical constant on 2 cores and on 32. When the spread grows
+        past half the observed maximum, the counter is measuring the scheduler
+        rather than the code, and no ceiling over it can distinguish a
+        regression from a busy machine.
+        """
+        if self.range == 0:
+            return CLASS_DETERMINISTIC
+        if self.range * 2 <= self.maximum:
+            return CLASS_SCHEDULING_SENSITIVE
+        return CLASS_SCHEDULING_DOMINATED
+
+    @property
+    def ceiling(self) -> int | None:
+        """The enforced ceiling, or None when the counter cannot support one.
+
+        Deterministic counters are enforced EXACTLY: any deviation is signal.
+        Scheduling-sensitive counters get headroom proportional to their own
+        measured variance — one full observed range above the observed maximum.
+        Scheduling-dominated counters are recorded and reported, but NOT
+        enforced; pretending to gate them is what produced the flakes.
+        """
+        classification = self.classification
+        if classification == CLASS_DETERMINISTIC:
+            return self.maximum
+        if classification == CLASS_SCHEDULING_SENSITIVE:
+            return self.maximum + self.range
+        return None
+
+
+@dataclass(frozen=True)
+class SiteSpread:
     site: str
-    max_lock_acquisitions: int
+    spread: ObservedSpread
 
 
 @dataclass(frozen=True)
 class InstrumentationBudget:
     profile: str
-    max_lock_acquisitions: int
-    site_budgets: tuple[LockAttributionBudget, ...] = ()
+    total: ObservedSpread
+    site_spreads: tuple[SiteSpread, ...] = ()
 
 
 REGRESSION_BUDGETS: tuple[InstrumentationBudget, ...] = (
     InstrumentationBudget(
         "thread_safe_set_cell_invalidation_independent_slot_contention_16",
-        max_lock_acquisitions=700,
-        site_budgets=(
-            LockAttributionBudget("set_cell_invalidation", 260),
-            LockAttributionBudget("dependency_edge", 16),
-            LockAttributionBudget("get_refresh", 32),
-            LockAttributionBudget("publish", 32),
+        total=ObservedSpread(750, 654, 893),
+        site_spreads=(
+            SiteSpread("set_cell_invalidation", ObservedSpread(750, 255, 255)),
+            SiteSpread("dependency_edge", ObservedSpread(750, 16, 16)),
+            SiteSpread("get_refresh", ObservedSpread(750, 32, 32)),
+            SiteSpread("publish", ObservedSpread(750, 16, 16)),
         ),
     ),
     InstrumentationBudget(
         "thread_safe_set_cell_invalidation_batched_write_bursts_16",
-        max_lock_acquisitions=900,
-        site_budgets=(
-            LockAttributionBudget("other", 800),
-            LockAttributionBudget("set_cell_invalidation", 16),
-            LockAttributionBudget("dependency_edge", 64),
-            LockAttributionBudget("get_refresh", 2),
-            LockAttributionBudget("publish", 2),
+        total=ObservedSpread(750, 712, 1477),
+        site_spreads=(
+            SiteSpread("other", ObservedSpread(750, 644, 1154)),
+            SiteSpread("set_cell_invalidation", ObservedSpread(750, 1, 256)),
+            SiteSpread("dependency_edge", ObservedSpread(750, 64, 64)),
+            SiteSpread("get_refresh", ObservedSpread(750, 2, 2)),
+            SiteSpread("publish", ObservedSpread(750, 1, 1)),
         ),
     ),
     InstrumentationBudget(
         "thread_safe_contention_same_slot_write_read_16",
-        max_lock_acquisitions=1_400,
-        site_budgets=(
-            LockAttributionBudget("get_refresh", 160),
-            LockAttributionBudget("publish", 256),
-            LockAttributionBudget("in_flight_wait", 700),
-            LockAttributionBudget("set_cell_invalidation", 260),
+        total=ObservedSpread(750, 876, 1420),
+        site_spreads=(
+            SiteSpread("get_refresh", ObservedSpread(750, 2, 125)),
+            SiteSpread("publish", ObservedSpread(750, 186, 257)),
+            SiteSpread("in_flight_wait", ObservedSpread(750, 0, 367)),
+            SiteSpread("set_cell_invalidation", ObservedSpread(750, 256, 256)),
         ),
     ),
     InstrumentationBudget(
         "thread_safe_contention_independent_slots_16",
-        max_lock_acquisitions=1_100,
-        site_budgets=(
-            LockAttributionBudget("other", 450),
-            LockAttributionBudget("get_refresh", 64),
-            LockAttributionBudget("publish", 320),
-            LockAttributionBudget("dependency_edge", 16),
-            LockAttributionBudget("set_cell_invalidation", 300),
+        total=ObservedSpread(750, 924, 1148),
+        site_spreads=(
+            SiteSpread("other", ObservedSpread(750, 350, 574)),
+            SiteSpread("get_refresh", ObservedSpread(750, 32, 32)),
+            SiteSpread("publish", ObservedSpread(750, 271, 271)),
+            SiteSpread("dependency_edge", ObservedSpread(750, 16, 16)),
+            SiteSpread("set_cell_invalidation", ObservedSpread(750, 255, 255)),
         ),
     ),
     InstrumentationBudget(
         "thread_safe_contention_read_mostly_waiters_16",
-        max_lock_acquisitions=256,
-        site_budgets=(
-            LockAttributionBudget("get_refresh", 128),
-            LockAttributionBudget("publish", 64),
-            LockAttributionBudget("in_flight_wait", 96),
+        total=ObservedSpread(750, 72, 144),
+        site_spreads=(
+            SiteSpread("get_refresh", ObservedSpread(750, 2, 32)),
+            SiteSpread("publish", ObservedSpread(750, 17, 21)),
+            SiteSpread("in_flight_wait", ObservedSpread(750, 0, 54)),
         ),
     ),
     InstrumentationBudget(
         "thread_safe_contention_batched_write_bursts_16",
-        max_lock_acquisitions=950,
-        site_budgets=(
-            LockAttributionBudget("other", 800),
-            LockAttributionBudget("get_refresh", 128),
-            LockAttributionBudget("dependency_edge", 64),
-            LockAttributionBudget("set_cell_invalidation", 16),
-            LockAttributionBudget("publish", 64),
-            LockAttributionBudget("in_flight_wait", 64),
+        total=ObservedSpread(750, 713, 1915),
+        site_spreads=(
+            SiteSpread("other", ObservedSpread(750, 644, 1154)),
+            SiteSpread("get_refresh", ObservedSpread(750, 2, 38)),
+            SiteSpread("dependency_edge", ObservedSpread(750, 64, 64)),
+            SiteSpread("set_cell_invalidation", ObservedSpread(750, 1, 256)),
+            SiteSpread("publish", ObservedSpread(750, 2, 256)),
+            SiteSpread("in_flight_wait", ObservedSpread(750, 0, 250)),
         ),
     ),
     InstrumentationBudget(
         "thread_safe_effect_contention_queue_coalescing_16",
-        max_lock_acquisitions=2_600,
-        site_budgets=(
-            LockAttributionBudget("other", 900),
-            LockAttributionBudget("dependency_edge", 1_600),
-            LockAttributionBudget("set_cell_invalidation", 16),
-            LockAttributionBudget("get_refresh", 64),
-            LockAttributionBudget("publish", 0),
+        total=ObservedSpread(750, 720, 2025),
+        site_spreads=(
+            SiteSpread("other", ObservedSpread(750, 655, 1705)),
+            SiteSpread("dependency_edge", ObservedSpread(750, 64, 64)),
+            SiteSpread("set_cell_invalidation", ObservedSpread(750, 1, 256)),
+            SiteSpread("get_refresh", ObservedSpread(750, 0, 0)),
+            SiteSpread("publish", ObservedSpread(750, 0, 0)),
         ),
     ),
     InstrumentationBudget(
         "thread_safe_effect_contention_cleanup_execution_16",
-        max_lock_acquisitions=1_300,
-        site_budgets=(
-            LockAttributionBudget("other", 450),
-            LockAttributionBudget("dependency_edge", 700),
-            LockAttributionBudget("set_cell_invalidation", 256),
-            LockAttributionBudget("get_refresh", 0),
-            LockAttributionBudget("publish", 0),
+        total=ObservedSpread(750, 619, 1859),
+        site_spreads=(
+            SiteSpread("other", ObservedSpread(750, 332, 1572)),
+            SiteSpread("dependency_edge", ObservedSpread(750, 32, 32)),
+            SiteSpread("set_cell_invalidation", ObservedSpread(750, 255, 255)),
+            SiteSpread("get_refresh", ObservedSpread(750, 0, 0)),
+            SiteSpread("publish", ObservedSpread(750, 0, 0)),
         ),
     ),
     InstrumentationBudget(
         "thread_safe_effect_contention_batch_flush_16",
-        max_lock_acquisitions=1_500,
-        site_budgets=(
-            LockAttributionBudget("other", 1_300),
-            LockAttributionBudget("get_refresh", 32),
-            LockAttributionBudget("dependency_edge", 96),
-            LockAttributionBudget("set_cell_invalidation", 16),
-            LockAttributionBudget("publish", 32),
+        total=ObservedSpread(750, 1239, 2649),
+        site_spreads=(
+            SiteSpread("other", ObservedSpread(750, 1169, 2199)),
+            SiteSpread("get_refresh", ObservedSpread(750, 2, 2)),
+            SiteSpread("dependency_edge", ObservedSpread(750, 65, 65)),
+            SiteSpread("set_cell_invalidation", ObservedSpread(750, 1, 256)),
+            SiteSpread("publish", ObservedSpread(750, 2, 177)),
         ),
     ),
 )
@@ -616,6 +683,127 @@ def lock_attribution_by_site(profile: InstrumentationProfile) -> dict[str, int]:
     }
 
 
+def measure_budget_spread(samples: int, profile_output: Path) -> int:
+    """Rerun the instrumentation profile N times and print the measured spreads.
+
+    This is how the recorded numbers in REGRESSION_BUDGETS are produced. The
+    point is that no ceiling in this file is a guess: the sweep prints both a
+    per-counter table and a paste-ready REGRESSION_BUDGETS block, and reports
+    every counter whose observation fell OUTSIDE its recorded spread, which is
+    the signal that the recording needs refreshing.
+
+    Run it under the conditions the gate actually runs in. A sweep taken only on
+    an idle machine understates the spread, which is exactly how a 0.4 percent
+    headroom budget got written in the first place; the recorded numbers span
+    idle, loaded, and 2-core-pinned (`taskset -c 0,1`) runs.
+    """
+    observed: dict[tuple[str, str], list[int]] = {}
+    for index in range(samples):
+        run_instrumentation_profile(profile_output)
+        for profile in read_instrumentation_profiles(profile_output):
+            observed.setdefault((profile.profile, "lock_acquisitions"), []).append(
+                profile.lock_acquisitions
+            )
+            for attribution in profile.lock_attribution:
+                observed.setdefault(
+                    (profile.profile, attribution.site), []
+                ).append(attribution.lock_acquisitions)
+        print(f"  sampled {index + 1}/{samples}", flush=True)
+
+    drift: list[str] = []
+    print()
+    print(
+        f"{'profile / counter':78} {'recorded':>14} {'measured':>14} "
+        f"{'classification':>22} {'ceiling':>12}"
+    )
+    for budget in REGRESSION_BUDGETS:
+        for counter, spread in budget_counters(budget):
+            values = observed.get((budget.profile, counter))
+            if not values:
+                drift.append(f"{budget.profile} / {counter}: counter not emitted")
+                continue
+            measured = ObservedSpread(len(values), min(values), max(values))
+            ceiling = measured.ceiling
+            print(
+                f"{budget.profile + ' / ' + counter:78} "
+                f"{str(spread.minimum) + '-' + str(spread.maximum):>14} "
+                f"{str(measured.minimum) + '-' + str(measured.maximum):>14} "
+                f"{measured.classification:>22} "
+                f"{'not enforced' if ceiling is None else ceiling:>12}"
+            )
+            if measured.minimum < spread.minimum or measured.maximum > spread.maximum:
+                drift.append(
+                    f"{budget.profile} / {counter}: measured "
+                    f"{measured.minimum}-{measured.maximum} falls outside recorded "
+                    f"{spread.minimum}-{spread.maximum}"
+                )
+
+    print()
+    print("Paste-ready block (merge with the recorded spreads — widen, do not narrow):")
+    print("REGRESSION_BUDGETS: tuple[InstrumentationBudget, ...] = (")
+    for budget in REGRESSION_BUDGETS:
+        total = observed.get((budget.profile, "lock_acquisitions"), [])
+        print("    InstrumentationBudget(")
+        print(f'        "{budget.profile}",')
+        if total:
+            print(
+                f"        total=ObservedSpread({len(total)}, {min(total)}, {max(total)}),"
+            )
+        print("        site_spreads=(")
+        for site in budget.site_spreads:
+            values = observed.get((budget.profile, site.site), [])
+            if values:
+                print(
+                    f'            SiteSpread("{site.site}", '
+                    f"ObservedSpread({len(values)}, {min(values)}, {max(values)})),"
+                )
+        print("        ),")
+        print("    ),")
+    print(")")
+
+    if drift:
+        print()
+        print("recorded spread drift:", file=sys.stderr)
+        for item in drift:
+            print(f"- {item}", file=sys.stderr)
+        print(
+            "Fix: widen the recorded ObservedSpread values so the ceilings are "
+            "derived from what this machine actually observes.",
+            file=sys.stderr,
+        )
+        return EXIT_BUDGET_REGRESSION
+    print()
+    print(f"every counter stayed inside its recorded spread over {samples} run(s)")
+    return 0
+
+
+def budget_counters(
+    budget: InstrumentationBudget,
+) -> tuple[tuple[str, ObservedSpread], ...]:
+    """Every gated counter of a profile: the total, then each lock site."""
+    return (("lock_acquisitions", budget.total),) + tuple(
+        (site.site, site.spread) for site in budget.site_spreads
+    )
+
+
+def enforced_counter_count() -> int:
+    return sum(
+        1
+        for budget in REGRESSION_BUDGETS
+        for _, spread in budget_counters(budget)
+        if spread.ceiling is not None
+    )
+
+
+def observation_only_counter_count() -> int:
+    return sum(
+        1
+        for budget in REGRESSION_BUDGETS
+        for _, spread in budget_counters(budget)
+        if spread.ceiling is None
+    )
+
+
 def regression_budget_failures(
     profiles: list[InstrumentationProfile],
 ) -> list[str]:
@@ -628,25 +816,29 @@ def regression_budget_failures(
             failures.append(f"{budget.profile}: missing instrumentation profile")
             continue
 
-        if profile.lock_acquisitions > budget.max_lock_acquisitions:
-            failures.append(
-                "{profile}: lock_acquisitions {actual} > budget {budget}".format(
-                    profile=budget.profile,
-                    actual=profile.lock_acquisitions,
-                    budget=budget.max_lock_acquisitions,
-                )
-            )
-
         by_site = lock_attribution_by_site(profile)
-        for site_budget in budget.site_budgets:
-            actual = by_site.get(site_budget.site, 0)
-            if actual > site_budget.max_lock_acquisitions:
+        for counter, spread in budget_counters(budget):
+            ceiling = spread.ceiling
+            if ceiling is None:
+                # Scheduling-dominated: recorded and reported, never enforced.
+                continue
+            actual = (
+                profile.lock_acquisitions
+                if counter == "lock_acquisitions"
+                else by_site.get(counter, 0)
+            )
+            if actual > ceiling:
                 failures.append(
-                    "{profile}: {site} lock_acquisitions {actual} > budget {budget}".format(
+                    "{profile}: {counter} {actual} > {ceiling} "
+                    "({classification}; recorded {lo}-{hi} over {samples} runs)".format(
                         profile=budget.profile,
-                        site=site_budget.site,
+                        counter=counter,
                         actual=actual,
-                        budget=site_budget.max_lock_acquisitions,
+                        ceiling=ceiling,
+                        classification=spread.classification,
+                        lo=spread.minimum,
+                        hi=spread.maximum,
+                        samples=spread.samples,
                     )
                 )
 
@@ -778,27 +970,50 @@ def build_section(
         "",
         "Regression budgets enforced by `python3 scripts/update-benchmark-results.py --check`:",
         "",
-        "| Profile | Max lock acquisitions | Site lock budgets |",
-        "|---|---:|---|",
+        "Every ceiling is DERIVED from the recorded spread, never hand-typed; refresh",
+        "the spreads with `python3 scripts/update-benchmark-results.py --measure-budget-spread N`.",
+        "A counter with zero spread across idle, loaded and 2-core-pinned runs measures",
+        "work items rather than interleaving, so it is enforced EXACTLY. A counter whose",
+        "spread is under half its maximum gets headroom of one full observed range above",
+        "the observed maximum. A counter whose spread exceeds half its maximum is measuring",
+        "the scheduler, not the code: it is recorded as an observation and NOT enforced,",
+        "because a gate that reddens on noise trains everyone to ignore it.",
+        "",
+        "| Profile | Counter | Observed range | Samples | Classification | Enforced ceiling |",
+        "|---|---|---:|---:|---|---:|",
     ]
 
     for budget in REGRESSION_BUDGETS:
-        site_budgets = ", ".join(
-            f"{site.site}<={site.max_lock_acquisitions}"
-            for site in budget.site_budgets
-        )
-        lines.append(
-            "| {profile} | {max_locks} | {site_budgets} |".format(
-                profile=budget.profile,
-                max_locks=budget.max_lock_acquisitions,
-                site_budgets=site_budgets or "-",
+        for counter, spread in budget_counters(budget):
+            ceiling = spread.ceiling
+            lines.append(
+                "| {profile} | {counter} | {lo}-{hi} | {samples} | {classification} | {ceiling} |".format(
+                    profile=budget.profile,
+                    counter=counter,
+                    lo=spread.minimum,
+                    hi=spread.maximum,
+                    samples=spread.samples,
+                    classification=spread.classification,
+                    ceiling="not enforced" if ceiling is None else ceiling,
+                )
             )
-        )
 
     lines.extend(
         [
             "",
-            "Budgets use deterministic lock acquisition counts instead of elapsed wait/hold time.",
+            "Budgets use lock acquisition counts instead of elapsed wait/hold time. Those "
+            "counts are only deterministic for the {enforced_deterministic} counters "
+            "classified as such above; {observation_only} of {total} gated counters are "
+            "scheduling-dominated and carry no regression signal at all.".format(
+                enforced_deterministic=sum(
+                    1
+                    for budget in REGRESSION_BUDGETS
+                    for _, spread in budget_counters(budget)
+                    if spread.classification == CLASS_DETERMINISTIC
+                ),
+                observation_only=observation_only_counter_count(),
+                total=enforced_counter_count() + observation_only_counter_count(),
+            ),
             "",
             "Synchronization strategy adoption gate:",
             "",
@@ -1248,14 +1463,24 @@ def main() -> int:
     parser.add_argument(
         "--refresh-profile",
         action="store_true",
-        help="regenerate the deterministic instrumentation profile before checking",
+        help="regenerate the instrumentation profile before checking",
     )
     parser.add_argument(
         "--budgets-only",
         action="store_true",
         help=(
-            "enforce evidence and deterministic regression budgets without "
-            "comparing machine-dependent BENCHMARKS.md timings"
+            "enforce evidence and regression budgets without comparing "
+            "machine-dependent BENCHMARKS.md timings"
+        ),
+    )
+    parser.add_argument(
+        "--measure-budget-spread",
+        type=int,
+        metavar="N",
+        help=(
+            "rerun the instrumentation profile N times and print the measured "
+            "per-counter spread, the derived ceilings, and any drift from the "
+            "recorded spreads (how REGRESSION_BUDGETS is refreshed)"
         ),
     )
     parser.add_argument(
@@ -1272,6 +1497,10 @@ def main() -> int:
         parser.error("--quick requires --record-evidence")
     if args.record_evidence and args.check:
         parser.error("--record-evidence and --check are separate steps")
+    if args.measure_budget_spread is not None:
+        if args.measure_budget_spread < 1:
+            parser.error("--measure-budget-spread requires a positive sample count")
+        return measure_budget_spread(args.measure_budget_spread, args.profile_output)
 
     if args.record_evidence:
         # Generate, then record what was generated FROM. The manifest is written
@@ -1351,6 +1580,14 @@ def main() -> int:
             f"recorded {manifest.get('recorded_at', 'unknown')} "
             f"(mode={manifest.get('mode', 'unknown')}, "
             f"{manifest['source_fingerprint'][:19] if manifest.get('source_fingerprint') else 'unknown'})"
+        )
+        # Say out loud how much was NOT gated. A gate that reports "green"
+        # without naming its own blind spots is how a scheduling-dominated
+        # counter gets read as covered (#lzbenchbudgetheadroom).
+        print(
+            f"{enforced_counter_count()} counter(s) enforced; "
+            f"{observation_only_counter_count()} scheduling-dominated counter(s) "
+            "recorded as observations only and NOT enforced"
         )
         return 0
 

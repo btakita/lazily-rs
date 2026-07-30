@@ -26,19 +26,70 @@ python3 scripts/update-benchmark-results.py --no-run
 
 Regression budgets enforced by `python3 scripts/update-benchmark-results.py --check`:
 
-| Profile | Max lock acquisitions | Site lock budgets |
-|---|---:|---|
-| thread_safe_set_cell_invalidation_independent_slot_contention_16 | 700 | set_cell_invalidation<=260, dependency_edge<=16, get_refresh<=32, publish<=32 |
-| thread_safe_set_cell_invalidation_batched_write_bursts_16 | 900 | other<=800, set_cell_invalidation<=16, dependency_edge<=64, get_refresh<=2, publish<=2 |
-| thread_safe_contention_same_slot_write_read_16 | 1400 | get_refresh<=160, publish<=256, in_flight_wait<=700, set_cell_invalidation<=260 |
-| thread_safe_contention_independent_slots_16 | 1100 | other<=450, get_refresh<=64, publish<=320, dependency_edge<=16, set_cell_invalidation<=300 |
-| thread_safe_contention_read_mostly_waiters_16 | 256 | get_refresh<=128, publish<=64, in_flight_wait<=96 |
-| thread_safe_contention_batched_write_bursts_16 | 950 | other<=800, get_refresh<=128, dependency_edge<=64, set_cell_invalidation<=16, publish<=64, in_flight_wait<=64 |
-| thread_safe_effect_contention_queue_coalescing_16 | 2600 | other<=900, dependency_edge<=1600, set_cell_invalidation<=16, get_refresh<=64, publish<=0 |
-| thread_safe_effect_contention_cleanup_execution_16 | 1300 | other<=450, dependency_edge<=700, set_cell_invalidation<=256, get_refresh<=0, publish<=0 |
-| thread_safe_effect_contention_batch_flush_16 | 1500 | other<=1300, get_refresh<=32, dependency_edge<=96, set_cell_invalidation<=16, publish<=32 |
+Every ceiling is DERIVED from the recorded spread, never hand-typed; refresh
+the spreads with `python3 scripts/update-benchmark-results.py --measure-budget-spread N`.
+A counter with zero spread across idle, loaded and 2-core-pinned runs measures
+work items rather than interleaving, so it is enforced EXACTLY. A counter whose
+spread is under half its maximum gets headroom of one full observed range above
+the observed maximum. A counter whose spread exceeds half its maximum is measuring
+the scheduler, not the code: it is recorded as an observation and NOT enforced,
+because a gate that reddens on noise trains everyone to ignore it.
 
-Budgets use deterministic lock acquisition counts instead of elapsed wait/hold time.
+| Profile | Counter | Observed range | Samples | Classification | Enforced ceiling |
+|---|---|---:|---:|---|---:|
+| thread_safe_set_cell_invalidation_independent_slot_contention_16 | lock_acquisitions | 654-893 | 750 | scheduling_sensitive | 1132 |
+| thread_safe_set_cell_invalidation_independent_slot_contention_16 | set_cell_invalidation | 255-255 | 750 | deterministic | 255 |
+| thread_safe_set_cell_invalidation_independent_slot_contention_16 | dependency_edge | 16-16 | 750 | deterministic | 16 |
+| thread_safe_set_cell_invalidation_independent_slot_contention_16 | get_refresh | 32-32 | 750 | deterministic | 32 |
+| thread_safe_set_cell_invalidation_independent_slot_contention_16 | publish | 16-16 | 750 | deterministic | 16 |
+| thread_safe_set_cell_invalidation_batched_write_bursts_16 | lock_acquisitions | 712-1477 | 750 | scheduling_dominated | not enforced |
+| thread_safe_set_cell_invalidation_batched_write_bursts_16 | other | 644-1154 | 750 | scheduling_sensitive | 1664 |
+| thread_safe_set_cell_invalidation_batched_write_bursts_16 | set_cell_invalidation | 1-256 | 750 | scheduling_dominated | not enforced |
+| thread_safe_set_cell_invalidation_batched_write_bursts_16 | dependency_edge | 64-64 | 750 | deterministic | 64 |
+| thread_safe_set_cell_invalidation_batched_write_bursts_16 | get_refresh | 2-2 | 750 | deterministic | 2 |
+| thread_safe_set_cell_invalidation_batched_write_bursts_16 | publish | 1-1 | 750 | deterministic | 1 |
+| thread_safe_contention_same_slot_write_read_16 | lock_acquisitions | 876-1420 | 750 | scheduling_sensitive | 1964 |
+| thread_safe_contention_same_slot_write_read_16 | get_refresh | 2-125 | 750 | scheduling_dominated | not enforced |
+| thread_safe_contention_same_slot_write_read_16 | publish | 186-257 | 750 | scheduling_sensitive | 328 |
+| thread_safe_contention_same_slot_write_read_16 | in_flight_wait | 0-367 | 750 | scheduling_dominated | not enforced |
+| thread_safe_contention_same_slot_write_read_16 | set_cell_invalidation | 256-256 | 750 | deterministic | 256 |
+| thread_safe_contention_independent_slots_16 | lock_acquisitions | 924-1148 | 750 | scheduling_sensitive | 1372 |
+| thread_safe_contention_independent_slots_16 | other | 350-574 | 750 | scheduling_sensitive | 798 |
+| thread_safe_contention_independent_slots_16 | get_refresh | 32-32 | 750 | deterministic | 32 |
+| thread_safe_contention_independent_slots_16 | publish | 271-271 | 750 | deterministic | 271 |
+| thread_safe_contention_independent_slots_16 | dependency_edge | 16-16 | 750 | deterministic | 16 |
+| thread_safe_contention_independent_slots_16 | set_cell_invalidation | 255-255 | 750 | deterministic | 255 |
+| thread_safe_contention_read_mostly_waiters_16 | lock_acquisitions | 72-144 | 750 | scheduling_sensitive | 216 |
+| thread_safe_contention_read_mostly_waiters_16 | get_refresh | 2-32 | 750 | scheduling_dominated | not enforced |
+| thread_safe_contention_read_mostly_waiters_16 | publish | 17-21 | 750 | scheduling_sensitive | 25 |
+| thread_safe_contention_read_mostly_waiters_16 | in_flight_wait | 0-54 | 750 | scheduling_dominated | not enforced |
+| thread_safe_contention_batched_write_bursts_16 | lock_acquisitions | 713-1915 | 750 | scheduling_dominated | not enforced |
+| thread_safe_contention_batched_write_bursts_16 | other | 644-1154 | 750 | scheduling_sensitive | 1664 |
+| thread_safe_contention_batched_write_bursts_16 | get_refresh | 2-38 | 750 | scheduling_dominated | not enforced |
+| thread_safe_contention_batched_write_bursts_16 | dependency_edge | 64-64 | 750 | deterministic | 64 |
+| thread_safe_contention_batched_write_bursts_16 | set_cell_invalidation | 1-256 | 750 | scheduling_dominated | not enforced |
+| thread_safe_contention_batched_write_bursts_16 | publish | 2-256 | 750 | scheduling_dominated | not enforced |
+| thread_safe_contention_batched_write_bursts_16 | in_flight_wait | 0-250 | 750 | scheduling_dominated | not enforced |
+| thread_safe_effect_contention_queue_coalescing_16 | lock_acquisitions | 720-2025 | 750 | scheduling_dominated | not enforced |
+| thread_safe_effect_contention_queue_coalescing_16 | other | 655-1705 | 750 | scheduling_dominated | not enforced |
+| thread_safe_effect_contention_queue_coalescing_16 | dependency_edge | 64-64 | 750 | deterministic | 64 |
+| thread_safe_effect_contention_queue_coalescing_16 | set_cell_invalidation | 1-256 | 750 | scheduling_dominated | not enforced |
+| thread_safe_effect_contention_queue_coalescing_16 | get_refresh | 0-0 | 750 | deterministic | 0 |
+| thread_safe_effect_contention_queue_coalescing_16 | publish | 0-0 | 750 | deterministic | 0 |
+| thread_safe_effect_contention_cleanup_execution_16 | lock_acquisitions | 619-1859 | 750 | scheduling_dominated | not enforced |
+| thread_safe_effect_contention_cleanup_execution_16 | other | 332-1572 | 750 | scheduling_dominated | not enforced |
+| thread_safe_effect_contention_cleanup_execution_16 | dependency_edge | 32-32 | 750 | deterministic | 32 |
+| thread_safe_effect_contention_cleanup_execution_16 | set_cell_invalidation | 255-255 | 750 | deterministic | 255 |
+| thread_safe_effect_contention_cleanup_execution_16 | get_refresh | 0-0 | 750 | deterministic | 0 |
+| thread_safe_effect_contention_cleanup_execution_16 | publish | 0-0 | 750 | deterministic | 0 |
+| thread_safe_effect_contention_batch_flush_16 | lock_acquisitions | 1239-2649 | 750 | scheduling_dominated | not enforced |
+| thread_safe_effect_contention_batch_flush_16 | other | 1169-2199 | 750 | scheduling_sensitive | 3229 |
+| thread_safe_effect_contention_batch_flush_16 | get_refresh | 2-2 | 750 | deterministic | 2 |
+| thread_safe_effect_contention_batch_flush_16 | dependency_edge | 65-65 | 750 | deterministic | 65 |
+| thread_safe_effect_contention_batch_flush_16 | set_cell_invalidation | 1-256 | 750 | scheduling_dominated | not enforced |
+| thread_safe_effect_contention_batch_flush_16 | publish | 2-177 | 750 | scheduling_dominated | not enforced |
+
+Budgets use lock acquisition counts instead of elapsed wait/hold time. Those counts are only deterministic for the 22 counters classified as such above; 19 of 51 gated counters are scheduling-dominated and carry no regression signal at all.
 
 Synchronization strategy adoption gate:
 

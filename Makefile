@@ -72,7 +72,8 @@ test-ingress-family-conformance \
 	benchmark-check \
 	benchmark-check-strict \
 	benchmark-update \
-	instrumentation-profile
+	instrumentation-profile \
+	benchmark-spread
 
 	check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-reliable-sync-conformance test-durable-outbox test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-ingress-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-evidence benchmark-check conformance-coverage
 
@@ -309,10 +310,10 @@ test-websocket:
 
 # Produce the evidence the budget gate is a gate on (#vnmr). Quick mode runs the
 # benchmark groups the budgets and required latency rows actually read under
-# Criterion's reduced-sample mode, then the deterministic instrumentation
-# profile, then records a content fingerprint of every source the measurement
-# depends on. Reduced precision, but a REAL measurement — the same code paths run
-# and the same counters come out. ~1 min wall clock on a warm target dir.
+# Criterion's reduced-sample mode, then the instrumentation profile, then records
+# a content fingerprint of every source the measurement depends on. Reduced
+# precision, but a REAL measurement — the same code paths run and the same
+# counters come out. ~1 min wall clock on a warm target dir.
 benchmark-evidence:
 >$(PYTHON) scripts/update-benchmark-results.py --record-evidence --quick
 
@@ -333,10 +334,18 @@ benchmark-evidence-record:
 # regenerates. A green run here means the budgets were MEASURED against this
 # checkout, which is the only thing a green gate is allowed to mean (#vnmr).
 #
-# `--budgets-only` scopes it to the deterministic instrumentation counters and
-# the required latency evidence, and skips the BENCHMARKS.md wall-clock diff:
-# those timings are machine-specific, so comparing them would make this gate red
-# on every machine except whichever one last recorded the table.
+# `--budgets-only` scopes it to the instrumentation counters and the required
+# latency evidence, and skips the BENCHMARKS.md wall-clock diff: those timings
+# are machine-specific, so comparing them would make this gate red on every
+# machine except whichever one last recorded the table.
+#
+# Not every instrumentation counter is deterministic (#lzbenchbudgetheadroom).
+# Each one carries a measured spread, and its ceiling is derived from that
+# spread: zero-spread counters are enforced exactly, moderately noisy ones get
+# headroom proportional to their own variance, and counters whose spread exceeds
+# half their magnitude are recorded but NOT enforced, because no ceiling over
+# them can tell a regression from a busy machine. The gate prints how many
+# counters fall in that last group, so a green run never reads as full coverage.
 benchmark-check:
 >$(PYTHON) scripts/update-benchmark-results.py --check --budgets-only
 
@@ -351,6 +360,19 @@ benchmark-update:
 
 instrumentation-profile:
 >$(CARGO) run --example instrumentation_profile --features "instrumentation thread-safe" --quiet
+
+# Re-measure the spreads every budget ceiling is derived from
+# (#lzbenchbudgetheadroom). Prints a per-counter table, the derived ceilings, a
+# paste-ready REGRESSION_BUDGETS block, and any counter that fell OUTSIDE its
+# recorded spread — which is the signal the recording needs widening.
+#
+# Take the sweep under the conditions the gate actually runs in, not just an idle
+# machine: a sweep on a quiet box is how a 0.4 percent headroom budget got
+# written in the first place. The recorded numbers span idle, loaded, and
+# 2-core-pinned (`taskset -c 0,1 make benchmark-spread`) runs.
+BUDGET_SPREAD_SAMPLES ?= 200
+benchmark-spread:
+>$(PYTHON) scripts/update-benchmark-results.py --measure-budget-spread $(BUDGET_SPREAD_SAMPLES)
 
 # Truncate the manifest before the suite. Run FIRST by `check`; every recorded
 # read appends, so without this the file would union across runs and a fixture

@@ -225,6 +225,7 @@ make test-queue-conformance   # Replay ../lazily-spec/conformance/collections/qu
 make benchmark-evidence # Quick gating measurement (~1 min): reduced-sample Criterion over the budgeted groups + instrumentation profile + source fingerprint
 make benchmark-evidence-full # Full-fidelity measurement (tens of minutes); backs BENCHMARKS.md wall-clock numbers
 make benchmark-check # Enforce instrumentation budgets against that evidence
+make benchmark-spread # Re-measure the per-counter spreads every budget ceiling is derived from
 make benchmark-update # Run python3 scripts/update-benchmark-results.py to regenerate BENCHMARKS.md
 make instrumentation-profile # Run examples/instrumentation_profile.rs with --features instrumentation
 ```
@@ -247,6 +248,38 @@ manifests — not an mtime, because `git checkout`, `touch`, and restoring a bac
 all move mtimes without any relationship to whether the code changed. Regenerate
 with `make benchmark-evidence`; deleting the evidence is not a way to turn a red
 budget green.
+
+### Budget ceilings are derived from a measured spread, never typed
+
+Not every instrumentation counter is deterministic, and the gate used to assume
+they all were (`#lzbenchbudgetheadroom`). It had the tradeoff exactly backwards:
+loose where the counter never varies (`dependency_edge <= 1600` for a counter
+that is always 64) and tight where the counter is pure scheduling noise
+(`set_cell_invalidation <= 16` for a counter measured from 1 to 256). The second
+half is why it flaked on a busy machine, and a gate that reddens on noise trains
+everyone to waive the next real regression as a flake.
+
+Each counter now carries an `ObservedSpread` from a real sweep, and its ceiling
+is derived from that spread:
+
+| Spread | Class | Ceiling |
+| --- | --- | --- |
+| zero across idle/loaded/2-core runs | `deterministic` | the observed value, EXACTLY |
+| at most half the observed maximum | `scheduling_sensitive` | observed max + one full observed range |
+| more than half the observed maximum | `scheduling_dominated` | none — recorded, reported, NOT enforced |
+
+22 of the 51 gated counters are deterministic: they count work items, not
+interleavings, and every one held the identical constant on 2 cores and on 32.
+Those are where the regression signal lives, and they are enforced with no slack.
+19 are scheduling-dominated and carry no signal at all; `benchmark-check` prints
+how many it did not enforce, so a green run is never mistaken for full coverage.
+
+Refresh the recording with `make benchmark-spread` (`BUDGET_SPREAD_SAMPLES`
+controls the sample count). It prints the measured table, the derived ceilings, a
+paste-ready `REGRESSION_BUDGETS` block, and any counter that fell outside its
+recorded spread. Take the sweep under the conditions the gate runs in — idle,
+loaded, and `taskset -c 0,1` — because a sweep on a quiet machine is how a
+0.4 percent headroom budget got written in the first place.
 
 ## Benchmark Skill
 

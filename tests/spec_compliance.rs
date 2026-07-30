@@ -879,8 +879,22 @@ mod benchmark_report_harness {
         assert!(section.contains("Duplicate recomputes"));
         assert!(section.contains("ThreadSafe lock attribution"));
         assert!(section.contains("Regression budgets enforced by"));
-        assert!(section.contains("Max lock acquisitions"));
-        assert!(section.contains("Budgets use deterministic lock acquisition counts"));
+        // #lzbenchbudgetheadroom: the budget table publishes the evidence each
+        // ceiling is derived from — the observed range, the sample count, and
+        // the classification — rather than a bare hand-typed maximum. A reader
+        // who cannot see the spread cannot tell an enforced ceiling from one
+        // that only ever fires on a busy machine.
+        assert!(section.contains(
+            "| Profile | Counter | Observed range | Samples | Classification | Enforced ceiling |"
+        ));
+        assert!(section.contains("deterministic"));
+        assert!(section.contains("scheduling_sensitive"));
+        assert!(
+            section.contains("not enforced"),
+            "the table must name the counters it does NOT enforce; an unnamed \
+             blind spot reads as coverage"
+        );
+        assert!(section.contains("Budgets use lock acquisition counts"));
         assert!(section.contains("Synchronization strategy adoption gate"));
         assert!(section.contains("Required p50/p95 latency evidence"));
         assert!(section.contains("Required latency evidence uses Criterion sample"));

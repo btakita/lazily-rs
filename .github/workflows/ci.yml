@@ -281,8 +281,11 @@ jobs:
   #
   # `benchmark-evidence` is Criterion's reduced-sample mode over the groups the
   # budgets and required-latency rows read. That is lower precision, not a stub —
-  # the same benchmarks execute and the same deterministic instrumentation
-  # counters come out, and those counters are what the budgets are expressed in.
+  # the same benchmarks execute and the same instrumentation counters come out,
+  # and those counters are what the budgets are expressed in. Each counter's
+  # ceiling is derived from its own measured spread, and the scheduling-dominated
+  # ones are recorded rather than enforced (#lzbenchbudgetheadroom), so this job
+  # does not redden on runner scheduling.
   # Full-fidelity wall-clock numbers stay with the scheduled regressions workflow
   # and BENCHMARKS.md, where precision is the point.
   benchmark-budgets:
