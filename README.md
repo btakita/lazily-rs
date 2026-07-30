@@ -659,6 +659,37 @@ legacy descriptors validate unchanged. New backends (RDMA/verbs, CUDA IPC) plug
 in by implementing the `BlobBackend` trait and adding a discriminator value — no
 transport or codec change.
 
+## The lazily family
+
+lazily is one reactive model implemented across many languages — the same cell
+kernel, the same keyed collections and CRDTs, and the same wire protocol — so
+peers written in different languages talk to each other without a translation
+layer.
+
+- [`lazily-spec`](https://github.com/lazily-hub/lazily-spec) — the
+  language-agnostic wire protocol, the cross-language feature matrix, and the
+  conformance corpus every binding replays.
+- [`lazily-formal`](https://github.com/lazily-hub/lazily-formal) — the Lean 4
+  formal model every binding inherits its proofs from.
+
+| Repo | Language |
+|---|---|
+| **`lazily-rs`** | Rust — the reference implementation (you are here) |
+| [`lazily-py`](https://github.com/lazily-hub/lazily-py) | Python |
+| [`lazily-go`](https://github.com/lazily-hub/lazily-go) | Go |
+| [`lazily-kt`](https://github.com/lazily-hub/lazily-kt) | Kotlin / JVM |
+| [`lazily-js`](https://github.com/lazily-hub/lazily-js) | JavaScript / TypeScript |
+| [`lazily-cs`](https://github.com/lazily-hub/lazily-cs) | C# / .NET |
+| [`lazily-cpp`](https://github.com/lazily-hub/lazily-cpp) | C++ |
+| [`lazily-zig`](https://github.com/lazily-hub/lazily-zig) | Zig |
+| [`lazily-dart`](https://github.com/lazily-hub/lazily-dart) | Dart / Flutter |
+| [`lazily-react`](https://github.com/lazily-hub/lazily-react) | React / Preact bindings layered over `lazily-js` (not a separate language binding) |
+
+Per-binding parity, with per-cell notes and platform carve-outs, lives in
+[`lazily-spec` § Cross-Language Coverage](https://github.com/lazily-hub/lazily-spec/blob/main/docs/coverage.md)
+— it is generated from `coverage.json`, so it does not rot the way a hand-copied
+table would.
+
 ## Related
 
 - [lazily-spec](https://github.com/lazily-hub/lazily-spec) — language-agnostic wire protocol + conformance fixtures shared by every binding
