@@ -15,6 +15,34 @@ jobs:
     name: Rust
     runs-on: ubuntu-latest
 
+    # Runtime conformance evidence (#lzguardsnotinci).
+    #
+    # Four guards stand over the conformance corpus, and they do NOT all execute
+    # the same way:
+    #
+    #   1. fixture manifest / coverage   scripts/check-conformance-coverage.sh
+    #   2. unconsumed assertion key      tests/common/expect.rs, panics on drop
+    #   3. unasserted assertion key      tests/common/expect.rs, panics on drop
+    #   4. scenario replay ledger        scripts/check-conformance-coverage.sh
+    #
+    # Rungs 2 and 3 live INSIDE the test binaries, so any `cargo test` step
+    # enforces them for the runners it happens to compile. Rungs 1 and 4 are a
+    # separate script step that only `make check` used to invoke, so CI — which
+    # runs cargo directly — enforced neither. That is the silent half: a fixture
+    # nobody replays and a scenario nobody replays both went green here while
+    # going red locally.
+    #
+    # Both script rungs read a RUNTIME evidence file appended to by every test
+    # binary, so the paths must be ABSOLUTE (test binaries run from varying
+    # working directories) and exported to every step, exactly as the Makefile
+    # does. Unset means the recorder is a no-op and the evidence file is never
+    # written — and a guard whose evidence is absent must fail rather than pass
+    # vacuously, which is why the script treats an absent or empty file as a
+    # failure rather than as "nothing was read".
+    env:
+      LAZILY_CONFORMANCE_MANIFEST: ${{ github.workspace }}/build/conformance-fixtures-loaded.txt
+      LAZILY_CONFORMANCE_SCENARIOS: ${{ github.workspace }}/build/conformance-scenarios-replayed.txt
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,6 +67,17 @@ jobs:
       # (#lzspecconf).
       - name: Fetch canonical lazily-spec conformance fixtures (#lzspecconf)
         run: git clone --depth 1 https://github.com/lazily-hub/lazily-spec.git ../lazily-spec
+
+      # Truncate ONCE, before the first test step (#lzguardsnotinci). Every test
+      # binary APPENDS its share, so the files have to be reset here and nowhere
+      # else — this is `conformance-manifest-reset`, which `make check` runs
+      # first for the same reason.
+      - name: Reset the runtime conformance evidence (#lzguardsnotinci)
+        run: |
+          mkdir -p "$(dirname "$LAZILY_CONFORMANCE_MANIFEST")"
+          : > "$LAZILY_CONFORMANCE_MANIFEST"
+          mkdir -p "$(dirname "$LAZILY_CONFORMANCE_SCENARIOS")"
+          : > "$LAZILY_CONFORMANCE_SCENARIOS"
 
       - name: Test default features
         run: cargo +stable test --locked
@@ -66,6 +105,33 @@ jobs:
 
       - name: Test WebSocket DataChannel backend (#akp3)
         run: cargo +stable test --locked --features websocket
+
+      # Full WebRTC handshake driven THROUGH SignalingClient. Needs BOTH feature
+      # trees, so neither the signaling-client step nor the webrtc-str0m step
+      # above compiles this test binary.
+      - name: Test WebRTC handshake over signaling
+        run: cargo +stable test --locked --features "signaling-client webrtc-str0m" --test webrtc_signaling
+
+      # FFI / IPC codec matrix (#lzguardsnotinci). Four invocations, not one: the
+      # JSON and binary codecs are separate feature trees over the SAME test
+      # binaries, and `make check` runs all four. CI ran none of them, so the IPC
+      # binary codec had no gate here at all.
+      - name: Test FFI surface (JSON codec)
+        run: cargo +stable test --locked --features ffi --test ffi
+
+      - name: Test FFI surface (binary codec)
+        run: cargo +stable test --locked --features "ffi ipc-binary" --test ffi
+
+      - name: Test IPC transport (JSON codec)
+        run: cargo +stable test --locked --features ffi --test ipc
+
+      - name: Test IPC transport (binary codec)
+        run: cargo +stable test --locked --features ipc-binary --test ipc
+
+      # Cross-process zero-copy transport: POSIX shm_open + mmap, plus the
+      # fork() cross-process smoke. Linux-only, which ubuntu-latest is.
+      - name: Test zero-copy shm transport
+        run: "cargo +stable test --locked --features ipc,shm --lib transport::"
 
       - name: Test async resolve-loop windows (#k03k)
         run: cargo +stable test --locked --features "async instrumentation" --test async_resolve_loop
@@ -128,8 +194,79 @@ jobs:
           test -f ../lazily-spec/conformance/collections/seqcrdt_convergence.json || { echo "::error::seqcrdt_convergence.json missing — seqcrdt_conformance.rs cannot run"; exit 1; }
           cargo +stable test --locked --features distributed --test seqcrdt_conformance
 
+      # The conformance runners `make check` names explicitly and CI did not run
+      # at all (#lzguardsnotinci). Each one is the only executor of part of the
+      # canonical corpus, so with these missing the fixture manifest can never be
+      # complete and the coverage guard below could not have been switched on.
+      #
+      # The feature sets are not decoration. Several of these test binaries
+      # compile to "running 0 tests" — exit 0, green tick, nothing asserted —
+      # under any narrower feature set, which is the exact failure the guards
+      # exist to reject.
+      - name: Test reliable-sync conformance against canonical spec fixtures
+        run: |
+          test -d ../lazily-spec/conformance/reliable-sync || { echo "::error::../lazily-spec/conformance/reliable-sync missing — reliable_sync_conformance.rs cannot run"; exit 1; }
+          cargo +stable test --locked --features ipc,ipc-msgpack --test reliable_sync_conformance
+          cargo +stable test --locked --features ipc,ipc-msgpack --lib reliable_sync::
+
+      # TWO invocations: the fixture's four scenarios are not all expressible
+      # against one backend — "stale handle cannot regress serialized cursor" is
+      # a claim about two handles over ONE serialized store, which the by-value
+      # in-memory adapter cannot hold. Without the second line that scenario is
+      # never replayed while the fixture still counts as covered, which is
+      # exactly the accounting gap the scenario ledger closes.
+      - name: Test durable outbox store protocol against canonical spec fixtures
+        run: |
+          cargo +stable test --locked --features ipc --test durable_outbox
+          cargo +stable test --locked --features durable-sqlite --test durable_outbox
+
+      # All three map flavors. Under anything narrower than --all-features this
+      # binary reports "running 0 tests" and exits 0.
+      - name: Test keyed collections family conformance across all three flavors
+        run: cargo +stable test --locked --all-features --test collections_family_conformance
+
+      - name: Test queue family conformance across all three flavors
+        run: cargo +stable test --locked --features "thread-safe async" --test queue_family_conformance
+
+      - name: Test ingress family conformance across all three flavors
+        run: |
+          test -d ../lazily-spec/conformance/ingress || { echo "::error::../lazily-spec/conformance/ingress missing — ingress_family_conformance.rs cannot run"; exit 1; }
+          cargo +stable test --locked --features "thread-safe async serde" --test ingress_family_conformance
+
+      - name: Test reactive queue conformance against canonical spec fixtures
+        run: cargo +stable test --locked --features serde --test queue_conformance
+
+      # `crdt_tree_laws` is named here because no other target enables
+      # `lossless-tree`: without this line the whole file compiles to nothing and
+      # its replay of crdt-tree/algebra.json never happens.
+      - name: Test lossless-tree CRDT conformance against canonical spec fixtures
+        run: |
+          test -d ../lazily-spec/conformance/lossless-tree || { echo "::error::../lazily-spec/conformance/lossless-tree missing — lossless_tree_conformance.rs cannot run"; exit 1; }
+          cargo +stable test --locked --features "lossless-tree serde" --test lossless_tree_conformance --test lossless_tree_proptest --test lossless_tree_schema --test crdt_tree_laws
+
+      - name: Test statechart conformance against canonical spec fixtures
+        run: cargo +stable test --locked --features statechart-json --test statechart_conformance
+
       - name: Test loom model
         run: cargo +stable test --locked --features loom --test thread_safe_loom
+
+      # Rungs 1 and 4 of the conformance ladder (#lzguardsnotinci). Rungs 2 and 3
+      # live inside the test binaries above and were already enforced here; these
+      # two are a script step, so before this they ran only under `make check` and
+      # CI enforced neither.
+      #
+      # The script itself SKIPs when the corpus is absent, so the corpus is
+      # asserted here rather than trusted — a guard that exits 0 because its input
+      # vanished is the vacuous green the whole ladder exists to reject. Same for
+      # the evidence files: the script fails on an absent or empty manifest or
+      # ledger, and the assertions below name which of the two is missing before
+      # it has to.
+      - name: Conformance coverage + scenario replay ledger (#lzguardsnotinci)
+        run: |
+          test -d ../lazily-spec/conformance || { echo "::error::../lazily-spec/conformance missing — check-conformance-coverage.sh would SKIP and exit 0"; exit 1; }
+          test -s "$LAZILY_CONFORMANCE_MANIFEST" || { echo "::error::fixture manifest $LAZILY_CONFORMANCE_MANIFEST is absent or empty — the recorder never attached, so coverage cannot be computed"; exit 1; }
+          test -s "$LAZILY_CONFORMANCE_SCENARIOS" || { echo "::error::scenario ledger $LAZILY_CONFORMANCE_SCENARIOS is absent or empty — the recorder never attached, so scenario coverage cannot be computed"; exit 1; }
+          ./scripts/check-conformance-coverage.sh
 
   # The budget gate (#vnmr). `make benchmark-check` has no skip: absent evidence
   # exits 2 and evidence measuring a different source tree exits 3. So CI has to
