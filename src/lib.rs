@@ -73,6 +73,8 @@ mod source_tree;
 #[cfg(audit_probe)]
 pub use context::audit_probe;
 #[cfg(feature = "async")]
+mod async_ingress;
+#[cfg(feature = "async")]
 mod async_queue;
 #[cfg(feature = "async")]
 mod async_topic;
@@ -90,6 +92,8 @@ mod distributed;
 mod effect;
 #[cfg(feature = "ffi")]
 pub mod ffi;
+mod ingress;
+mod ingress_core;
 #[cfg(feature = "instrumentation")]
 mod instrumentation;
 #[cfg(feature = "ipc")]
@@ -132,6 +136,8 @@ mod text_crdt;
 #[cfg(feature = "thread-safe")]
 mod thread_safe;
 #[cfg(feature = "thread-safe")]
+mod thread_safe_ingress;
+#[cfg(feature = "thread-safe")]
 mod thread_safe_queue;
 #[cfg(feature = "thread-safe")]
 mod thread_safe_reactive_family;
@@ -165,6 +171,8 @@ pub use async_context::{
     AsyncEffectHandle, AsyncSignalHandle, AsyncSlotHandle, AsyncSlotState, AsyncSlotStateView,
     AsyncSource, AsyncTeardownScope,
 };
+#[cfg(feature = "async")]
+pub use async_ingress::AsyncIngressCell;
 #[cfg(feature = "async")]
 pub use async_queue::{AsyncQueueCell, AsyncQueueReaderHandles};
 #[cfg(feature = "async")]
@@ -229,6 +237,14 @@ pub use ffi::{
     lazily_ffi_channel_recv_msgpack, lazily_ffi_channel_send_msgpack,
     lazily_ffi_ipc_message_clone_msgpack, lazily_ffi_ipc_message_kind_msgpack,
     lazily_ffi_ipc_message_validate_msgpack,
+};
+pub use ingress::IngressCell;
+pub use ingress_core::{
+    InProcIngress, IngressAdmission, IngressAuthority, IngressChange, IngressConfigError,
+    IngressDropReason, IngressEnvelope, IngressError, IngressLifecycle, IngressPolicy,
+    IngressReadiness, IngressReceipt, IngressReceiptChannel, IngressReceiptOutcome, IngressRetry,
+    IngressSchedule, IngressScopeChange, IngressTransport, IngressTransportKind, ReplayRequest,
+    ScopeView,
 };
 #[cfg(feature = "instrumentation")]
 pub use instrumentation::{
@@ -353,6 +369,8 @@ pub use thread_safe::{
     ReadStrategy, ThreadSafeContext, ThreadSafeEffectCallbackResult, ThreadSafeSignalHandle,
     ThreadSafeTeardownScope,
 };
+#[cfg(feature = "thread-safe")]
+pub use thread_safe_ingress::ThreadSafeIngressCell;
 #[cfg(feature = "thread-safe")]
 pub use thread_safe_queue::ThreadSafeQueueCell;
 #[cfg(feature = "thread-safe")]

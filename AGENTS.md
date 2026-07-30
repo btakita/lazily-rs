@@ -68,11 +68,44 @@ this repo.
   needing a settle step: **nothing in the queue family is async-coloured**, and
   the work queue's clock stays a caller argument so lease expiry is deterministic
   and fixture-replayable. Multi-root invalidation via `AsyncContext::clear_slots`
+- `src/ingress_core.rs` — the graph-agnostic admission algebra behind every
+  ingress flavor (`#designimplementtransport`), the same split `topic_core.rs`
+  makes for the broadcast family. Keyed lifecycle scopes (Opening/Live/Suspended/
+  Closed), a normative admission order (lifecycle → generation fence → freshness →
+  handoff → dedupe → ordering → backpressure → merge), a bounded reorder buffer, a
+  coalescing hot window under `MergePolicy`, and a bounded three-channel receipt
+  log with eviction-stable offsets. **Reactivity is deliberately excluded** — every
+  mutator returns `IngressChange`, the set of dirtied reader kinds, and each shell
+  clears exactly that set on its own graph. Also carries the `IngressTransport`
+  seam and `InProcIngress`: the core never touches a transport, so a WebSocket
+  frame, an RPC response, and a polled page are the same input once decoded.
+  Freshness enters through an explicit `tick(now)`, so staleness transitions are
+  deterministic and fixture-replayable
+- `src/ingress.rs` / `src/thread_safe_ingress.rs` / `src/async_ingress.rs` — the
+  three flavor shells (`#designimplementtransport`). Four reader kinds per scope
+  (`value` / `readiness` / `authority` / `retry`) plus three receipt readers and a
+  derived `IngressSchedule`; readiness, authority, and retry are **derives, not
+  refresh calls**. The thread-safe shell runs invalidation outside the core lock
+  and fans out through `batch()`; the async shell uses `AsyncContext::clear_slots`
+  and `AsyncContext::computed` (sync compute, async graph) because **admission is
+  not async-coloured** — an admission decision is a function of the fence, the
+  watermark, the reorder buffer, and the observed clock, so there is nothing to
+  await. Spec: `lazily-spec/docs/transport-ingress.md`; formal:
+  `lazily-formal/LazilyFormal/Ingress.lean`
 - `src/time.rs` — temporal source primitives (`#lztime`): logical-clock-driven `TimelineSource` cores (`TimerCore`/`IntervalCore`/`CronCore`/`DeadlineCore`) split from thin reactive cells (`TimerCell` single-shot / `IntervalCell` periodic / `CronCell` pattern-periodic / `DeadlineCell<T>` value+deadline → `Deadlined`), plus `ManualClock`. Edge-only reactive invalidation; `BytesPayload` cores (`DeadlineCell` is `PyObjectPayload`). Foundation for leases/expiry/windows/presence.
 - `src/stdlib.rs` — Lazily standard-library conveniences layered over portable primitives rather than added to the graph kernel. `stdlib::Timer` binds logical `TimerCore` to Rust's monotone `Instant`; `Timeout<T>` adds caller-driven operation/cancellation polling, strict monotone deadlines, typed latched outcomes, and deterministic clock/wait seams without owning a future, executor, or thread; `RevisionBarrier` combines monotone revisions with derived predicates, barrier-owned cancellation, `Timer` deadlines, disposal, and application-owned keyed effect receipts while closing check-to-sleep lost wakeups.
 - `src/transport.rs` — cross-process zero-copy transport (`#lzzcpy`): `BlobBackend` adapter trait + `InProcessBackend` (wraps `ShmBlobArena`) + `ArrowBackend` (Arrow IPC stream bytes) + `ShmBackend` (POSIX `shm_open`+`mmap`, `shm` feature, Linux) + `spill_message`/`resolve_value` policy + `BlobRouter` multi-backend resolver
 - `src/crdt_tree.rs` — `CrdtTree` lossless document contract (`#lzcrdttree`): merge, frontier, delta, empty-frontier snapshot, and materialized value; implemented by `TextCrdt`
 - `src/outbox.rs` — storage-independent durable outbox (`#lzdurableoutbox`): `OutboxStore` ordered-byte boundary, shared `Outbox<S>` append/ack/prune/replay protocol, in-memory backend, and `durable-sqlite` adapter
+- `tests/ingress_family_conformance.rs` — the ingress contract
+  (`#designimplementtransport`) replayed against **all three flavors** through one
+  `IngressModel` trait, over `lazily-spec/conformance/ingress/*.json`: ordered
+  delivery, reorder + both duplicate classes, reorder-window overflow,
+  disconnect/replay, `Block` backpressure, build-skew generation handoff (including
+  the handoff that *buffers*), freshness horizon and retry backoff. `invalidates`
+  is asserted per reader kind in **both** directions via a cache-validity probe, so
+  over-invalidation is as visible as under-. Carries a three-row ledger enforced by
+  grepping `src/` in both directions, plus a mutation-check record of seven probes
 - `tests/temporal_conformance.rs` — temporal sources (`#lztime`) compute fixtures (lazily-spec/conformance/temporal/`*.json`); timer single-shot idempotent fire, interval boundary counting under clock jumps, cron pattern matching, deadline expiry preserving value, edge-only reader invalidation
 - `tests/common/mod.rs` — the runtime conformance manifest recorder
   (`#lazilyupgradeconformance`). Rust integration tests are separate crates, so

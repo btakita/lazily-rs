@@ -44,6 +44,7 @@ export LAZILY_CONFORMANCE_MANIFEST = $(CONFORMANCE_MANIFEST)
 	test-collections-conformance \
 	test-collections-family-conformance \
 	test-queue-family-conformance \
+test-ingress-family-conformance \
 	test-queue-conformance \
 	test-queue-demand-driven \
 	test-seqcrdt-conformance \
@@ -61,7 +62,7 @@ export LAZILY_CONFORMANCE_MANIFEST = $(CONFORMANCE_MANIFEST)
 	benchmark-update \
 	instrumentation-profile
 
-	check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-reliable-sync-conformance test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-check conformance-coverage
+	check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-reliable-sync-conformance test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-ingress-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-check conformance-coverage
 
 fmt:
 >$(CARGO) fmt --all --check
@@ -192,6 +193,16 @@ test-collections-family-conformance:
 # stopped being replayed.
 test-queue-family-conformance:
 >$(CARGO) test --locked --features "thread-safe async" --test queue_family_conformance
+
+# Transport-agnostic ingress conformance (#designimplementtransport): lazily-rs
+# replays lazily-spec/conformance/ingress/*.json against ALL THREE flavors —
+# ordered delivery, reorder + both duplicate classes, reorder-window overflow,
+# disconnect/replay, Block backpressure, build-skew generation handoff (including
+# the handoff that buffers), freshness horizon and retry backoff. The flavor
+# replays are feature-gated, so the wide feature set is the point of this target:
+# a bare `cargo test` proves only the single-threaded shell.
+test-ingress-family-conformance:
+>$(CARGO) test --locked --features "thread-safe async serde" --test ingress_family_conformance
 
 # Reactive queue conformance (#lzqueue): lazily-rs replays the canonical compute
 # fixtures in lazily-spec/conformance/collections/ `queuecell_*.json` — SPSC
