@@ -19,6 +19,7 @@ mod common;
 
 use std::collections::HashMap;
 
+use common::Expect;
 use lazily::{PeerId, SeqCrdt};
 use serde_json::Value;
 
@@ -198,12 +199,17 @@ fn run_seqcrdt_fixture(name: &str) {
             }
         }
 
-        // Assertions.
-        let expect = scenario.get("expect").unwrap();
-        if let Some(order) = expect.get("order").and_then(|v| v.as_array()) {
+        // Assertions. The `expect` block is guarded (`#lzassertunknownkeys`):
+        // a key this runner never reads fails the fixture instead of passing.
+        let expect = Expect::new(
+            format!("{SPEC_DIR}/{name}"),
+            format!("scenarios[{i}].expect"),
+            scenario.get("expect").unwrap(),
+        );
+        if let Some(order) = expect["order"].as_array() {
             assert_order(&replicas["a"], order, &format!("scenario {i}"));
         }
-        if let Some(gets) = expect.get("get").and_then(|v| v.as_object()) {
+        if let Some(gets) = expect["get"].as_object() {
             for (id, val) in gets {
                 let got = replicas["a"]
                     .get(&id.to_string())
@@ -211,13 +217,12 @@ fn run_seqcrdt_fixture(name: &str) {
                 assert_eq!(got, *val, "scenario {i}: get({id}) mismatch");
             }
         }
-        if let Some(len) = expect.get("len").and_then(|v| v.as_u64()) {
+        if let Some(len) = expect["len"].as_u64() {
             // `len` applies to the converged replica(s): the first replica in
             // the first `orders_equal` pair when present (single-replica
             // scenarios otherwise fall back to `a`).
-            let target = expect
-                .get("orders_equal")
-                .and_then(|v| v.as_array())
+            let target = expect["orders_equal"]
+                .as_array()
                 .and_then(|a| a.first())
                 .and_then(|v| v.as_array())
                 .and_then(|a| a.first())
@@ -229,7 +234,7 @@ fn run_seqcrdt_fixture(name: &str) {
                 "scenario {i}: len mismatch on `{target}`"
             );
         }
-        if let Some(pairs) = expect.get("orders_equal").and_then(|v| v.as_array()) {
+        if let Some(pairs) = expect["orders_equal"].as_array() {
             for pair in pairs {
                 let a = pair.get(0).and_then(|v| v.as_str()).unwrap();
                 let b = pair.get(1).and_then(|v| v.as_str()).unwrap();
@@ -240,7 +245,7 @@ fn run_seqcrdt_fixture(name: &str) {
                 );
             }
         }
-        if let Some(per_replica) = expect.get("order_on").and_then(|v| v.as_object()) {
+        if let Some(per_replica) = expect["order_on"].as_object() {
             for (name, order) in per_replica {
                 assert_order(
                     &replicas[name],
@@ -249,7 +254,7 @@ fn run_seqcrdt_fixture(name: &str) {
                 );
             }
         }
-        if let Some(per_replica) = expect.get("get_on").and_then(|v| v.as_object()) {
+        if let Some(per_replica) = expect["get_on"].as_object() {
             for (name, gets) in per_replica {
                 for (id, val) in gets.as_object().unwrap() {
                     let got = replicas[name]
@@ -259,12 +264,11 @@ fn run_seqcrdt_fixture(name: &str) {
                 }
             }
         }
-        if let Some(contains_all) = expect.get("contains_all").and_then(|v| v.as_array()) {
+        if let Some(contains_all) = expect["contains_all"].as_array() {
             // `contains_all` applies to the converged replica: the first in the
             // first `orders_equal` pair when present, else `a`.
-            let target = expect
-                .get("orders_equal")
-                .and_then(|v| v.as_array())
+            let target = expect["orders_equal"]
+                .as_array()
                 .and_then(|a| a.first())
                 .and_then(|v| v.as_array())
                 .and_then(|a| a.first())
@@ -278,7 +282,7 @@ fn run_seqcrdt_fixture(name: &str) {
                 );
             }
         }
-        if let Some(per_replica) = expect.get("not_contains_on").and_then(|v| v.as_object()) {
+        if let Some(per_replica) = expect["not_contains_on"].as_object() {
             for (name, ids) in per_replica {
                 for id in ids.as_array().unwrap() {
                     let s = id.as_str().unwrap();

@@ -18,6 +18,7 @@
 
 mod common;
 
+use common::Expect;
 use lazily::{
     Context, CrdtOp, CrdtPlaneRuntime, HlcStamp, IpcValue, LwwRegister, NodeId, NodeKey, PeerId,
     ReplicatedCell, WireStamp,
@@ -76,6 +77,34 @@ fn seeded_runtime(ctx: &Context, ops: &[CrdtOp]) -> CrdtPlaneRuntime {
     rt
 }
 
+/// Total order on a wire stamp: greatest wall time, then logical, then peer as
+/// the final tiebreak. This IS the `max_stamp` resolution the fixtures declare.
+fn stamp_key(s: &WireStamp) -> (u64, u64, u64) {
+    (s.wall_time, s.logical, s.peer)
+}
+
+/// The winning payload per (node, key) under `max_stamp`, computed from the op
+/// stream alone. Comparing this to `CrdtPlaneRuntime::converged()` is what makes
+/// the fixture's `resolution` key an assertion rather than a label.
+fn max_stamp_winners(ops: &[CrdtOp]) -> Vec<(NodeId, Option<NodeKey>, IpcValue)> {
+    let mut winners: Vec<(NodeId, Option<NodeKey>, WireStamp, IpcValue)> = Vec::new();
+    for op in ops {
+        match winners
+            .iter_mut()
+            .find(|(n, k, _, _)| *n == op.node && *k == op.key)
+        {
+            Some(entry) => {
+                if stamp_key(&op.stamp) > stamp_key(&entry.2) {
+                    entry.2 = op.stamp;
+                    entry.3 = op.state.clone();
+                }
+            }
+            None => winners.push((op.node, op.key.clone(), op.stamp, op.state.clone())),
+        }
+    }
+    winners.into_iter().map(|(n, k, _, v)| (n, k, v)).collect()
+}
+
 fn ingest_ops(rt: &mut CrdtPlaneRuntime, ctx: &Context, ops: &[CrdtOp]) -> usize {
     let sync = lazily::CrdtSync {
         frontier: Vec::new(),
@@ -101,8 +130,15 @@ fn anti_entropy_converge_conformance() {
     let mut checked_redeliver = 0usize;
     let mut checked_converged = 0usize;
 
-    for sc in scenarios {
+    for (si, sc) in scenarios.iter().enumerate() {
         let name = sc["name"].as_str().expect("name");
+        // Guard the scenario's `expect` block (`#lzassertunknownkeys`): `resolution`
+        // and `order_independent` were both present and both unread.
+        let exp = Expect::new(
+            format!("{SPEC}/anti_entropy_converge.json"),
+            format!("scenarios[{si}].expect"),
+            &sc["expect"],
+        );
         let ops: Vec<CrdtOp> = sc["ops"]
             .as_array()
             .expect("ops")
@@ -113,9 +149,7 @@ fn anti_entropy_converge_conformance() {
         let mut rt = seeded_runtime(&ctx, &ops);
 
         let applied = ingest_ops(&mut rt, &ctx, &ops);
-        let want = sc["expect"]["applied_count"]
-            .as_u64()
-            .expect("applied_count") as usize;
+        let want = exp["applied_count"].as_u64().expect("applied_count") as usize;
         assert_eq!(
             applied, want,
             "{name}: applied_count. A superseded op still counts — it entered the \
@@ -129,7 +163,7 @@ fn anti_entropy_converge_conformance() {
             .unwrap_or(false)
         {
             let again = ingest_ops(&mut rt, &ctx, &ops);
-            let want_rd = sc["expect"]["redeliver_applied_count"]
+            let want_rd = exp["redeliver_applied_count"]
                 .as_u64()
                 .expect("redeliver_applied_count") as usize;
             assert_eq!(again, want_rd, "{name}: redelivery must apply {want_rd}");
@@ -141,7 +175,59 @@ fn anti_entropy_converge_conformance() {
         // the fixture states convergence in. Before that accessor existed this half
         // was skipped, and a runner that asserts counts while silently dropping
         // `converged` is the marker-only failure this suite exists to prevent.
-        if let Some(want_entries) = sc["expect"]["converged"].as_array() {
+        // `resolution`: the fixture names the conflict rule, so assert the rule
+        // rather than trusting the converged payloads alone — a binding that
+        // resolved by arrival order could still match `converged` on a stream
+        // whose arrival order happens to agree with stamp order.
+        match exp["resolution"].as_str().expect("resolution") {
+            "max_stamp" => {
+                let got = rt.converged();
+                for (node, key, want_state) in max_stamp_winners(&ops) {
+                    let found = got
+                        .iter()
+                        .find(|e| e.node == node && e.key == key)
+                        .unwrap_or_else(|| panic!("{name}: no converged entry for {node:?}"));
+                    assert_eq!(
+                        found.state, want_state,
+                        "{name}: resolution=max_stamp — the greatest (wall_time, \
+                         logical, peer) stamp must win for {node:?}"
+                    );
+                }
+            }
+            other => panic!("{name}: unknown resolution rule {other}"),
+        }
+
+        // `order_independent` + the scenario's `reverse_order_equivalent` input:
+        // replay the same ops backwards into a fresh runtime and require the same
+        // converged view. Both keys were previously unread.
+        if exp["order_independent"].as_bool().unwrap_or(false) {
+            assert!(
+                sc["reverse_order_equivalent"].as_bool().unwrap_or(false),
+                "{name}: expect.order_independent without reverse_order_equivalent"
+            );
+            let reversed: Vec<CrdtOp> = ops.iter().rev().cloned().collect();
+            let rev_ctx = Context::new();
+            let mut rev_rt = seeded_runtime(&rev_ctx, &reversed);
+            ingest_ops(&mut rev_rt, &rev_ctx, &reversed);
+            let mut a = rt.converged();
+            let mut b = rev_rt.converged();
+            a.sort_by_key(|e| (e.node.0, format!("{:?}", e.key)));
+            b.sort_by_key(|e| (e.node.0, format!("{:?}", e.key)));
+            assert_eq!(
+                a.len(),
+                b.len(),
+                "{name}: order_independent — reversed replay converged differently"
+            );
+            for (x, y) in a.iter().zip(&b) {
+                assert_eq!(
+                    (x.node, &x.key, &x.state),
+                    (y.node, &y.key, &y.state),
+                    "{name}: order_independent — reversed replay converged differently"
+                );
+            }
+        }
+
+        if let Some(want_entries) = exp["converged"].as_array() {
             let got = rt.converged();
             for entry in want_entries {
                 let node = NodeId(entry["node"].as_u64().expect("node"));
@@ -195,7 +281,7 @@ fn crdt_sync_frames_conformance() {
     );
 
     let mut checked = 0usize;
-    for frame in frames {
+    for (fi, frame) in frames.iter().enumerate() {
         let label = frame["label"].as_str().expect("label");
         let wire = &frame["wire"]["CrdtSync"];
 
@@ -204,7 +290,14 @@ fn crdt_sync_frames_conformance() {
         let sync: lazily::CrdtSync =
             serde_json::from_value(wire.clone()).unwrap_or_else(|e| panic!("{label}: {e}"));
 
-        let assertions = &frame["assertions"];
+        // Guard the frame's `assertions` block (`#lzassertunknownkeys`):
+        // `has_keyed_op`, `has_keyless_op` and `frontier_omitted` were present
+        // in the corpus and read by nothing.
+        let assertions = Expect::new(
+            format!("{SPEC}/crdt_sync_frames.json"),
+            format!("frames[{fi}].assertions"),
+            &frame["assertions"],
+        );
         if let Some(want) = assertions["frontier_len"].as_u64() {
             assert_eq!(
                 sync.frontier.len() as u64,
@@ -218,6 +311,37 @@ fn crdt_sync_frames_conformance() {
                 sync.ops.len() as u64,
                 want,
                 "{label}: op_count after wire round-trip"
+            );
+            checked += 1;
+        }
+
+        // `frontier_omitted`: the wire object carries no `frontier` at all, and
+        // the decoded value must default to empty rather than to a placeholder.
+        if let Some(want) = assertions["frontier_omitted"].as_bool() {
+            assert_eq!(
+                wire.get("frontier").is_none(),
+                want,
+                "{label}: frontier_omitted describes the wire shape"
+            );
+            assert!(
+                sync.frontier.is_empty(),
+                "{label}: an omitted frontier must decode as empty"
+            );
+            checked += 1;
+        }
+        if let Some(want) = assertions["has_keyed_op"].as_bool() {
+            assert_eq!(
+                sync.ops.iter().any(|o| o.key.is_some()),
+                want,
+                "{label}: has_keyed_op"
+            );
+            checked += 1;
+        }
+        if let Some(want) = assertions["has_keyless_op"].as_bool() {
+            assert_eq!(
+                sync.ops.iter().any(|o| o.key.is_none()),
+                want,
+                "{label}: has_keyless_op"
             );
             checked += 1;
         }

@@ -47,8 +47,21 @@
 //!   contract exactly.
 //! * A write failure never fails a suite. A manifest we cannot write surfaces
 //!   downstream as missing evidence, which is the correct outcome.
+//!
+//! # Sibling guard
+//!
+//! Opening a fixture is one level above *consuming* its assertions. See
+//! [`expect`] (`#lzassertunknownkeys`) for the guard that fails a runner which
+//! replays a fixture while silently ignoring a key the fixture asserts.
 
 #![allow(dead_code)]
+
+pub mod expect;
+
+// Re-exported for `use common::Expect;`. Not every test binary that compiles
+// this module opens a fixture, so the re-export is unused in some of them.
+#[allow(unused_imports)]
+pub use expect::Expect;
 
 use std::collections::HashSet;
 use std::fs::OpenOptions;

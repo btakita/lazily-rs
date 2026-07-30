@@ -6,6 +6,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
+use common::Expect;
 use lazily::{Context, DiscoveryCell, Health, HealthCell, ReadinessCell, ServiceRegistry};
 use serde_json::Value;
 
@@ -25,11 +26,19 @@ fn present() -> bool {
 fn steps(fx: &Value) -> &Vec<Value> {
     fx["steps"].as_array().unwrap()
 }
-fn inval(step: &Value, reader: &str) -> bool {
-    step["expected"]["invalidates"][reader].as_bool().unwrap()
+/// Guard one step's `expected` block (`#lzassertunknownkeys`): a key this runner
+/// never reads fails the fixture instead of passing unnoticed.
+fn expected<'a>(name: &str, i: usize, step: &'a Value) -> Expect<'a> {
+    Expect::new(
+        format!("{SPEC_DIR}/{name}"),
+        format!("steps[{i}].expected"),
+        &step["expected"],
+    )
 }
-fn want_map(step: &Value, key: &str) -> BTreeMap<String, String> {
-    step["expected"][key]
+/// A service->endpoint projection. Its keys are service names — data, not
+/// assertion names — so it is consumed wholesale rather than descended into.
+fn want_map(exp: &Expect, key: &str) -> BTreeMap<String, String> {
+    exp[key]
         .as_object()
         .unwrap()
         .iter()
@@ -49,7 +58,9 @@ fn health() {
     let observed = ctx.computed(move |c| hc.get(c));
     let _ = observed.get(&ctx);
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
+        let exp = expected("health.json", i, step);
+        let inv = exp.sub("invalidates");
         let op = &step["op"];
         h.set(
             &ctx,
@@ -57,7 +68,7 @@ fn health() {
             op["up"].as_bool().unwrap(),
             op["critical"].as_bool().unwrap(),
         );
-        let want = match step["expected"]["health"].as_str().unwrap() {
+        let want = match exp["health"].as_str().unwrap() {
             "Healthy" => Health::Healthy,
             "Degraded" => Health::Degraded,
             "Unhealthy" => Health::Unhealthy,
@@ -66,7 +77,7 @@ fn health() {
         assert_eq!(h.health(), want, "health for {step}");
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inval(step, "health"), "inval for {step}");
+        assert_eq!(!was, inv["health"].as_bool().unwrap(), "inval for {step}");
     }
 }
 
@@ -82,17 +93,19 @@ fn readiness() {
     let observed = ctx.computed(move |c| rc.get(c));
     let _ = observed.get(&ctx);
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
+        let exp = expected("readiness.json", i, step);
+        let inv = exp.sub("invalidates");
         let op = &step["op"];
         r.set(
             &ctx,
             op["name"].as_str().unwrap(),
             op["ready"].as_bool().unwrap(),
         );
-        assert_eq!(r.ready(), step["expected"]["ready"].as_bool().unwrap());
+        assert_eq!(r.ready(), exp["ready"].as_bool().unwrap());
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inval(step, "ready"), "inval for {step}");
+        assert_eq!(!was, inv["ready"].as_bool().unwrap(), "inval for {step}");
     }
 }
 
@@ -108,7 +121,9 @@ fn discovery() {
     let observed = ctx.computed(move |c| dc.get(c));
     let _ = observed.get(&ctx);
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
+        let exp = expected("discovery.json", i, step);
+        let inv = exp.sub("invalidates");
         let op = &step["op"];
         match op["type"].as_str().unwrap() {
             "register" => d.register(
@@ -127,12 +142,16 @@ fn discovery() {
         }
         assert_eq!(
             d.discovery(&ctx),
-            want_map(step, "discovery"),
+            want_map(&exp, "discovery"),
             "map for {step}"
         );
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inval(step, "discovery"), "inval for {step}");
+        assert_eq!(
+            !was,
+            inv["discovery"].as_bool().unwrap(),
+            "inval for {step}"
+        );
     }
 }
 
@@ -148,7 +167,9 @@ fn service_registry() {
     let observed = ctx.computed(move |c| pc.get(c));
     let _ = observed.get(&ctx);
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
+        let exp = expected("service_registry.json", i, step);
+        let inv = exp.sub("invalidates");
         let op = &step["op"];
         match op["type"].as_str().unwrap() {
             "register" => reg.register(
@@ -162,11 +183,15 @@ fn service_registry() {
         }
         assert_eq!(
             reg.projection(&ctx),
-            want_map(step, "projection"),
+            want_map(&exp, "projection"),
             "projection for {step}"
         );
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inval(step, "projection"), "inval for {step}");
+        assert_eq!(
+            !was,
+            inv["projection"].as_bool().unwrap(),
+            "inval for {step}"
+        );
     }
 }

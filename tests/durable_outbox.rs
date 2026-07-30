@@ -2,6 +2,7 @@
 
 mod common;
 
+use common::Expect;
 use lazily::{Delta, DurableOutbox, InMemoryOutbox, IpcMessage};
 use serde_json::Value;
 
@@ -11,6 +12,17 @@ fn fixture() -> Option<Value> {
     )
     .ok()?;
     Some(serde_json::from_str(&text).expect("outbox-store fixture JSON"))
+}
+
+const FIXTURE: &str = "../lazily-spec/conformance/reliable-sync/outbox_store_protocol.json";
+
+/// Guard a scenario's `expect` block (`#lzassertunknownkeys`).
+fn expect<'a>(sc: &'a Value) -> Expect<'a> {
+    Expect::new(
+        FIXTURE,
+        format!("scenarios[{}].expect", sc["name"].as_str().unwrap_or("?")),
+        &sc["expect"],
+    )
 }
 
 fn frame(epoch: u64) -> IpcMessage {
@@ -56,7 +68,7 @@ fn generic_outbox_replays_canonical_store_fixture() {
             let epoch = epoch.as_u64().unwrap();
             outbox.append(epoch, frame(epoch));
         }
-        let expected = &scenario["expect"];
+        let expected = expect(scenario);
         if let Some(cursor) = scenario["scan_after"].as_u64() {
             let epochs = outbox
                 .replay_from(cursor)
@@ -95,10 +107,11 @@ fn generic_outbox_replays_canonical_store_fixture() {
                     .unwrap()
             );
         }
-        let replay = expected
-            .get("replay_from_zero")
-            .or_else(|| expected.get("replay"));
-        if let Some(replay) = replay.and_then(Value::as_array) {
+        let replay = match expected["replay_from_zero"].as_array() {
+            Some(r) => Some(r),
+            None => expected["replay"].as_array(),
+        };
+        if let Some(replay) = replay {
             assert_eq!(
                 outbox
                     .replay_from(0)
@@ -165,7 +178,8 @@ fn stale_sqlite_handle_cannot_regress_serialized_cursor() {
             handle => panic!("unknown fixture handle {handle}"),
         }
     }
-    let expected = scenario["expect"]["loaded_cursor"].as_u64().unwrap();
+    let exp = expect(scenario);
+    let expected = exp["loaded_cursor"].as_u64().unwrap();
     assert_eq!(stale.acked_through(), expected);
     drop(stale);
     drop(current);

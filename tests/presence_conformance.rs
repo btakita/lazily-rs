@@ -6,6 +6,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
+use common::Expect;
 use lazily::{AwarenessCell, Context, EphemeralCell, PresenceCell};
 use serde_json::Value;
 
@@ -18,6 +19,16 @@ fn load(name: &str) -> Value {
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("failed to parse fixture {path}: {e}"))
 }
 
+/// Guard one step's `expected` block (`#lzassertunknownkeys`): a key this runner
+/// never reads fails the fixture instead of passing unnoticed.
+fn expected<'a>(name: &str, i: usize, step: &'a Value) -> Expect<'a> {
+    Expect::new(
+        format!("{SPEC_DIR}/{name}"),
+        format!("steps[{i}].expected"),
+        &step["expected"],
+    )
+}
+
 fn present() -> bool {
     std::path::Path::new(&format!("{SPEC_DIR}/presence.json")).exists()
 }
@@ -25,12 +36,10 @@ fn present() -> bool {
 fn steps(fx: &Value) -> &Vec<Value> {
     fx["steps"].as_array().unwrap()
 }
-fn inval(step: &Value, reader: &str) -> bool {
-    step["expected"]["invalidates"][reader].as_bool().unwrap()
-}
-
-fn want_map(step: &Value) -> BTreeMap<u64, String> {
-    step["expected"]["present"]
+/// The live peer->value map. `present` is *data* — its keys are peer ids, not
+/// assertion names — so it is consumed wholesale rather than descended into.
+fn want_map(exp: &Expect) -> BTreeMap<u64, String> {
+    exp["present"]
         .as_object()
         .unwrap()
         .iter()
@@ -51,7 +60,7 @@ fn presence() {
     let observed = ctx.computed(move |c| pc.get(c));
     let _ = observed.get(&ctx);
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
         let op = &step["op"];
         let now = op["now"].as_u64().unwrap();
         match op["type"].as_str().unwrap() {
@@ -65,10 +74,12 @@ fn presence() {
             "tick" => cell.tick(&ctx, now),
             other => panic!("unknown op {other}"),
         }
-        assert_eq!(cell.present(&ctx), want_map(step), "present after {op}");
+        let exp = expected("presence.json", i, step);
+        let inv = exp.sub("invalidates");
+        assert_eq!(cell.present(&ctx), want_map(&exp), "present after {op}");
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inval(step, "present"), "inval after {op}");
+        assert_eq!(!was, inv["present"].as_bool().unwrap(), "inval after {op}");
     }
 }
 
@@ -85,7 +96,7 @@ fn awareness() {
     let observed = ctx.computed(move |c| pc.get(c));
     let _ = observed.get(&ctx);
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
         let op = &step["op"];
         let now = op["now"].as_u64().unwrap();
         match op["type"].as_str().unwrap() {
@@ -98,10 +109,12 @@ fn awareness() {
             "tick" => cell.tick(&ctx, now),
             other => panic!("unknown op {other}"),
         }
-        assert_eq!(cell.present(&ctx), want_map(step), "present after {op}");
+        let exp = expected("awareness.json", i, step);
+        let inv = exp.sub("invalidates");
+        assert_eq!(cell.present(&ctx), want_map(&exp), "present after {op}");
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inval(step, "present"), "inval after {op}");
+        assert_eq!(!was, inv["present"].as_bool().unwrap(), "inval after {op}");
     }
 }
 
@@ -117,7 +130,7 @@ fn ephemeral() {
     let observed = ctx.computed(move |c| vc.get(c));
     let _ = observed.get(&ctx);
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
         let op = &step["op"];
         let now = op["now"].as_u64().unwrap();
         match op["type"].as_str().unwrap() {
@@ -130,10 +143,12 @@ fn ephemeral() {
             "tick" => cell.tick(&ctx, now),
             other => panic!("unknown op {other}"),
         }
-        let want = step["expected"]["value"].as_str().map(|s| s.to_string());
+        let exp = expected("ephemeral.json", i, step);
+        let inv = exp.sub("invalidates");
+        let want = exp["value"].as_str().map(|s| s.to_string());
         assert_eq!(cell.value(&ctx), want, "value after {op}");
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inval(step, "value"), "inval after {op}");
+        assert_eq!(!was, inv["value"].as_bool().unwrap(), "inval after {op}");
     }
 }

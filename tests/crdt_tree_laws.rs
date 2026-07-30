@@ -2,13 +2,14 @@
 
 mod common;
 
+use common::Expect;
 use lazily::{CrdtTree, TextCrdt, TextVersionVector};
 use serde_json::Value;
 
+const FIXTURE: &str = "../lazily-spec/conformance/crdt-tree/algebra.json";
+
 fn fixture() -> Option<Value> {
-    let text =
-        crate::common::spec_read_to_string("../lazily-spec/conformance/crdt-tree/algebra.json")
-            .ok()?;
+    let text = crate::common::spec_read_to_string(FIXTURE).ok()?;
     Some(serde_json::from_str(&text).expect("CrdtTree fixture JSON"))
 }
 
@@ -95,12 +96,32 @@ fn crdt_tree_replays_canonical_fixture() {
             folded
         })
         .collect::<Vec<_>>();
+    // Guard the scenario's `expect` block (`#lzassertunknownkeys`). Both keys
+    // were carried by the corpus and read by nothing: the runner asserted the
+    // laws with hardcoded outcomes, so a fixture that said `texts_equal: false`
+    // would have passed unchanged.
+    let merge_expect = Expect::new(FIXTURE, "scenarios[0].expect", &merge["expect"]);
+    let texts_equal = folds[1..].iter().all(|f| f.value() == folds[0].value());
+    let vvs_equal = folds[1..]
+        .iter()
+        .all(|f| f.version_vector() == folds[0].version_vector());
+    assert_eq!(
+        texts_equal,
+        merge_expect["texts_equal"].as_bool().expect("texts_equal")
+    );
+    assert_eq!(
+        vvs_equal,
+        merge_expect["version_vectors_equal"]
+            .as_bool()
+            .expect("version_vectors_equal")
+    );
     for folded in &folds[1..] {
         assert_eq!(folded.value(), folds[0].value());
         assert_eq!(folded.version_vector(), folds[0].version_vector());
     }
 
     let snapshot_case = &scenarios[1];
+    let snapshot_expect = Expect::new(FIXTURE, "scenarios[1].expect", &snapshot_case["expect"]);
     let snapshot_seed = snapshot_case["seed"]["text"].as_str().unwrap();
     let mut canonical = TextCrdt::from_str(
         snapshot_case["seed"]["peer"].as_u64().unwrap(),
@@ -109,13 +130,21 @@ fn crdt_tree_replays_canonical_fixture() {
     let snapshot = canonical.delta_since(&TextVersionVector::new());
     let mut restored = TextCrdt::new(snapshot_case["restore_peer"].as_u64().unwrap());
     assert!(restored.apply_delta(&snapshot));
-    assert_eq!(restored.value(), canonical.value());
+    assert_eq!(
+        restored.value() == canonical.value(),
+        snapshot_expect["restored_text_equal"]
+            .as_bool()
+            .expect("restored_text_equal")
+    );
     let mut restored_ops = restored.delta_since(&TextVersionVector::new());
     let mut snapshot_ops = snapshot;
     restored_ops.sort_by_key(|op| (op.id.counter(), op.id.peer()));
     snapshot_ops.sort_by_key(|op| (op.id.counter(), op.id.peer()));
     assert_eq!(
-        restored_ops, snapshot_ops,
+        restored_ops == snapshot_ops,
+        snapshot_expect["op_ids_equal"]
+            .as_bool()
+            .expect("op_ids_equal"),
         "snapshot preserves operation identity"
     );
     canonical.insert_str(canonical.len(), "A");
@@ -123,14 +152,33 @@ fn crdt_tree_replays_canonical_fixture() {
     canonical.apply_delta(&restored.delta_since(&canonical.version_vector()));
     restored.apply_delta(&canonical.delta_since(&restored.version_vector()));
     assert_eq!(canonical.value(), restored.value());
-    assert_eq!(canonical.len(), snapshot_seed.chars().count() + 2);
+    // `later_merge_duplicates`: characters over and above seed + the two
+    // concurrent inserts. A CRDT that re-applied the snapshot's ops on merge
+    // would show them here.
+    let duplicates = canonical.len() as i64 - (snapshot_seed.chars().count() as i64 + 2);
+    assert_eq!(
+        duplicates,
+        snapshot_expect["later_merge_duplicates"]
+            .as_i64()
+            .expect("later_merge_duplicates")
+    );
 
+    let steady_expect = Expect::new(FIXTURE, "scenarios[2].expect", &scenarios[2]["expect"]);
     let steady = &scenarios[2]["seed"];
     let mut steady = TextCrdt::from_str(
         steady["peer"].as_u64().unwrap(),
         steady["text"].as_str().unwrap(),
     );
     let empty = steady.delta_since(&steady.version_vector());
-    assert!(empty.is_empty());
-    assert!(!steady.apply_delta(&empty));
+    assert_eq!(
+        empty.len(),
+        steady_expect["delta"].as_array().expect("delta").len(),
+        "own frontier emits an empty delta"
+    );
+    assert_eq!(
+        steady.apply_delta(&empty),
+        steady_expect["apply_changed"]
+            .as_bool()
+            .expect("apply_changed")
+    );
 }

@@ -117,6 +117,20 @@ this repo.
   on any canonical fixture the suite did not OPEN — and on a missing manifest,
   which is missing evidence rather than evidence of absence. The static grep it
   replaced could not tell a replayed fixture from a hand-transcribed one
+- `tests/common/expect.rs` — the assertion-key consumption guard
+  (`#lzassertunknownkeys`), one level below the manifest: having OPENED a
+  fixture, did the runner actually CONSUME the keys it asserts? `Expect` wraps
+  one `expected` / `expect` / `assertions` block, records every key the runner
+  reads through it, and panics on drop naming any key left untouched — so a
+  corpus key no binding implements fails loudly instead of being invisibly
+  skipped (the defect found in lazily-kt, where `delta_zero_copy_arrow.json`'s
+  `backend` discriminator was never read). Observational, not declarative: only a
+  key really read counts. `Expect::sub` descends into nested assertion blocks
+  (`invalidates`, `final_state`); `get` consumes data maps keyed by ids or peer
+  names wholesale. `Expect::prose` marks documentation keys (`note`, `reason`);
+  `Expect::declared_exception` marks a key whose capability this binding does not
+  have, with a required reason at the call site. Self-tested in
+  `tests/expect_guard.rs`
 - `tests/integration.rs` — 13 integration tests
 - `tests/spec_compliance.rs` — 68 spec compliance tests
 - `tests/conformance.rs` — cross-language IPC fixture round-trip tests (lazily-spec/conformance)

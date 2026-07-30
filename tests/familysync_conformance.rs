@@ -18,6 +18,7 @@
 
 mod common;
 
+use common::Expect;
 use lazily::{Context, CrdtPlaneRuntime, PeerId};
 use serde_json::Value;
 
@@ -48,8 +49,19 @@ fn family_sync_materialize_on_ingest_conformance() {
         "this harness replays the bool value_type"
     );
 
-    for scenario in fixture["scenarios"].as_array().expect("scenarios") {
+    for (si, scenario) in fixture["scenarios"]
+        .as_array()
+        .expect("scenarios")
+        .iter()
+        .enumerate()
+    {
         let name = scenario["name"].as_str().unwrap_or("<unnamed>");
+        // Guard the scenario's `expect` block (`#lzassertunknownkeys`).
+        let expect = Expect::new(
+            FIXTURE,
+            format!("scenarios[{si}].expect"),
+            &scenario["expect"],
+        );
         let origin_peer = scenario["origin_peer"].as_u64().expect("origin_peer");
         let target_peer = scenario["target_peer"].as_u64().expect("target_peer");
 
@@ -79,7 +91,7 @@ fn family_sync_materialize_on_ingest_conformance() {
 
         if scenario["reingest"].as_bool().unwrap_or(false) {
             let reapplied = target.ingest(&ctx_t, &frame, 1_001);
-            let expected = scenario["expect"]["reingest_applied"]
+            let expected = expect["reingest_applied"]
                 .as_u64()
                 .expect("reingest_applied");
             assert_eq!(
@@ -87,8 +99,6 @@ fn family_sync_materialize_on_ingest_conformance() {
                 "[{name}] re-ingest is idempotent"
             );
         }
-
-        let expect = &scenario["expect"];
 
         // Membership propagation: the target now holds exactly the expected keys.
         let mut got_keys: Vec<String> = target

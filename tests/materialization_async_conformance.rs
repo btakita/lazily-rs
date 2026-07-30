@@ -12,6 +12,7 @@ mod common;
 
 use std::collections::HashSet;
 
+use common::Expect;
 use lazily::{AsyncComputedMap, AsyncContext};
 use serde_json::Value;
 
@@ -47,6 +48,16 @@ fn str_array(v: &Value, path: &str) -> Vec<String> {
         .unwrap_or_else(|| panic!("missing array {path}"))
         .iter()
         .map(|k| k.as_str().expect("string").to_string())
+        .collect()
+}
+
+/// `str_array` against a guarded assertion block, so the key is recorded.
+fn exp_strs(e: &Expect, key: &str) -> Vec<String> {
+    e[key]
+        .as_array()
+        .unwrap_or_else(|| panic!("missing array {key}"))
+        .iter()
+        .map(|k| k.as_str().expect("array of strings").to_string())
         .collect()
 }
 
@@ -92,7 +103,15 @@ async fn eventual_transparency_async() {
     let fixture = load("observational_transparency.json");
     let entries = val_entries(&fixture);
     let keys: Vec<String> = entries.iter().map(|(k, _)| k.clone()).collect();
-    let expected = fixture.get("expected").unwrap();
+    // ONE guard per fixture per runner (`#lzassertunknownkeys`); this test
+    // consumes every key of the block, including the read-sequence one, so the
+    // sibling test below cannot be the only place a key is read.
+    let expected = Expect::new(
+        format!("{SPEC_DIR}/observational_transparency.json"),
+        "expected",
+        fixture.get("expected").unwrap(),
+    );
+    assert_eq!(expected["default_mode"].as_str(), Some("eager"));
 
     let ctx_e = AsyncContext::new();
     let eager = eager_computed_map(&ctx_e, keys.clone(), entries.clone());
@@ -104,13 +123,26 @@ async fn eventual_transparency_async() {
     assert_eq!(eager.present_count(), keys.len());
     assert_eq!(
         as_set(&eager.present_keys()),
-        as_set(&str_array(expected, "eager_present"))
+        as_set(&exp_strs(&expected, "eager_present"))
     );
     assert_eq!(lazy.present_count(), 0);
 
+    // The read sequence, asserted here so `lazy_present_after_reads` is consumed
+    // by the same guard as the rest of the block.
+    let ctx_r = AsyncContext::new();
+    let reads_map: AsyncComputedMap<String, V> = AsyncComputedMap::new(&ctx_r);
+    let read_lookup = lookup_fn(val_entries(&fixture));
+    for k in str_array(&fixture, "reads") {
+        let _ = reads_map.get_or_insert_handle(&ctx_r, k, read_lookup.clone());
+    }
+    assert_eq!(
+        as_set(&reads_map.present_keys()),
+        as_set(&exp_strs(&expected, "lazy_present_after_reads"))
+    );
+
     // Eventual transparency: drive each slot; resolved value = canonical, and the
     // eager and lazy maps agree.
-    for (k, want) in expected.get("observe").and_then(|v| v.as_object()).unwrap() {
+    for (k, want) in expected["observe"].as_object().unwrap() {
         let want = want.as_i64().unwrap();
         let ve = ctx_e.get_async(&eager.handle(k).unwrap()).await;
         let vl = ctx_l
@@ -130,7 +162,26 @@ async fn deferral_not_deallocation_async() {
         return;
     }
     let fixture = load("observational_transparency.json");
-    let expected = fixture.get("expected").unwrap();
+    // Guarded independently: this test asserts the deferral law only, so the
+    // keys it does not read are named as consumed by `eventual_transparency_async`
+    // in this same binary — whose own guard fails if it ever stops reading them.
+    let expected = Expect::new(
+        format!("{SPEC_DIR}/observational_transparency.json"),
+        "expected",
+        fixture.get("expected").unwrap(),
+    );
+    expected.declared_exception(
+        "default_mode",
+        "asserted by eventual_transparency_async in this binary, under its own guard",
+    );
+    expected.declared_exception(
+        "eager_present",
+        "asserted by eventual_transparency_async in this binary, under its own guard",
+    );
+    expected.declared_exception(
+        "observe",
+        "asserted by eventual_transparency_async in this binary, under its own guard",
+    );
     let entries = val_entries(&fixture);
 
     let ctx = AsyncContext::new();
@@ -141,6 +192,6 @@ async fn deferral_not_deallocation_async() {
     }
     assert_eq!(
         as_set(&lazy.present_keys()),
-        as_set(&str_array(expected, "lazy_present_after_reads"))
+        as_set(&exp_strs(&expected, "lazy_present_after_reads"))
     );
 }

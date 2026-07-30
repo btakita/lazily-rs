@@ -2,6 +2,7 @@
 
 mod common;
 
+use common::Expect;
 use lazily::{ClientMessage, ServerMessage};
 use serde::Deserialize;
 use serde_json::Value;
@@ -14,6 +15,12 @@ struct FrameCase {
     label: String,
     direction: String,
     wire: Value,
+    /// Language-agnostic claims about the DECODED frame. Read by nothing until
+    /// `#lzassertunknownkeys`: the runner round-tripped the wire and never
+    /// checked a single one, so `server_stamped_from` / `roster_excludes_self`
+    /// were carried by the corpus and asserted by no binding here.
+    #[serde(default)]
+    assertions: Value,
 }
 
 #[derive(Deserialize)]
@@ -36,6 +43,10 @@ struct SessionReject {
 #[derive(Deserialize)]
 struct SessionFixture {
     rejects: Vec<SessionReject>,
+    /// Session-level claims. See `anti_spoof_fixture_rejects_client_supplied_from`
+    /// for why this Rust runner cannot consume them.
+    #[serde(default)]
+    assertions: Value,
 }
 
 fn decode(direction: &str, wire: &Value) -> Result<Value, String> {
@@ -65,6 +76,7 @@ fn signaling_frames_replay_positive_and_negative_cases() {
             "{} should round-trip exactly",
             case.label
         );
+        assert_frame_assertions(&case, &actual);
     }
 
     for case in fixture.rejects {
@@ -76,11 +88,97 @@ fn signaling_frames_replay_positive_and_negative_cases() {
     }
 }
 
+/// Assert every key of a frame's `assertions` block against the DECODED frame.
+///
+/// Reading them off `case.wire` would assert the fixture against itself; these
+/// read `actual`, the value the codec produced.
+fn assert_frame_assertions(case: &FrameCase, actual: &Value) {
+    let exp = Expect::new(
+        FRAMES_PATH,
+        format!("frames[{}].assertions", case.label),
+        &case.assertions,
+    );
+    if let Some(want) = exp["peer"].as_u64() {
+        assert_eq!(actual["peer"].as_u64(), Some(want), "{}: peer", case.label);
+    }
+    if let Some(want) = exp["to"].as_u64() {
+        assert_eq!(actual["to"].as_u64(), Some(want), "{}: to", case.label);
+    }
+    if let Some(want) = exp["from"].as_u64() {
+        assert_eq!(actual["from"].as_u64(), Some(want), "{}: from", case.label);
+    }
+    if let Some(want) = exp["code"].as_str() {
+        assert_eq!(actual["code"].as_str(), Some(want), "{}: code", case.label);
+    }
+    if let Some(want) = exp["has_capabilities"].as_bool() {
+        assert_eq!(
+            actual.get("capabilities").is_some_and(|c| !c.is_null()),
+            want,
+            "{}: has_capabilities",
+            case.label
+        );
+    }
+    if let Some(want) = exp["capabilities"].as_array() {
+        assert_eq!(
+            actual["capabilities"].as_array(),
+            Some(want),
+            "{}: capabilities",
+            case.label
+        );
+    }
+    if let Some(want) = exp["peers"].as_array() {
+        assert_eq!(
+            actual["peers"].as_array(),
+            Some(want),
+            "{}: peers",
+            case.label
+        );
+    }
+    if let Some(want) = exp["roster_excludes_self"].as_bool() {
+        // A welcome roster that lists the joining peer is the spoof this key
+        // pins; `rejects` covers the wire-level form, this covers the decoded one.
+        let self_peer = actual["peer"].as_u64();
+        let excluded = actual["peers"]
+            .as_array()
+            .expect("welcome carries a roster")
+            .iter()
+            .all(|p| p.as_u64() != self_peer);
+        assert_eq!(excluded, want, "{}: roster_excludes_self", case.label);
+    }
+    if let Some(want) = exp["server_stamped_from"].as_bool() {
+        // A forwarded frame carries `from` (stamped by the server) and never a
+        // client-supplied `to` — mixing both is the anti-spoof reject.
+        let stamped = actual.get("from").is_some_and(|v| !v.is_null())
+            && !actual.get("to").is_some_and(|v| !v.is_null());
+        assert_eq!(stamped, want, "{}: server_stamped_from", case.label);
+    }
+}
+
 #[test]
 fn anti_spoof_fixture_rejects_client_supplied_from() {
     let raw = common::spec_read_to_string(SESSION_PATH).expect("read anti-spoof fixture");
     let fixture: SessionFixture =
         serde_json::from_str(&raw).expect("parse signaling anti-spoof fixture");
+
+    // `assertions` here are claims about a SERVER SESSION replayed over `steps`
+    // (roster construction, server-side `from` stamping, roster ordering). The
+    // signalling *server* is not part of the Rust crate — `lazily` ships the
+    // client codec only, and the session model lives in `signaling/` (TypeScript),
+    // whose `signaling/test/protocol.test.ts` replays these same steps. This Rust
+    // runner exercises the codec's reject behaviour, so the capability the keys
+    // describe genuinely does not exist here (`#lzassertunknownkeys`).
+    let exp = Expect::new(SESSION_PATH, "assertions", &fixture.assertions);
+    for key in [
+        "forwarded_from_is_server_registered",
+        "roster_excludes_self",
+        "roster_sorted_ascending",
+    ] {
+        exp.declared_exception(
+            key,
+            "server-session claim; the Rust crate ships the signalling CLIENT codec only \
+             (the session model + its replay live in signaling/, TypeScript)",
+        );
+    }
 
     for case in fixture.rejects {
         assert!(

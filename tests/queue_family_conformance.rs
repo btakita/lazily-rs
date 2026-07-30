@@ -45,6 +45,8 @@
 mod common;
 
 use std::fs;
+
+use common::Expect;
 use std::path::Path;
 
 const SPEC_DIR: &str = "../lazily-spec/conformance/collections";
@@ -425,10 +427,17 @@ mod thread_safe_flavor {
                 other => panic!("{name} step {i}: unhandled op `{other}`"),
             };
 
-            let expected = &step["expected"];
+            // Guard the step's `expected` block (`#lzassertunknownkeys`): a key
+            // this flavor's replay never reads fails the fixture instead of
+            // passing unnoticed.
+            let expected = crate::Expect::new(
+                format!("{SPEC_DIR}/{name}"),
+                format!("steps[{i}].expected"),
+                &step["expected"],
+            );
 
             // `invalidates` BEFORE any read — reading revalidates.
-            if let Some(inv) = expected.get("invalidates") {
+            if let Some(inv) = expected.get_opt("invalidates") {
                 for (key, node_valid) in [
                     ("head", ctx.is_set(&r.head)),
                     ("len", ctx.is_set(&r.len)),
@@ -454,19 +463,19 @@ mod thread_safe_flavor {
                 );
             }
 
-            if let Some(want) = expected.get("len").and_then(|v| v.as_u64()) {
+            if let Some(want) = expected["len"].as_u64() {
                 assert_eq!(q.len(&ctx) as u64, want, "{name} step {i}: len");
             }
-            if let Some(want) = expected.get("is_empty").and_then(|v| v.as_bool()) {
+            if let Some(want) = expected["is_empty"].as_bool() {
                 assert_eq!(q.is_empty(&ctx), want, "{name} step {i}: is_empty");
             }
-            if let Some(want) = expected.get("is_full").and_then(|v| v.as_bool()) {
+            if let Some(want) = expected["is_full"].as_bool() {
                 assert_eq!(q.is_full(&ctx), want, "{name} step {i}: is_full");
             }
-            if let Some(want) = expected.get("closed").and_then(|v| v.as_bool()) {
+            if let Some(want) = expected["closed"].as_bool() {
                 assert_eq!(q.closed(&ctx), want, "{name} step {i}: closed");
             }
-            match expected.get("head") {
+            match expected.get_opt("head") {
                 Some(Value::String(want)) => {
                     assert_eq!(
                         q.head(&ctx).as_deref(),
@@ -476,6 +485,17 @@ mod thread_safe_flavor {
                 }
                 Some(Value::Null) => assert_eq!(q.head(&ctx), None, "{name} step {i}: head"),
                 _ => {}
+            }
+            // `elements`: the whole buffered FIFO sequence. The single-threaded
+            // replay always asserted it; this flavor never read the key, so the
+            // total-order claim went unchecked on exactly the flavor where it is
+            // hardest to get right (`#lzassertunknownkeys`).
+            if let Some(want) = expected["elements"].as_array() {
+                let want: Vec<String> = want
+                    .iter()
+                    .map(|v| v.as_str().expect("element").to_string())
+                    .collect();
+                assert_eq!(q.elements(), want, "{name} step {i}: elements");
             }
         }
         steps.len()
@@ -679,11 +699,18 @@ mod async_flavor {
                 other => panic!("{name} step {i}: unhandled op `{other}`"),
             };
 
-            let expected = &step["expected"];
+            // Guard the step's `expected` block (`#lzassertunknownkeys`): a key
+            // this flavor's replay never reads fails the fixture instead of
+            // passing unnoticed.
+            let expected = crate::Expect::new(
+                format!("{SPEC_DIR}/{name}"),
+                format!("steps[{i}].expected"),
+                &step["expected"],
+            );
 
             // `invalidates` BEFORE any read — reading revalidates. `closed` is a
             // source rather than a derive, so it is asserted by value below.
-            if let Some(inv) = expected.get("invalidates") {
+            if let Some(inv) = expected.get_opt("invalidates") {
                 for (key, node_valid) in [
                     ("head", ctx.is_set(&r.head)),
                     ("len", ctx.is_set(&r.len)),
@@ -707,19 +734,19 @@ mod async_flavor {
                     "{name} step {i}: returns `{got}`, fixture says `{want}`"
                 );
             }
-            if let Some(want) = expected.get("len").and_then(|v| v.as_u64()) {
+            if let Some(want) = expected["len"].as_u64() {
                 assert_eq!(q.len(&ctx) as u64, want, "{name} step {i}: len");
             }
-            if let Some(want) = expected.get("is_empty").and_then(|v| v.as_bool()) {
+            if let Some(want) = expected["is_empty"].as_bool() {
                 assert_eq!(q.is_empty(&ctx), want, "{name} step {i}: is_empty");
             }
-            if let Some(want) = expected.get("is_full").and_then(|v| v.as_bool()) {
+            if let Some(want) = expected["is_full"].as_bool() {
                 assert_eq!(q.is_full(&ctx), want, "{name} step {i}: is_full");
             }
-            if let Some(want) = expected.get("closed").and_then(|v| v.as_bool()) {
+            if let Some(want) = expected["closed"].as_bool() {
                 assert_eq!(q.closed(&ctx), want, "{name} step {i}: closed");
             }
-            match expected.get("head") {
+            match expected.get_opt("head") {
                 Some(Value::String(want)) => assert_eq!(
                     q.head(&ctx).as_deref(),
                     Some(want.as_str()),
@@ -727,6 +754,17 @@ mod async_flavor {
                 ),
                 Some(Value::Null) => assert_eq!(q.head(&ctx), None, "{name} step {i}: head"),
                 _ => {}
+            }
+            // `elements`: the whole buffered FIFO sequence. The single-threaded
+            // replay always asserted it; this flavor never read the key, so the
+            // total-order claim went unchecked on exactly the flavor where it is
+            // hardest to get right (`#lzassertunknownkeys`).
+            if let Some(want) = expected["elements"].as_array() {
+                let want: Vec<String> = want
+                    .iter()
+                    .map(|v| v.as_str().expect("element").to_string())
+                    .collect();
+                assert_eq!(q.elements(), want, "{name} step {i}: elements");
             }
         }
         steps.len()
@@ -926,10 +964,17 @@ mod topic_flavors {
                 other => panic!("{flavor} {name} step {i}: unhandled op `{other}`"),
             };
 
-            let expected = &step["expected"];
+            // Guard the step's `expected` block (`#lzassertunknownkeys`): a key
+            // this flavor's replay never reads fails the fixture instead of
+            // passing unnoticed.
+            let expected = crate::Expect::new(
+                format!("{SPEC_DIR}/{name}"),
+                format!("steps[{i}].expected"),
+                &step["expected"],
+            );
 
             // `invalidates` BEFORE any read — a read revalidates the node.
-            if let Some(inv) = expected.get("invalidates").and_then(|v| v.as_object()) {
+            if let Some(inv) = expected["invalidates"].as_object() {
                 for (id, want) in inv {
                     let want = want.as_bool().expect("invalidates flag");
                     assert_eq!(
@@ -959,21 +1004,21 @@ mod topic_flavors {
                 }
             }
 
-            if let Some(want) = expected.get("base_offset").and_then(|v| v.as_u64()) {
+            if let Some(want) = expected["base_offset"].as_u64() {
                 assert_eq!(
                     topic.base_offset(),
                     want,
                     "{flavor} {name} step {i}: base_offset"
                 );
             }
-            if let Some(want) = expected.get("elements") {
+            if let Some(want) = expected.get_opt("elements") {
                 assert_eq!(
                     topic.elements(),
                     strings(want),
                     "{flavor} {name} step {i}: retained elements"
                 );
             }
-            if let Some(subs) = expected.get("subscriptions").and_then(|v| v.as_object()) {
+            if let Some(subs) = expected["subscriptions"].as_object() {
                 for (id, want) in subs {
                     let got = topic.subscription(id).unwrap_or_else(|| {
                         panic!("{flavor} {name} step {i}: no subscription {id}")
@@ -1007,7 +1052,7 @@ mod topic_flavors {
                     }
                 }
             }
-            if let Some(reads) = expected.get("reads").and_then(|v| v.as_object()) {
+            if let Some(reads) = expected["reads"].as_object() {
                 for (id, want) in reads {
                     assert_eq!(
                         topic.read_stream(id),
@@ -1514,7 +1559,14 @@ mod work_queue_flavors {
                 other => panic!("{flavor} {name} step {i}: unknown op `{other}`"),
             }
 
-            let expected = &step["expected"];
+            // Guard the step's `expected` block (`#lzassertunknownkeys`): a key
+            // this flavor's replay never reads fails the fixture instead of
+            // passing unnoticed.
+            let expected = crate::Expect::new(
+                format!("{SPEC_DIR}/{name}"),
+                format!("steps[{i}].expected"),
+                &step["expected"],
+            );
             assert!(
                 step.get("invalidates").is_none(),
                 "{name} step {i}: `invalidates` at STEP level would be silently \

@@ -12,6 +12,7 @@ mod common;
 
 use std::collections::HashSet;
 
+use common::Expect;
 use lazily::{ThreadSafeComputedMap, ThreadSafeContext};
 use serde_json::Value;
 
@@ -47,6 +48,16 @@ fn str_array(v: &Value, path: &str) -> Vec<String> {
         .unwrap_or_else(|| panic!("missing array {path}"))
         .iter()
         .map(|k| k.as_str().expect("string").to_string())
+        .collect()
+}
+
+/// `str_array` against a guarded assertion block, so the key is recorded.
+fn exp_strs(e: &Expect, key: &str) -> Vec<String> {
+    e[key]
+        .as_array()
+        .unwrap_or_else(|| panic!("missing array {key}"))
+        .iter()
+        .map(|k| k.as_str().expect("array of strings").to_string())
         .collect()
 }
 
@@ -87,12 +98,15 @@ fn check_val_fixture(name: &str) -> Value {
     let fixture = load(name);
     let entries = val_entries(&fixture);
     let keys: Vec<String> = entries.iter().map(|(k, _)| k.clone()).collect();
-    let expected = fixture.get("expected").expect("expected");
-
-    assert_eq!(
-        expected.get("default_mode").and_then(|v| v.as_str()),
-        Some("eager")
+    // ONE guard per fixture per runner (`#lzassertunknownkeys`); every key of the
+    // block is consumed here rather than split across sibling tests.
+    let expected = Expect::new(
+        format!("{SPEC_DIR}/{name}"),
+        "expected",
+        fixture.get("expected").expect("expected"),
     );
+
+    assert_eq!(expected["default_mode"].as_str(), Some("eager"));
 
     let ctx = ThreadSafeContext::new();
     let eager = eager_computed_map(&ctx, keys.clone(), entries.clone());
@@ -102,11 +116,11 @@ fn check_val_fixture(name: &str) -> Value {
     assert_eq!(eager.present_count(), keys.len());
     assert_eq!(
         as_set(&eager.present_keys()),
-        as_set(&str_array(expected, "eager_present"))
+        as_set(&exp_strs(&expected, "eager_present"))
     );
     assert_eq!(lazy.present_count(), 0);
 
-    for (k, want) in expected.get("observe").and_then(|v| v.as_object()).unwrap() {
+    for (k, want) in expected["observe"].as_object().unwrap() {
         let want = want.as_i64().unwrap();
         assert_eq!(eager.observe(&ctx, k).unwrap(), want, "eager observe {k}");
         assert_eq!(
@@ -115,6 +129,32 @@ fn check_val_fixture(name: &str) -> Value {
             "lazy observe {k}"
         );
     }
+
+    // The read sequence, asserted here so `lazy_present_after_reads` and
+    // `present_after_each_read` land under the same guard.
+    let fresh_ctx = ThreadSafeContext::new();
+    let fresh: ThreadSafeComputedMap<String, V> = ThreadSafeComputedMap::new(&fresh_ctx);
+    let lookup = lookup_fn(val_entries(&fixture));
+    let mut sizes = Vec::new();
+    for k in str_array(&fixture, "reads") {
+        fresh.get_or_insert_with(&fresh_ctx, k, lookup.clone());
+        sizes.push(fresh.present_count());
+    }
+    assert_eq!(
+        as_set(&fresh.present_keys()),
+        as_set(&exp_strs(&expected, "lazy_present_after_reads"))
+    );
+    if let Some(want_sizes) = expected.get_opt("present_after_each_read") {
+        let want: Vec<usize> = want_sizes
+            .as_array()
+            .expect("present_after_each_read")
+            .iter()
+            .map(|n| n.as_u64().unwrap() as usize)
+            .collect();
+        assert_eq!(sizes, want, "cumulative present-set sizes");
+    }
+
+    expected.finish();
     fixture
 }
 

@@ -4,6 +4,7 @@ mod common;
 
 use std::path::Path;
 
+use common::Expect;
 use lazily::{Context, WorkQueueCell, WorkQueueDeadLetterReason};
 use serde_json::Value;
 
@@ -26,57 +27,61 @@ fn as_u64(value: &Value, label: &str) -> u64 {
         .unwrap_or_else(|| panic!("{label} must be u64"))
 }
 
-fn assert_state(ctx: &Context, queue: &WorkQueueCell<String>, expected: &Value) {
+/// Assert the queue's whole observable state against the step's `expected`
+/// block. Every record and reader map is guarded (`#lzassertunknownkeys`) — a
+/// field the fixture asserts and this runner never reads fails the fixture.
+fn assert_state(ctx: &Context, queue: &WorkQueueCell<String>, exp: &Expect) {
     let pending = queue.pending();
-    let expected_pending = expected["pending"].as_array().expect("pending array");
+    let expected_pending = exp["pending"].as_array().expect("pending array");
     assert_eq!(pending.len(), expected_pending.len());
-    for (actual, expected) in pending.iter().zip(expected_pending) {
-        assert_eq!(actual.item_id, as_u64(&expected["item_id"], "item_id"));
-        assert_eq!(actual.value, expected["value"].as_str().expect("value"));
+    for (j, (actual, want)) in pending.iter().zip(expected_pending).enumerate() {
+        let want = exp.nested(format!("pending[{j}]"), want);
+        assert_eq!(actual.item_id, as_u64(&want["item_id"], "item_id"));
+        assert_eq!(actual.value, want["value"].as_str().expect("value"));
         assert_eq!(
             u64::from(actual.attempts),
-            as_u64(&expected["attempts"], "attempts")
+            as_u64(&want["attempts"], "attempts")
         );
     }
 
     let in_flight = queue.in_flight();
-    let expected_in_flight = expected["in_flight"].as_array().expect("in_flight array");
+    let expected_in_flight = exp["in_flight"].as_array().expect("in_flight array");
     assert_eq!(in_flight.len(), expected_in_flight.len());
-    for (actual, expected) in in_flight.iter().zip(expected_in_flight) {
+    for (j, (actual, want)) in in_flight.iter().zip(expected_in_flight).enumerate() {
+        let want = exp.nested(format!("in_flight[{j}]"), want);
         assert_eq!(
             actual.delivery_id,
-            as_u64(&expected["delivery_id"], "delivery_id")
+            as_u64(&want["delivery_id"], "delivery_id")
         );
-        assert_eq!(actual.item_id, as_u64(&expected["item_id"], "item_id"));
-        assert_eq!(actual.value, expected["value"].as_str().expect("value"));
-        assert_eq!(actual.worker, expected["worker"].as_str().expect("worker"));
+        assert_eq!(actual.item_id, as_u64(&want["item_id"], "item_id"));
+        assert_eq!(actual.value, want["value"].as_str().expect("value"));
+        assert_eq!(actual.worker, want["worker"].as_str().expect("worker"));
         assert_eq!(
             u64::from(actual.attempt),
-            as_u64(&expected["attempt"], "attempt")
+            as_u64(&want["attempt"], "attempt")
         );
-        assert_eq!(actual.deadline, as_u64(&expected["deadline"], "deadline"));
+        assert_eq!(actual.deadline, as_u64(&want["deadline"], "deadline"));
     }
 
     let dead_letters = queue.dead_letters();
-    let expected_dead_letters = expected["dead_letters"]
-        .as_array()
-        .expect("dead_letters array");
+    let expected_dead_letters = exp["dead_letters"].as_array().expect("dead_letters array");
     assert_eq!(dead_letters.len(), expected_dead_letters.len());
-    for (actual, expected) in dead_letters.iter().zip(expected_dead_letters) {
-        assert_eq!(actual.item_id, as_u64(&expected["item_id"], "item_id"));
-        assert_eq!(actual.value, expected["value"].as_str().expect("value"));
+    for (j, (actual, want)) in dead_letters.iter().zip(expected_dead_letters).enumerate() {
+        let want = exp.nested(format!("dead_letters[{j}]"), want);
+        assert_eq!(actual.item_id, as_u64(&want["item_id"], "item_id"));
+        assert_eq!(actual.value, want["value"].as_str().expect("value"));
         assert_eq!(
             u64::from(actual.attempts),
-            as_u64(&expected["attempts"], "attempts")
+            as_u64(&want["attempts"], "attempts")
         );
         let reason = match actual.reason {
             WorkQueueDeadLetterReason::Nack => "nack",
             WorkQueueDeadLetterReason::Expired => "expired",
         };
-        assert_eq!(reason, expected["reason"].as_str().expect("reason"));
+        assert_eq!(reason, want["reason"].as_str().expect("reason"));
     }
 
-    let reads = &expected["reads"];
+    let reads = exp.sub("reads");
     assert_eq!(
         queue.pending_len(ctx) as u64,
         as_u64(&reads["pending_len"], "pending_len")
@@ -95,9 +100,9 @@ fn assert_state(ctx: &Context, queue: &WorkQueueCell<String>, expected: &Value) 
     );
 }
 
-fn assert_invalidations(ctx: &Context, queue: &WorkQueueCell<String>, expected: &Value) {
+fn assert_invalidations(ctx: &Context, queue: &WorkQueueCell<String>, exp: &Expect) {
     let handles = queue.reader_handles();
-    let invalidates = &expected["invalidates"];
+    let invalidates = exp.sub("invalidates");
     assert_eq!(
         !ctx.is_set(&handles.pending_len),
         invalidates["pending_len"]
@@ -124,7 +129,9 @@ fn assert_invalidations(ctx: &Context, queue: &WorkQueueCell<String>, expected: 
     );
 }
 
-fn assert_delivery(actual: &lazily::WorkQueueDelivery<String>, expected: &Value) {
+/// `returns` for a `claim` is a delivery record — an assertion block in its own
+/// right, so it is guarded too.
+fn assert_delivery(actual: &lazily::WorkQueueDelivery<String>, expected: &Expect) {
     assert_eq!(
         actual.delivery_id,
         as_u64(&expected["delivery_id"], "delivery_id")
@@ -157,7 +164,12 @@ fn run_fixture(name: &str) {
             .is_empty()
     );
 
-    for step in fixture["steps"].as_array().expect("steps") {
+    for (i, step) in fixture["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .enumerate()
+    {
         // Every reader is materialized before the mutation so fixture
         // invalidation expectations are observable through Context::is_set.
         let _ = queue.pending_len(&ctx);
@@ -180,7 +192,12 @@ fn run_fixture(name: &str) {
                 if step["returns"].is_null() {
                     assert!(actual.is_none());
                 } else {
-                    assert_delivery(&actual.expect("delivery"), &step["returns"]);
+                    let want = Expect::new(
+                        format!("{SPEC_DIR}/{name}"),
+                        format!("steps[{i}].returns"),
+                        &step["returns"],
+                    );
+                    assert_delivery(&actual.expect("delivery"), &want);
                 }
             }
             "ack" => {
@@ -206,8 +223,13 @@ fn run_fixture(name: &str) {
             other => panic!("unknown WorkQueueCell op {other}"),
         }
 
-        assert_invalidations(&ctx, &queue, &step["expected"]);
-        assert_state(&ctx, &queue, &step["expected"]);
+        let exp = Expect::new(
+            format!("{SPEC_DIR}/{name}"),
+            format!("steps[{i}].expected"),
+            &step["expected"],
+        );
+        assert_invalidations(&ctx, &queue, &exp);
+        assert_state(&ctx, &queue, &exp);
     }
 }
 

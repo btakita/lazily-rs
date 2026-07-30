@@ -7,6 +7,7 @@
 
 mod common;
 
+use common::Expect;
 use lazily::{BarrierCell, Context, LeaderCell, LeaderRole, LeaseCell, LockCell, SemaphoreCell};
 use serde_json::Value;
 
@@ -26,8 +27,14 @@ fn present() -> bool {
 fn steps(fx: &Value) -> &Vec<Value> {
     fx["steps"].as_array().unwrap()
 }
-fn inval(step: &Value, reader: &str) -> bool {
-    step["expected"]["invalidates"][reader].as_bool().unwrap()
+/// Guard one step's `expected` block (`#lzassertunknownkeys`): a key this runner
+/// never reads fails the fixture instead of passing unnoticed.
+fn expected<'a>(name: &str, i: usize, step: &'a Value) -> Expect<'a> {
+    Expect::new(
+        format!("{SPEC_DIR}/{name}"),
+        format!("steps[{i}].expected"),
+        &step["expected"],
+    )
 }
 
 #[test]
@@ -42,7 +49,7 @@ fn lease() {
     let observed = ctx.computed(move |c| hc.get(c));
     let _ = observed.get(&ctx);
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
         let op = &step["op"];
         let now = op["now"].as_u64().unwrap();
         match op["type"].as_str().unwrap() {
@@ -70,14 +77,15 @@ fn lease() {
             }
             other => panic!("unknown op {other}"),
         }
-        let exp = &step["expected"];
+        let exp = expected("lease.json", i, step);
+        let inv = exp.sub("invalidates");
         assert_eq!(lease.holder(now), exp["holder"].as_u64());
         assert_eq!(lease.is_held(now), exp["held"].as_bool().unwrap());
         assert_eq!(lease.fence(), exp["fence"].as_u64().unwrap());
 
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inval(step, "holder"), "holder inval");
+        assert_eq!(!was, inv["holder"].as_bool().unwrap(), "holder inval");
     }
 }
 
@@ -94,7 +102,7 @@ fn leader() {
     let observed = ctx.computed(move |c| lc.get(c));
     let _ = observed.get(&ctx);
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
         let op = &step["op"];
         let now = op["now"].as_u64().unwrap();
         let role = match op["type"].as_str().unwrap() {
@@ -108,7 +116,8 @@ fn leader() {
             "tick" => leader.tick(&ctx, now),
             other => panic!("unknown op {other}"),
         };
-        let exp = &step["expected"];
+        let exp = expected("leader.json", i, step);
+        let inv = exp.sub("invalidates");
         let want_role = match exp["role"].as_str().unwrap() {
             "Leader" => LeaderRole::Leader,
             "Follower" => LeaderRole::Follower,
@@ -120,7 +129,11 @@ fn leader() {
 
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inval(step, "current_leader"), "leader inval");
+        assert_eq!(
+            !was,
+            inv["current_leader"].as_bool().unwrap(),
+            "leader inval"
+        );
     }
 }
 
@@ -136,7 +149,7 @@ fn lock() {
     let observed = ctx.computed(move |c| lc.get(c));
     let _ = observed.get(&ctx);
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
         let op = &step["op"];
         let now = op["now"].as_u64().unwrap();
         match op["type"].as_str().unwrap() {
@@ -159,13 +172,14 @@ fn lock() {
             }
             other => panic!("unknown op {other}"),
         }
-        let exp = &step["expected"];
+        let exp = expected("lock.json", i, step);
+        let inv = exp.sub("invalidates");
         assert_eq!(lock.is_locked(now), exp["is_locked"].as_bool().unwrap());
         assert_eq!(lock.fence(), exp["fence"].as_u64().unwrap());
 
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inval(step, "is_locked"), "lock inval");
+        assert_eq!(!was, inv["is_locked"].as_bool().unwrap(), "lock inval");
     }
 }
 
@@ -182,13 +196,14 @@ fn semaphore() {
     let observed = ctx.computed(move |c| pc.get(c));
     let _ = observed.get(&ctx);
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
         match step["op"]["type"].as_str().unwrap() {
             "acquire" => assert_eq!(sem.acquire(&ctx), step["returns"].as_bool().unwrap()),
             "release" => sem.release(&ctx),
             other => panic!("unknown op {other}"),
         }
-        let exp = &step["expected"];
+        let exp = expected("semaphore.json", i, step);
+        let inv = exp.sub("invalidates");
         assert_eq!(
             sem.permits_available(&ctx),
             exp["permits_available"].as_u64().unwrap()
@@ -196,7 +211,11 @@ fn semaphore() {
 
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inval(step, "permits_available"), "sem inval");
+        assert_eq!(
+            !was,
+            inv["permits_available"].as_bool().unwrap(),
+            "sem inval"
+        );
     }
 }
 
@@ -213,15 +232,16 @@ fn quorum() {
     let observed = ctx.computed(move |c| oc.get(c));
     let _ = observed.get(&ctx);
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
         let got = q.arrive(&ctx, step["op"]["peer"].as_u64().unwrap());
         assert_eq!(got, step["returns"].as_bool().unwrap());
-        let exp = &step["expected"];
+        let exp = expected("quorum.json", i, step);
+        let inv = exp.sub("invalidates");
         assert_eq!(q.count(), exp["votes"].as_u64().unwrap());
         assert_eq!(q.is_open(&ctx), exp["is_open"].as_bool().unwrap());
 
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inval(step, "is_open"), "quorum inval");
+        assert_eq!(!was, inv["is_open"].as_bool().unwrap(), "quorum inval");
     }
 }

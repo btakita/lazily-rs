@@ -32,6 +32,7 @@ mod common;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 
+use common::Expect;
 use lazily::{
     AsyncComputed, AsyncContext, AsyncSource, AsyncSourceMap, Computed, Context, Source, SourceMap,
     ThreadSafeContext, ThreadSafeSourceMap,
@@ -467,7 +468,13 @@ async fn run_steps_fixture<M: MapModel>(name: &str) {
 
     for (i, step) in steps.iter().enumerate() {
         let op = step.get("op").expect("op");
-        let expected = step.get("expected").expect("expected");
+        // Guard the step's `expected` block (`#lzassertunknownkeys`): a key this
+        // runner never reads fails the fixture instead of passing unnoticed.
+        let expected = Expect::new(
+            format!("{SPEC_DIR}/{name}"),
+            format!("steps[{i}].expected"),
+            step.get("expected").expect("expected"),
+        );
 
         // Rebuild + prime readers from the CURRENT key set so each step's
         // invalidation is measured in isolation.
@@ -508,13 +515,14 @@ async fn run_steps_fixture<M: MapModel>(name: &str) {
         apply_op(&model, op);
 
         // -- invalidation (reader-class independence) --------------------
-        let invalidates = expected
-            .get("invalidates")
-            .unwrap_or_else(|| panic!("step {i}: expected.invalidates missing from {name}"));
+        let invalidates = expected.sub("invalidates");
+        assert!(
+            invalidates.raw().is_object(),
+            "step {i}: expected.invalidates missing from {name}"
+        );
         let survivors: HashSet<String> = model.keys().into_iter().collect();
-        let value_invalidated: HashSet<String> = invalidates
-            .get("value")
-            .and_then(|v| v.as_array())
+        let value_invalidated: HashSet<String> = invalidates["value"]
+            .as_array()
             .map(|a| a.iter().map(|v| v.as_str().unwrap().to_string()).collect())
             .unwrap_or_default();
 
@@ -537,10 +545,7 @@ async fn run_steps_fixture<M: MapModel>(name: &str) {
             }
         }
 
-        let membership_expected = invalidates
-            .get("membership")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let membership_expected = invalidates["membership"].as_bool().unwrap_or(false);
         assert_eq!(
             !model.membership_cached(&membership_reader),
             membership_expected,
@@ -548,10 +553,7 @@ async fn run_steps_fixture<M: MapModel>(name: &str) {
              (a pure reorder must NOT invalidate set-identity readers)"
         );
 
-        let order_expected = invalidates
-            .get("order")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let order_expected = invalidates["order"].as_bool().unwrap_or(false);
         assert_eq!(
             !model.order_cached(&order_reader),
             order_expected,
@@ -559,7 +561,7 @@ async fn run_steps_fixture<M: MapModel>(name: &str) {
         );
 
         // -- handle stability (atomic move keeps node identity) ----------
-        if let Some(stable) = expected.get("handle_stable").and_then(|v| v.as_object()) {
+        if let Some(stable) = expected["handle_stable"].as_object() {
             for (key, want) in stable {
                 if !want.as_bool().unwrap_or(false) {
                     continue;
@@ -581,14 +583,14 @@ async fn run_steps_fixture<M: MapModel>(name: &str) {
         }
 
         // -- resulting state ---------------------------------------------
-        if let Some(order) = expected.get("order").and_then(|v| v.as_array()) {
+        if let Some(order) = expected["order"].as_array() {
             let want: Vec<String> = order
                 .iter()
                 .map(|v| v.as_str().unwrap().to_string())
                 .collect();
             assert_eq!(model.keys(), want, "{flavor} step {i}: order mismatch");
         }
-        if let Some(membership) = expected.get("membership").and_then(|v| v.as_array()) {
+        if let Some(membership) = expected["membership"].as_array() {
             let want: HashSet<String> = membership
                 .iter()
                 .map(|v| v.as_str().unwrap().to_string())
@@ -596,7 +598,7 @@ async fn run_steps_fixture<M: MapModel>(name: &str) {
             let got: HashSet<String> = model.keys().into_iter().collect();
             assert_eq!(got, want, "{flavor} step {i}: membership mismatch");
         }
-        if let Some(values) = expected.get("values").and_then(|v| v.as_object()) {
+        if let Some(values) = expected["values"].as_object() {
             for (key, val) in values {
                 let want = val
                     .as_i64()

@@ -10,6 +10,7 @@ mod common;
 
 use std::collections::BTreeSet;
 
+use common::Expect;
 use lazily::{Context, MembershipCell, MembershipConfig, PeerState};
 use serde_json::Value;
 
@@ -54,7 +55,7 @@ fn membership_lifecycle() {
     let observed = ctx.computed(move |c| set.get(c));
     let _ = observed.get(&ctx);
 
-    for step in fx["steps"].as_array().unwrap() {
+    for (i, step) in fx["steps"].as_array().unwrap().iter().enumerate() {
         let op = &step["op"];
         let now = op["now"].as_u64().unwrap();
         match op["type"].as_str().unwrap() {
@@ -73,8 +74,15 @@ fn membership_lifecycle() {
             other => panic!("unknown op {other}"),
         }
 
-        let exp = &step["expected"];
-        // Per-peer state.
+        // Guard the `expected` block (`#lzassertunknownkeys`): a key this runner
+        // never reads fails the fixture instead of passing unnoticed.
+        let exp = Expect::new(
+            format!("{SPEC_DIR}/membership_lifecycle.json"),
+            format!("steps[{i}].expected"),
+            &step["expected"],
+        );
+        // Per-peer state. `states` keys are peer ids — data, not assertion
+        // names — so the map is consumed wholesale.
         for (peer, want) in exp["states"].as_object().unwrap() {
             let id: u64 = peer.parse().unwrap();
             assert_eq!(

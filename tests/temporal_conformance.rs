@@ -11,6 +11,7 @@
 
 mod common;
 
+use common::Expect;
 use lazily::{Context, CronCell, DeadlineCell, Deadlined, IntervalCell, TimerCell};
 use serde_json::Value;
 
@@ -39,9 +40,14 @@ fn edge_of(step: &Value) -> bool {
     step["returns"].as_bool().unwrap()
 }
 
-/// Whether the primary reader invalidates on this step (from the fixture).
-fn invalidates(step: &Value, reader: &str) -> bool {
-    step["expected"]["invalidates"][reader].as_bool().unwrap()
+/// Guard one step's `expected` block (`#lzassertunknownkeys`): a key this runner
+/// never reads fails the fixture instead of passing unnoticed.
+fn expected<'a>(name: &str, i: usize, step: &'a Value) -> Expect<'a> {
+    Expect::new(
+        format!("{SPEC_DIR}/{name}"),
+        format!("steps[{i}].expected"),
+        &step["expected"],
+    )
 }
 
 #[test]
@@ -57,11 +63,12 @@ fn timer_single_shot() {
     let observed = ctx.computed(move |c| fired.get(c));
     let _ = observed.get(&ctx); // prime the cache
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
         let edge = timer.tick(&ctx, now_of(step));
         assert_eq!(edge, edge_of(step), "fire edge for {step}");
 
-        let exp = &step["expected"];
+        let exp = expected("timer_single_shot.json", i, step);
+        let inv = exp.sub("invalidates");
         assert_eq!(timer.has_fired(&ctx), exp["fired"].as_bool().unwrap());
         match exp["value"].as_str() {
             Some("()") => assert_eq!(timer.value(&ctx), Some(())),
@@ -75,7 +82,7 @@ fn timer_single_shot() {
         // fixture says so.
         assert_eq!(
             !was_cached,
-            invalidates(step, "fired"),
+            inv["fired"].as_bool().unwrap(),
             "invalidation for {step}"
         );
     }
@@ -94,17 +101,18 @@ fn interval_periodic() {
     let observed = ctx.computed(move |c| count.get(c));
     let _ = observed.get(&ctx);
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
         let edge = iv.tick(&ctx, now_of(step));
         assert_eq!(edge, edge_of(step), "fire edge for {step}");
 
-        let exp = &step["expected"];
+        let exp = expected("interval_periodic.json", i, step);
+        let inv = exp.sub("invalidates");
         assert_eq!(iv.count(&ctx), exp["count"].as_u64().unwrap());
         assert_eq!(iv.next_fire(), exp["next_fire"].as_u64());
 
         let was_cached = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was_cached, invalidates(step, "count"), "inval {step}");
+        assert_eq!(!was_cached, inv["count"].as_bool().unwrap(), "inval {step}");
     }
 }
 
@@ -127,17 +135,18 @@ fn cron_pattern() {
     let observed = ctx.computed(move |c| count.get(c));
     let _ = observed.get(&ctx);
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
         let edge = cron.tick(&ctx, now_of(step));
         assert_eq!(edge, edge_of(step), "fire edge for {step}");
 
-        let exp = &step["expected"];
+        let exp = expected("cron_pattern.json", i, step);
+        let inv = exp.sub("invalidates");
         assert_eq!(cron.count(&ctx), exp["count"].as_u64().unwrap());
         assert_eq!(cron.next_fire(), exp["next_fire"].as_u64());
 
         let was_cached = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was_cached, invalidates(step, "count"), "inval {step}");
+        assert_eq!(!was_cached, inv["count"].as_bool().unwrap(), "inval {step}");
     }
 }
 
@@ -155,11 +164,12 @@ fn deadline_expiry() {
     let observed = ctx.computed(move |c| expired.get(c));
     let _ = observed.get(&ctx);
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
         let edge = d.tick(&ctx, now_of(step));
         assert_eq!(edge, edge_of(step), "expiry edge for {step}");
 
-        let exp = &step["expected"];
+        let exp = expected("deadline_expiry.json", i, step);
+        let inv = exp.sub("invalidates");
         let state = d.state(&ctx);
         let want_expired = exp["state"].as_str().unwrap() == "Expired";
         assert_eq!(state.is_expired(), want_expired);
@@ -172,6 +182,6 @@ fn deadline_expiry() {
 
         let was_cached = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was_cached, invalidates(step, "state"), "inval {step}");
+        assert_eq!(!was_cached, inv["state"].as_bool().unwrap(), "inval {step}");
     }
 }

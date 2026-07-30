@@ -81,6 +81,18 @@ where
     pub fn with_capacity(ctx: &ThreadSafeContext, capacity: usize) -> Self {
         Self::with_storage(ctx, VecDequeStorage::with_capacity(capacity))
     }
+
+    /// Snapshot the buffered elements in FIFO order.
+    ///
+    /// Non-reactive — for debugging, snapshot/serde, and conformance-fixture
+    /// verification, exactly like [`QueueCell::elements`](crate::QueueCell::elements).
+    /// The single-threaded flavor has always had it; without it the canonical
+    /// `queuecell_*.json` fixtures' `expected.elements` key had no reader on this
+    /// flavor, so the total-FIFO claim went unasserted here while the suite
+    /// reported the fixture as replayed (`#lzassertunknownkeys`).
+    pub fn elements(&self) -> Vec<T> {
+        self.inner.storage.lock().expect("queue storage").elements()
+    }
 }
 
 impl<T, S> ThreadSafeQueueCell<T, S>

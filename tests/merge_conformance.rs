@@ -12,6 +12,7 @@ mod common;
 use std::cell::Cell as StdCell;
 use std::rc::Rc;
 
+use common::Expect;
 use lazily::{Context, KeepLatest, Max, MergePolicy, Source, Sum};
 use serde_json::Value;
 
@@ -30,7 +31,7 @@ fn spec_fixtures_present() -> bool {
 
 /// Replay one scenario's steps against a `MergeCell<i64, M>`, asserting value and
 /// invalidation (observed via a subscribed effect's rerun count) after each op.
-fn replay_scenario<M>(scenario: &Value)
+fn replay_scenario<M>(si: usize, scenario: &Value)
 where
     M: MergePolicy<i64> + 'static,
 {
@@ -50,10 +51,15 @@ where
 
     for (i, step) in scenario["steps"].as_array().unwrap().iter().enumerate() {
         let op = step["merge"].as_i64().expect("merge i64");
-        let want_value = step["expected"]["value"].as_i64().expect("value i64");
-        let want_inval = step["expected"]["invalidates"]
-            .as_bool()
-            .expect("invalidates bool");
+        // Guard the `expected` block (`#lzassertunknownkeys`): a key this runner
+        // never reads fails the fixture instead of passing unnoticed.
+        let exp = Expect::new(
+            format!("{SPEC_DIR}/mergecell_algebra.json"),
+            format!("scenarios[{si}].steps[{i}].expected"),
+            &step["expected"],
+        );
+        let want_value = exp["value"].as_i64().expect("value i64");
+        let want_inval = exp["invalidates"].as_bool().expect("invalidates bool");
 
         let before = runs.get();
         mc.merge(&ctx, op);
@@ -81,15 +87,20 @@ fn mergecell_algebra_fixture() {
     let scenarios = fixture["scenarios"].as_array().expect("scenarios array");
 
     let mut seen = 0;
-    for scenario in scenarios {
+    for (si, scenario) in scenarios.iter().enumerate() {
         match scenario["policy"].as_str().expect("policy string") {
-            "KeepLatest" => replay_scenario::<KeepLatest>(scenario),
-            "Sum" => replay_scenario::<Sum>(scenario),
-            "Max" => replay_scenario::<Max>(scenario),
+            "KeepLatest" => replay_scenario::<KeepLatest>(si, scenario),
+            "Sum" => replay_scenario::<Sum>(si, scenario),
+            "Max" => replay_scenario::<Max>(si, scenario),
             other => panic!("unknown policy in fixture: {other}"),
         }
         // Flag sanity: the fixture's declared flags must match the policy consts.
-        let flags = &scenario["flags"];
+        // The flag block is an assertion block too, so it is guarded the same way.
+        let flags = Expect::new(
+            format!("{SPEC_DIR}/mergecell_algebra.json"),
+            format!("scenarios[{si}].flags"),
+            &scenario["flags"],
+        );
         let (comm, idem) = match scenario["policy"].as_str().unwrap() {
             "KeepLatest" => (
                 <KeepLatest as MergePolicy<i64>>::COMMUTATIVE,

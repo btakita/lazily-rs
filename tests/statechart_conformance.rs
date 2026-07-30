@@ -10,6 +10,7 @@ mod common;
 
 use std::collections::HashMap;
 
+use common::Expect;
 use lazily::{ChartDef, Context, StateChart};
 use serde_json::Value;
 
@@ -45,8 +46,10 @@ fn assert_active(ctx: &Context, chart: &StateChart, expected: &Value, msg: &str)
     assert_eq!(got, want, "{msg}");
 }
 
-fn assert_matches(ctx: &Context, chart: &StateChart, step: &Value) {
-    let Some(obj) = step.get("matches").and_then(|v| v.as_object()) else {
+fn assert_matches(ctx: &Context, chart: &StateChart, step: &Expect) {
+    // `matches` keys are state ids — data, not assertion names — so the map is
+    // consumed wholesale.
+    let Some(obj) = step["matches"].as_object() else {
         return;
     };
     for (id, expected) in obj {
@@ -55,20 +58,27 @@ fn assert_matches(ctx: &Context, chart: &StateChart, step: &Value) {
     }
 }
 
+/// A statechart fixture has no separate `expected` block — the step object *is*
+/// the assertion block, mixed with the step's inputs. Both levels are guarded
+/// (`#lzassertunknownkeys`), so an assertion key this runner does not read fails
+/// the fixture instead of being skipped.
 fn run_fixture(name: &str) {
     let fixture = load_fixture(name);
     let (ctx, chart) = build_chart(&fixture);
 
-    // initial_active (asserted once before any step).
-    assert_active(
-        &ctx,
-        &chart,
-        fixture.get("initial_active").expect("initial_active"),
-        "initial_active",
+    let fx = Expect::new(format!("{SPEC_DIR}/{name}"), "<fixture>", &fixture);
+    fx.declared_exception(
+        "description",
+        "prose for the human reader, not an assertion",
     );
+    fx.declared_exception("kind", "corpus routing tag, consumed by the coverage guard");
+    let _ = fx["chart"]; // consumed by build_chart above
+
+    // initial_active (asserted once before any step).
+    assert_active(&ctx, &chart, &fx["initial_active"], "initial_active");
 
     // initial_actions (optional).
-    if let Some(Value::Array(initial)) = fixture.get("initial_actions") {
+    if let Value::Array(initial) = &fx["initial_actions"] {
         let want: Vec<String> = initial
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
@@ -76,15 +86,13 @@ fn run_fixture(name: &str) {
         assert_eq!(chart.last_actions(), want, "initial_actions");
     }
 
-    let steps = fixture
-        .get("steps")
-        .and_then(|v| v.as_array())
-        .expect("steps");
+    let steps = fx["steps"].as_array().expect("steps");
     for (i, step) in steps.iter().enumerate() {
-        let event = step.get("event").and_then(|v| v.as_str()).expect("event");
-        let guards: HashMap<String, bool> = step
-            .get("guards")
-            .and_then(|v| v.as_object())
+        let step = fx.nested(format!("steps[{i}]"), step);
+        step.declared_exception("note", "prose for the human reader, not an assertion");
+        let event = step["event"].as_str().expect("event");
+        let guards: HashMap<String, bool> = step["guards"]
+            .as_object()
             .map(|o| {
                 o.iter()
                     .map(|(k, v)| (k.clone(), v.as_bool().unwrap_or(false)))
@@ -93,21 +101,18 @@ fn run_fixture(name: &str) {
             .unwrap_or_default();
 
         let accepted = chart.send(&ctx, event, &guards);
-        let want_accepted = step
-            .get("accepted")
-            .and_then(|v| v.as_bool())
-            .expect("accepted");
+        let want_accepted = step["accepted"].as_bool().expect("accepted");
         assert_eq!(accepted, want_accepted, "step {i} `{event}` accepted");
 
         assert_active(
             &ctx,
             &chart,
-            step.get("active").expect("active"),
+            &step["active"],
             &format!("step {i} `{event}` active"),
         );
-        assert_matches(&ctx, &chart, step);
+        assert_matches(&ctx, &chart, &step);
 
-        if let Some(Value::Array(actions)) = step.get("actions") {
+        if let Value::Array(actions) = &step["actions"] {
             let want: Vec<String> = actions
                 .iter()
                 .map(|v| v.as_str().unwrap().to_string())

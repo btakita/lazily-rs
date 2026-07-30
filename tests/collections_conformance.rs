@@ -17,6 +17,7 @@ use std::cell::Cell as StdCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use common::Expect;
 use lazily::{
     Block, Context, DiffOp, Match, SemTree, Source, SourceMap, SourceTree, TextCrdt,
     TextVersionVector, align, apply_to_map, assign_stable_keys, block_key, reconcile,
@@ -126,15 +127,15 @@ fn apply_op(ctx: &Context, map: &SourceMap<String, V>, op: &Value) -> Option<Str
     }
 }
 
-fn assert_state(ctx: &Context, map: &SourceMap<String, V>, expected: &Value) {
-    if let Some(order) = expected.get("order").and_then(|v| v.as_array()) {
+fn assert_state(ctx: &Context, map: &SourceMap<String, V>, expected: &Expect) {
+    if let Some(order) = expected["order"].as_array() {
         let want: Vec<String> = order
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect();
         assert_eq!(map.keys(ctx), want, "order mismatch");
     }
-    if let Some(membership) = expected.get("membership").and_then(|v| v.as_array()) {
+    if let Some(membership) = expected["membership"].as_array() {
         let want: HashSet<String> = membership
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
@@ -142,7 +143,7 @@ fn assert_state(ctx: &Context, map: &SourceMap<String, V>, expected: &Value) {
         let got: HashSet<String> = map.keys(ctx).into_iter().collect();
         assert_eq!(got, want, "membership mismatch");
     }
-    if let Some(values) = expected.get("values").and_then(|v| v.as_object()) {
+    if let Some(values) = expected["values"].as_object() {
         for (key, val) in values {
             let want = val
                 .as_i64()
@@ -227,10 +228,10 @@ fn assert_invalidation(
 /// a remove + re-mint.
 fn assert_handle_stable(
     map: &SourceMap<String, V>,
-    expected: &Value,
+    expected: &Expect,
     handle_before: &HashMap<String, Option<Source<V>>>,
 ) {
-    let Some(hs) = expected.get("handle_stable").and_then(|v| v.as_object()) else {
+    let Some(hs) = expected["handle_stable"].as_object() else {
         return;
     };
     for (key, want) in hs {
@@ -270,7 +271,13 @@ fn run_steps_fixture(name: &str) {
 
     for (i, step) in steps.iter().enumerate() {
         let op = step.get("op").expect("op");
-        let expected = step.get("expected").expect("expected");
+        // Guard the step's `expected` block (`#lzassertunknownkeys`): a key this
+        // runner never reads fails the fixture instead of passing unnoticed.
+        let expected = Expect::new(
+            format!("{SPEC_DIR}/{name}"),
+            format!("steps[{i}].expected"),
+            step.get("expected").expect("expected"),
+        );
 
         // Build + prime value/membership/order readers from the CURRENT key set
         // so each step's invalidation is measured in isolation.
@@ -305,9 +312,11 @@ fn run_steps_fixture(name: &str) {
 
         // `invalidates` lives under `expected`, not on the step. Reading it off
         // the step silently skipped the whole reader-class independence contract.
-        let invalidates = expected.get("invalidates").unwrap_or_else(|| {
-            panic!("step {i}: expected.invalidates missing from fixture {name}")
-        });
+        let invalidates = &expected["invalidates"];
+        assert!(
+            invalidates.is_object(),
+            "step {i}: expected.invalidates missing from fixture {name}"
+        );
         assert_invalidation(
             &ctx,
             &value_readers,
@@ -316,8 +325,8 @@ fn run_steps_fixture(name: &str) {
             invalidates,
             &survivors,
         );
-        assert_handle_stable(&map, expected, &handle_before);
-        assert_state(&ctx, &map, expected);
+        assert_handle_stable(&map, &expected, &handle_before);
+        assert_state(&ctx, &map, &expected);
     }
 }
 
@@ -331,10 +340,13 @@ fn run_reconcile_fixture(name: &str) {
     let reconcile_block = fixture.get("reconcile").expect("reconcile");
     let prior = keyed_pairs(reconcile_block, "prior");
     let target = keyed_pairs(reconcile_block, "target");
-    let expected = fixture.get("expected").expect("expected");
-    let result_order: Vec<String> = expected
-        .get("result_order")
-        .and_then(|v| v.as_array())
+    let expected = Expect::new(
+        format!("{SPEC_DIR}/{name}"),
+        "expected",
+        fixture.get("expected").expect("expected"),
+    );
+    let result_order: Vec<String> = expected["result_order"]
+        .as_array()
         .unwrap()
         .iter()
         .map(|v| v.as_str().unwrap().to_string())
@@ -342,7 +354,7 @@ fn run_reconcile_fixture(name: &str) {
 
     // 1. The emitted op set is minimal and matches the fixture op-for-op.
     let ops = reconcile(&prior, &target);
-    let expected_ops = expected.get("ops").and_then(|v| v.as_array()).unwrap();
+    let expected_ops = expected["ops"].as_array().unwrap();
     assert_eq!(
         ops.len(),
         expected_ops.len(),
@@ -409,9 +421,8 @@ fn run_reconcile_fixture(name: &str) {
     );
 
     // 3. Stable entries' value cells are NOT invalidated by the sibling reorder.
-    let stable: Vec<String> = expected
-        .get("stable_keys_not_invalidated")
-        .and_then(|v| v.as_array())
+    let stable: Vec<String> = expected["stable_keys_not_invalidated"]
+        .as_array()
         .map(|a| a.iter().map(|v| v.as_str().unwrap().to_string()).collect())
         .unwrap_or_default();
     if !stable.is_empty() {
@@ -705,6 +716,12 @@ fn run_stableid_fixture(name: &str) {
         .expect("stableid scenarios");
 
     for (i, scenario) in scenarios.iter().enumerate() {
+        // Guard the scenario's `expect` block (`#lzassertunknownkeys`).
+        let expect = Expect::new(
+            format!("{SPEC_DIR}/{name}"),
+            format!("scenarios[{i}].expect"),
+            scenario.get("expect").unwrap_or(&Value::Null),
+        );
         // --- key-equality scenarios (blocks, no old/new) ---
         if let Some(blocks_json) = scenario.get("blocks") {
             let blocks: Vec<Block> = blocks_json
@@ -713,11 +730,7 @@ fn run_stableid_fixture(name: &str) {
                 .iter()
                 .map(block_from_json)
                 .collect();
-            if let Some(pairs) = scenario
-                .get("expect")
-                .and_then(|v| v.get("key_equal"))
-                .and_then(|v| v.as_array())
-            {
+            if let Some(pairs) = expect["key_equal"].as_array() {
                 for pair in pairs {
                     let a = pair.get(0).and_then(|v| v.as_u64()).unwrap() as usize;
                     let b = pair.get(1).and_then(|v| v.as_u64()).unwrap() as usize;
@@ -728,11 +741,7 @@ fn run_stableid_fixture(name: &str) {
                     );
                 }
             }
-            if let Some(pairs) = scenario
-                .get("expect")
-                .and_then(|v| v.get("key_not_equal"))
-                .and_then(|v| v.as_array())
-            {
+            if let Some(pairs) = expect["key_not_equal"].as_array() {
                 for pair in pairs {
                     let a = pair.get(0).and_then(|v| v.as_u64()).unwrap() as usize;
                     let b = pair.get(1).and_then(|v| v.as_u64()).unwrap() as usize;
@@ -749,9 +758,8 @@ fn run_stableid_fixture(name: &str) {
         // --- alignment scenarios (old + new) ---
         let old = build_blocks(scenario, "old");
         let new = build_blocks(scenario, "new");
-        let expect = scenario.get("expect").unwrap();
 
-        if let Some(matches) = expect.get("matches").and_then(|v| v.as_array()) {
+        if let Some(matches) = expect["matches"].as_array() {
             let al = align(&old, &new);
             assert_eq!(
                 al.new_matches.len(),
@@ -778,7 +786,7 @@ fn run_stableid_fixture(name: &str) {
                         matches!(got, Match::Edited { old, .. } if *old == idx),
                         "scenario {i}.{j}: expected Edited:{idx}, got {got:?}"
                     );
-                    if let Some(min) = expect.get("similarity_min").and_then(|v| v.as_f64())
+                    if let Some(min) = expect["similarity_min"].as_f64()
                         && let Match::Edited { similarity, .. } = got
                     {
                         assert!(
@@ -790,7 +798,7 @@ fn run_stableid_fixture(name: &str) {
                     panic!("scenario {i}.{j}: unknown match spec {s}");
                 }
             }
-            if let Some(removed) = expect.get("removed").and_then(|v| v.as_array()) {
+            if let Some(removed) = expect["removed"].as_array() {
                 let want: Vec<usize> = removed
                     .iter()
                     .map(|v| v.as_u64().unwrap() as usize)
@@ -799,10 +807,7 @@ fn run_stableid_fixture(name: &str) {
             }
         }
 
-        if let Some(pairs) = expect
-            .get("new_key_equals_old_key")
-            .and_then(|v| v.as_array())
-        {
+        if let Some(pairs) = expect["new_key_equals_old_key"].as_array() {
             let old_keys: Vec<String> = old.iter().map(|b| block_key(b).as_string()).collect();
             let new_keys = assign_stable_keys(&old, &new);
             for pair in pairs {
@@ -1007,23 +1012,27 @@ fn run_textcrdt_fixture(name: &str) {
             }
         }
 
-        // Assertions.
-        let expect = scenario.get("expect").unwrap();
-        if let Some(text) = expect.get("text").and_then(|v| v.as_str()) {
+        // Assertions. The `expect` block is guarded (`#lzassertunknownkeys`).
+        let expect = Expect::new(
+            format!("{SPEC_DIR}/{name}"),
+            format!("scenarios[{i}].expect"),
+            scenario.get("expect").unwrap_or(&Value::Null),
+        );
+        if let Some(text) = expect["text"].as_str() {
             assert_eq!(replicas["a"].text(), text, "scenario {i}: text mismatch");
         }
-        if let Some(len) = expect.get("len").and_then(|v| v.as_u64()) {
+        if let Some(len) = expect["len"].as_u64() {
             // `len` applies to the converged replica named `a`, or to all
             // replicas referenced by `texts_equal`/`orders_equal`.
-            let target = expect
-                .get("text")
-                .and_then(|v| v.as_str())
+            let target = expect["text"]
+                .as_str()
                 .map(|_| "a".to_string())
                 .or_else(|| {
-                    expect
-                        .get("texts_equal")
-                        .or_else(|| expect.get("orders_equal"))
-                        .and_then(|v| v.as_array())
+                    let group = match expect["texts_equal"].as_array() {
+                        Some(g) => Some(g),
+                        None => expect["orders_equal"].as_array(),
+                    };
+                    group
                         .and_then(|a| a.first())
                         .and_then(|v| v.as_array())
                         .and_then(|a| a.first())
@@ -1037,7 +1046,7 @@ fn run_textcrdt_fixture(name: &str) {
                 "scenario {i}: len mismatch on `{target}`"
             );
         }
-        if let Some(pairs) = expect.get("texts_equal").and_then(|v| v.as_array()) {
+        if let Some(pairs) = expect["texts_equal"].as_array() {
             for pair in pairs {
                 let a = pair.get(0).and_then(|v| v.as_str()).unwrap();
                 let b = pair.get(1).and_then(|v| v.as_str()).unwrap();
@@ -1048,7 +1057,7 @@ fn run_textcrdt_fixture(name: &str) {
                 );
             }
         }
-        if let Some(text_on) = expect.get("text_on").and_then(|v| v.as_object()) {
+        if let Some(text_on) = expect["text_on"].as_object() {
             for (name, val) in text_on {
                 let want = val.as_str().unwrap_or_else(|| {
                     panic!("scenario {i}: text_on `{name}` value must be a string")
@@ -1060,7 +1069,7 @@ fn run_textcrdt_fixture(name: &str) {
                 assert_eq!(got, want, "scenario {i}: text_on `{name}` mismatch");
             }
         }
-        if let Some(vv_on) = expect.get("version_vector_on").and_then(|v| v.as_object()) {
+        if let Some(vv_on) = expect["version_vector_on"].as_object() {
             for (name, val) in vv_on {
                 let want = val.as_object().unwrap_or_else(|| {
                     panic!("scenario {i}: version_vector_on `{name}` must be an object")
@@ -1082,19 +1091,19 @@ fn run_textcrdt_fixture(name: &str) {
                 );
             }
         }
-        if let Some(prefix) = expect.get("a_starts_with").and_then(|v| v.as_str()) {
+        if let Some(prefix) = expect["a_starts_with"].as_str() {
             assert!(
                 replicas["a"].text().starts_with(prefix),
                 "scenario {i}: `a` should start with `{prefix}`"
             );
         }
-        if let Some(suffix) = expect.get("a_ends_with").and_then(|v| v.as_str()) {
+        if let Some(suffix) = expect["a_ends_with"].as_str() {
             assert!(
                 replicas["a"].text().ends_with(suffix),
                 "scenario {i}: `a` should end with `{suffix}`"
             );
         }
-        if let Some(tc) = expect.get("tombstone_count").and_then(|v| v.as_u64()) {
+        if let Some(tc) = expect["tombstone_count"].as_u64() {
             assert_eq!(
                 replicas["a"].tombstone_count() as u64,
                 tc,

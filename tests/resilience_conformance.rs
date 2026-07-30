@@ -4,6 +4,7 @@
 
 mod common;
 
+use common::Expect;
 use lazily::{
     BreakerState, BulkheadCell, CircuitBreakerCell, Context, RetryPolicyCell, TimeoutCell,
 };
@@ -25,8 +26,14 @@ fn present() -> bool {
 fn steps(fx: &Value) -> &Vec<Value> {
     fx["steps"].as_array().unwrap()
 }
-fn inval(step: &Value, reader: &str) -> bool {
-    step["expected"]["invalidates"][reader].as_bool().unwrap()
+/// Guard one step's `expected` block (`#lzassertunknownkeys`): a key this runner
+/// never reads fails the fixture instead of passing unnoticed.
+fn expected<'a>(name: &str, i: usize, step: &'a Value) -> Expect<'a> {
+    Expect::new(
+        format!("{SPEC_DIR}/{name}"),
+        format!("steps[{i}].expected"),
+        &step["expected"],
+    )
 }
 
 #[test]
@@ -47,7 +54,9 @@ fn circuit_breaker() {
     let observed = ctx.computed(move |c| sc.get(c));
     let _ = observed.get(&ctx);
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
+        let exp = expected("circuit_breaker.json", i, step);
+        let inv = exp.sub("invalidates");
         let op = &step["op"];
         match op["type"].as_str().unwrap() {
             "record" => cb.record(
@@ -61,7 +70,7 @@ fn circuit_breaker() {
             }
             other => panic!("unknown op {other}"),
         }
-        let want = match step["expected"]["state"].as_str().unwrap() {
+        let want = match exp["state"].as_str().unwrap() {
             "Closed" => BreakerState::Closed,
             "Open" => BreakerState::Open,
             "HalfOpen" => BreakerState::HalfOpen,
@@ -70,7 +79,7 @@ fn circuit_breaker() {
         assert_eq!(cb.state(), want, "state for {step}");
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inval(step, "state"), "inval for {step}");
+        assert_eq!(!was, inv["state"].as_bool().unwrap(), "inval for {step}");
     }
 }
 
@@ -91,13 +100,15 @@ fn retry() {
     let observed = ctx.computed(move |c| dc.get(c));
     let _ = observed.get(&ctx);
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
+        let exp = expected("retry.json", i, step);
+        let inv = exp.sub("invalidates");
         let got = r.next_delay(&ctx);
         assert_eq!(got, step["returns"].as_u64().unwrap(), "delay for {step}");
-        assert_eq!(r.delay(&ctx), step["expected"]["delay"].as_u64().unwrap());
+        assert_eq!(r.delay(&ctx), exp["delay"].as_u64().unwrap());
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inval(step, "delay"), "inval for {step}");
+        assert_eq!(!was, inv["delay"].as_bool().unwrap(), "inval for {step}");
     }
 }
 
@@ -113,19 +124,18 @@ fn bulkhead() {
     let observed = ctx.computed(move |c| uc.get(c));
     let _ = observed.get(&ctx);
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
+        let exp = expected("bulkhead.json", i, step);
+        let inv = exp.sub("invalidates");
         match step["op"]["type"].as_str().unwrap() {
             "acquire" => assert_eq!(b.acquire(&ctx), step["returns"].as_bool().unwrap()),
             "release" => b.release(&ctx),
             other => panic!("unknown op {other}"),
         }
-        assert_eq!(
-            b.permits_in_use(&ctx),
-            step["expected"]["in_use"].as_u64().unwrap()
-        );
+        assert_eq!(b.permits_in_use(&ctx), exp["in_use"].as_u64().unwrap());
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inval(step, "in_use"), "inval for {step}");
+        assert_eq!(!was, inv["in_use"].as_bool().unwrap(), "inval for {step}");
     }
 }
 
@@ -141,7 +151,9 @@ fn timeout() {
     let observed = ctx.computed(move |c| tc.get(c));
     let _ = observed.get(&ctx);
 
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
+        let exp = expected("timeout.json", i, step);
+        let inv = exp.sub("invalidates");
         let op = &step["op"];
         let now = op["now"].as_u64().unwrap();
         let got = match op["type"].as_str().unwrap() {
@@ -153,12 +165,13 @@ fn timeout() {
             other => panic!("unknown op {other}"),
         };
         assert_eq!(got, step["returns"].as_bool().unwrap(), "edge for {step}");
-        assert_eq!(
-            t.is_timed_out(&ctx),
-            step["expected"]["is_timed_out"].as_bool().unwrap()
-        );
+        assert_eq!(t.is_timed_out(&ctx), exp["is_timed_out"].as_bool().unwrap());
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
-        assert_eq!(!was, inval(step, "is_timed_out"), "inval for {step}");
+        assert_eq!(
+            !was,
+            inv["is_timed_out"].as_bool().unwrap(),
+            "inval for {step}"
+        );
     }
 }

@@ -8,6 +8,7 @@
 
 mod common;
 
+use common::Expect;
 use lazily::{
     Context, DebounceCell, Lcg, ProbabilisticSampleCell, SampleCell, SampleMode, ThrottleCell,
     ThrottleEdge,
@@ -39,28 +40,43 @@ fn op_val(step: &Value) -> String {
 fn ret(step: &Value) -> Option<String> {
     step["returns"].as_str().map(|s| s.to_string())
 }
-fn exp_output(step: &Value) -> Option<String> {
-    step["expected"]["output"].as_str().map(|s| s.to_string())
-}
-fn exp_inval(step: &Value) -> bool {
-    step["expected"]["invalidates"]["output"].as_bool().unwrap()
-}
-
 /// Run a fixture whose emit projection is a `Source<Option<String>>`, given a
 /// per-step driver returning the emitted value and the current output.
-fn run<F>(ctx: &Context, fx: &Value, observed: lazily::Computed<Option<String>>, mut drive: F)
-where
+///
+/// Each step's `expected` block is guarded (`#lzassertunknownkeys`): a key this
+/// runner never reads fails the fixture instead of passing unnoticed.
+fn run<F>(
+    ctx: &Context,
+    name: &str,
+    fx: &Value,
+    observed: lazily::Computed<Option<String>>,
+    mut drive: F,
+) where
     F: FnMut(&Value) -> (Option<String>, Option<String>),
 {
     let _ = observed.get(ctx);
-    for step in steps(fx) {
+    for (i, step) in steps(fx).iter().enumerate() {
         let (emitted, output) = drive(step);
+        let exp = Expect::new(
+            format!("{SPEC_DIR}/{name}"),
+            format!("steps[{i}].expected"),
+            &step["expected"],
+        );
+        let inv = exp.sub("invalidates");
         assert_eq!(emitted, ret(step), "emit for {step}");
-        assert_eq!(output, exp_output(step), "output for {step}");
+        assert_eq!(
+            output,
+            exp["output"].as_str().map(|s| s.to_string()),
+            "output for {step}"
+        );
 
         let was_cached = ctx.is_set(&observed);
         let _ = observed.get(ctx);
-        assert_eq!(!was_cached, exp_inval(step), "invalidation for {step}");
+        assert_eq!(
+            !was_cached,
+            inv["output"].as_bool().unwrap(),
+            "invalidation for {step}"
+        );
     }
 }
 
@@ -75,7 +91,7 @@ fn debounce() {
     let cell = DebounceCell::<String>::new(&ctx, quiet);
     let out = cell.output_cell();
     let observed = ctx.computed(move |c| out.get(c));
-    run(&ctx, &fx, observed, |step| {
+    run(&ctx, "debounce.json", &fx, observed, |step| {
         let emitted = if step["op"]["type"] == "input" {
             cell.input(&ctx, op_now(step), op_val(step));
             None
@@ -93,7 +109,7 @@ fn run_throttle(name: &str, edge: ThrottleEdge) {
     let cell = ThrottleCell::<String>::new(&ctx, edge, window);
     let out = cell.output_cell();
     let observed = ctx.computed(move |c| out.get(c));
-    run(&ctx, &fx, observed, |step| {
+    run(&ctx, name, &fx, observed, |step| {
         let emitted = if step["op"]["type"] == "input" {
             cell.input(&ctx, op_now(step), op_val(step))
         } else {
@@ -130,7 +146,7 @@ fn sample_count() {
     let cell = SampleCell::<String>::new(&ctx, SampleMode::Count(n));
     let out = cell.output_cell();
     let observed = ctx.computed(move |c| out.get(c));
-    run(&ctx, &fx, observed, |step| {
+    run(&ctx, "sample_count.json", &fx, observed, |step| {
         let emitted = cell.input(&ctx, op_val(step));
         (emitted, cell.output(&ctx))
     });
@@ -147,7 +163,7 @@ fn sample_time() {
     let cell = SampleCell::<String>::new(&ctx, SampleMode::Time(period));
     let out = cell.output_cell();
     let observed = ctx.computed(move |c| out.get(c));
-    run(&ctx, &fx, observed, |step| {
+    run(&ctx, "sample_time.json", &fx, observed, |step| {
         let emitted = if step["op"]["type"] == "input" {
             cell.input(&ctx, op_val(step));
             None
@@ -171,7 +187,7 @@ fn probabilistic_sample() {
     let cell = ProbabilisticSampleCell::<String, Lcg>::new(&ctx, rate, Lcg::new(0));
     let out = cell.output_cell();
     let observed = ctx.computed(move |c| out.get(c));
-    run(&ctx, &fx, observed, |step| {
+    run(&ctx, "probabilistic_sample.json", &fx, observed, |step| {
         let draw = step["op"]["draw"].as_f64().unwrap();
         let emitted = cell.input_with_draw(&ctx, op_val(step), draw);
         (emitted, cell.output(&ctx))

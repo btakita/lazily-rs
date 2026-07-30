@@ -13,6 +13,7 @@
 
 mod common;
 
+use common::Expect;
 use lazily::{Context, QueueCell, QueuePopError, QueuePushError, QueueStorage};
 use serde_json::Value;
 
@@ -159,15 +160,15 @@ fn assert_invalidation(ctx: &Context, readers: &Readers, invalidates: &Value) {
 }
 
 /// Assert the observable queue state after a step.
-fn assert_state(ctx: &Context, q: &QueueCell<V>, expected: &Value) {
-    if let Some(elems) = expected.get("elements").and_then(|v| v.as_array()) {
+fn assert_state(ctx: &Context, q: &QueueCell<V>, expected: &Expect) {
+    if let Some(elems) = expected["elements"].as_array() {
         let want: Vec<String> = elems
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect();
         assert_eq!(q.elements(), want, "elements mismatch");
     }
-    if let Some(head) = expected.get("head") {
+    if let Some(head) = expected.get_opt("head") {
         let want: Option<String> = if head.is_null() {
             None
         } else {
@@ -175,16 +176,16 @@ fn assert_state(ctx: &Context, q: &QueueCell<V>, expected: &Value) {
         };
         assert_eq!(q.head(ctx), want, "head mismatch");
     }
-    if let Some(len) = expected.get("len").and_then(|v| v.as_u64()) {
+    if let Some(len) = expected["len"].as_u64() {
         assert_eq!(q.len(ctx), len as usize, "len mismatch");
     }
-    if let Some(is_empty) = expected.get("is_empty").and_then(|v| v.as_bool()) {
+    if let Some(is_empty) = expected["is_empty"].as_bool() {
         assert_eq!(q.is_empty(ctx), is_empty, "is_empty mismatch");
     }
-    if let Some(is_full) = expected.get("is_full").and_then(|v| v.as_bool()) {
+    if let Some(is_full) = expected["is_full"].as_bool() {
         assert_eq!(q.is_full(ctx), is_full, "is_full mismatch");
     }
-    if let Some(closed) = expected.get("closed").and_then(|v| v.as_bool()) {
+    if let Some(closed) = expected["closed"].as_bool() {
         assert_eq!(q.is_closed(ctx), closed, "closed mismatch");
     }
 }
@@ -196,7 +197,7 @@ fn returns_value(step: &Value) -> Option<Value> {
 }
 
 /// Run a single fixture file: replay every step and assert state + invalidation.
-fn run_fixture(ctx: &Context, fixture: &Value) {
+fn run_fixture(ctx: &Context, name: &str, fixture: &Value) {
     let q = build_initial(ctx, fixture.get("initial").expect("initial"));
     let readers = make_readers(ctx, &q);
     materialize_all(ctx, &readers);
@@ -210,11 +211,14 @@ fn run_fixture(ctx: &Context, fixture: &Value) {
     {
         let op = step.get("op").expect("op");
         let op_type = op.get("type").and_then(|v| v.as_str()).expect("op.type");
-        let expected = step.get("expected").cloned().unwrap_or(Value::Null);
-        let invalidates = expected
-            .get("invalidates")
-            .cloned()
-            .unwrap_or(Value::Object(Default::default()));
+        // Guard the step's `expected` block (`#lzassertunknownkeys`): a key this
+        // runner never reads fails the fixture instead of passing unnoticed.
+        let expected = Expect::new(
+            format!("{SPEC_DIR}/{name}"),
+            format!("steps[{i}].expected"),
+            step.get("expected").unwrap_or(&Value::Null),
+        );
+        let invalidates = expected["invalidates"].clone();
 
         let got_returns = match op_type {
             "push" => {
@@ -290,7 +294,7 @@ macro_rules! queue_conformance {
                 }
                 let fixture = load_fixture($file);
                 let ctx = Context::new();
-                run_fixture(&ctx, &fixture);
+                run_fixture(&ctx, $file, &fixture);
             }
         )+
     };

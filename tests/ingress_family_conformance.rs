@@ -38,6 +38,7 @@ mod common;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use common::Expect;
 #[cfg(feature = "async")]
 use lazily::{AsyncContext, AsyncIngressCell};
 use lazily::{
@@ -420,8 +421,15 @@ fn replay<Model: IngressModel>(fixture: &Value, label: &str) -> usize {
         }
 
         let after = snapshot_validity(&model, &keys);
-        assert_state(&model, step, &keys, &where_);
-        assert_invalidation(step, &before, &after, &where_);
+        // ONE guard per step (`#lzassertunknownkeys`), shared by the state and
+        // invalidation assertions so the whole `expected` block is covered.
+        let expected = Expect::new(
+            format!("{SPEC_DIR}/{label}"),
+            format!("steps[{index}].expected"),
+            &step["expected"],
+        );
+        assert_state(&model, &expected, &keys, &where_);
+        assert_invalidation(&expected, &before, &after, &where_);
         materialize(&model, &keys);
         steps += 1;
     }
@@ -439,9 +447,17 @@ fn expected_replay(value: &Value) -> Option<ReplayRequest> {
     })
 }
 
-fn assert_state<Model: IngressModel>(model: &Model, step: &Value, keys: &[String], where_: &str) {
-    let expected = &step["expected"];
+fn assert_state<Model: IngressModel>(
+    model: &Model,
+    expected: &Expect,
+    keys: &[String],
+    where_: &str,
+) {
+    // `scopes` is keyed by SCOPE NAME — data, not assertion names — so it is
+    // consumed wholesale; each scope's RECORD is guarded, because those keys
+    // (`lifecycle`, `window`, `readiness`, ...) are assertion names.
     for (key, want) in expected["scopes"].as_object().expect("scopes") {
+        let want = expected.nested(format!("scopes.{key}"), want);
         let view = model
             .view(key)
             .unwrap_or_else(|| panic!("{where_}: scope {key} absent"));
@@ -508,7 +524,7 @@ fn assert_state<Model: IngressModel>(model: &Model, step: &Value, keys: &[String
         }
     }
 
-    let receipts = &expected["receipts"];
+    let receipts = expected.sub("receipts");
     assert_eq!(
         model.accepted_len(keys) as u64,
         receipts["accepted"].as_u64().expect("accepted"),
@@ -529,14 +545,15 @@ fn assert_state<Model: IngressModel>(model: &Model, step: &Value, keys: &[String
 /// Assert `invalidates` in both directions. `true` means the reader's cache went
 /// from valid to invalid across the op; `false` means it stayed valid.
 fn assert_invalidation(
-    step: &Value,
+    expected: &Expect,
     before: &ValiditySnapshot,
     after: &ValiditySnapshot,
     where_: &str,
 ) {
-    let want = &step["expected"]["invalidates"];
+    let want = expected.sub("invalidates");
     const KINDS: [&str; 4] = ["value", "readiness", "authority", "retry"];
     for (key, want_scope) in want["scopes"].as_object().expect("invalidates.scopes") {
+        let want_scope = want.nested(format!("scopes.{key}"), want_scope);
         let before_scope = before.scopes.get(key).expect("probed key");
         let after_scope = after.scopes.get(key).expect("probed key");
         for (slot, kind) in KINDS.iter().enumerate() {
@@ -550,8 +567,9 @@ fn assert_invalidation(
         }
     }
     const CHANNELS: [&str; 3] = ["accepted", "dropped", "error"];
+    let want_receipts = want.sub("receipts");
     for (slot, channel) in CHANNELS.iter().enumerate() {
-        let expected = want["receipts"][*channel]
+        let expected = want_receipts[*channel]
             .as_bool()
             .expect("receipt invalidation flag");
         let invalidated = before.receipts[slot] && !after.receipts[slot];

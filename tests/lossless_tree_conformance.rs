@@ -16,6 +16,7 @@ mod common;
 
 use std::collections::HashMap;
 
+use common::Expect;
 use lazily::{LeafKind, LosslessTreeCrdt, NodeSeed, TreeNodeId, TreeUpdate};
 use serde_json::Value;
 
@@ -211,15 +212,15 @@ fn apply_op(world: &mut World, on: &str, op: &Value) {
     }
 }
 
-fn assert_expect(world: &World, expect: &Value, scenario: &str) {
-    if let Some(text) = expect.get("render").and_then(|v| v.as_str()) {
+fn assert_expect(world: &World, expect: &Expect, scenario: &str) {
+    if let Some(text) = expect["render"].as_str() {
         assert_eq!(
             world.replicas["a"].render(),
             text,
             "{scenario}: render on `a`"
         );
     }
-    if let Some(per) = expect.get("render_on").and_then(|v| v.as_object()) {
+    if let Some(per) = expect["render_on"].as_object() {
         for (name, text) in per {
             assert_eq!(
                 world.replicas[name].render(),
@@ -228,14 +229,14 @@ fn assert_expect(world: &World, expect: &Value, scenario: &str) {
             );
         }
     }
-    if let Some(n) = expect.get("live_nodes").and_then(|v| v.as_u64()) {
+    if let Some(n) = expect["live_nodes"].as_u64() {
         assert_eq!(
             world.replicas["a"].live_node_count() as u64,
             n,
             "{scenario}: live_nodes on `a`"
         );
     }
-    if let Some(names) = expect.get("converged").and_then(|v| v.as_array()) {
+    if let Some(names) = expect["converged"].as_array() {
         let names: Vec<&str> = names.iter().map(|v| v.as_str().unwrap()).collect();
         let first = world.replicas[names[0]].render();
         for name in &names[1..] {
@@ -276,7 +277,13 @@ fn run_fixture(name: &str) {
                 apply_step(&mut world, step);
             }
         }
-        assert_expect(&world, &scenario["expect"], &label);
+        // Guard the scenario's `expect` block (`#lzassertunknownkeys`).
+        let expect = Expect::new(
+            format!("{SPEC_DIR}/{name}"),
+            format!("scenarios[{i}].expect"),
+            &scenario["expect"],
+        );
+        assert_expect(&world, &expect, &label);
     }
 }
 

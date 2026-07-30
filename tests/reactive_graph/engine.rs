@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::Ordering;
 
+use crate::common::Expect;
 use serde_json::Value;
 
 use super::model::{
@@ -79,7 +80,7 @@ pub fn replay<'a, M: GraphModel>(
     model: &'a M,
     fixture: &str,
     steps: &[Value],
-    tail: Option<&Value>,
+    tail: Option<&Expect>,
 ) -> Report {
     let mut nodes: HashMap<String, Ref<M::Graph>> = HashMap::new();
     // Handles are kept forever so `dispose_stale_handle` can dispose through an
@@ -662,7 +663,9 @@ pub fn replay<'a, M: GraphModel>(
     };
     if let Some(tail) = tail {
         step_idx = usize::MAX; // the `expected` tail is not a numbered step
-        let fin = &tail["final_state"];
+        // The fixture-level `expected` tail is guarded too (`#lzassertunknownkeys`);
+        // its sub-blocks carry assertion names, so they are descended into.
+        let fin = tail.sub("final_state");
         for (id, v) in fin["dependents_of"].as_object().into_iter().flatten() {
             let got = degree!(id.as_str(), dependents_of);
             check!(
@@ -689,8 +692,8 @@ pub fn replay<'a, M: GraphModel>(
                 .insert(id.clone(), got.unwrap_or_default());
         }
 
-        let publish = &tail["after_publish"];
-        if let Some(pop) = publish.get("op") {
+        let publish = tail.sub("after_publish");
+        if let Some(pop) = publish.get_opt("op") {
             let id = pop["id"].as_str().unwrap();
             let before = log_snapshot(model.run_log()).len();
             match nodes[id] {

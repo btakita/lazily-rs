@@ -19,6 +19,7 @@ mod common;
 
 use std::collections::HashSet;
 
+use common::Expect;
 use lazily::{ComputedMap, Context, EntryKind, SourceMap};
 use serde_json::Value;
 
@@ -41,6 +42,16 @@ fn str_array(v: &Value, path: &str) -> Vec<String> {
     v.get(path)
         .and_then(|v| v.as_array())
         .unwrap_or_else(|| panic!("missing array {path}"))
+        .iter()
+        .map(|k| k.as_str().expect("array of strings").to_string())
+        .collect()
+}
+
+/// `str_array` against a guarded assertion block, so the key is recorded.
+fn exp_strs(e: &Expect, key: &str) -> Vec<String> {
+    e[key]
+        .as_array()
+        .unwrap_or_else(|| panic!("missing array {key}"))
         .iter()
         .map(|k| k.as_str().expect("array of strings").to_string())
         .collect()
@@ -102,13 +113,17 @@ fn check_val_fixture(name: &str) -> Value {
     let fixture = load_fixture(name);
     let entries = parse_val_spec(&fixture);
     let keys: Vec<String> = entries.iter().map(|(k, _)| k.clone()).collect();
-    let expected = fixture.get("expected").expect("expected");
+    // ONE guard per fixture per runner (`#lzassertunknownkeys`), so every key the
+    // block declares is consumed here rather than split across sibling tests
+    // where each half would look complete on its own.
+    let expected = Expect::new(
+        format!("{SPEC_DIR}/{name}"),
+        "expected",
+        fixture.get("expected").expect("expected"),
+    );
 
     // default_mode_eager: eager is the default materialization strategy.
-    assert_eq!(
-        expected.get("default_mode").and_then(|v| v.as_str()),
-        Some("eager")
-    );
+    assert_eq!(expected["default_mode"].as_str(), Some("eager"));
 
     let ctx = Context::new();
     let eager = eager_computed_map(&ctx, keys.clone(), entries.clone());
@@ -118,17 +133,14 @@ fn check_val_fixture(name: &str) -> Value {
     assert_eq!(eager.present_count(), keys.len());
     assert_eq!(
         as_set(&eager.present_keys()),
-        as_set(&str_array(expected, "eager_present"))
+        as_set(&exp_strs(&expected, "eager_present"))
     );
     // Lazy defers every derived slot: nothing present at build.
     assert_eq!(lazy.present_count(), 0);
 
     // observe_canonical / eager_lazy_observationally_equivalent
-    let observe = expected
-        .get("observe")
-        .and_then(|v| v.as_object())
-        .expect("expected.observe");
-    let lookup = lookup_fn(entries);
+    let observe = expected["observe"].as_object().expect("expected.observe");
+    let lookup = lookup_fn(entries.clone());
     for (k, want) in observe {
         let want = want.as_i64().expect("observe int");
         assert_eq!(eager.get(&ctx, k).unwrap(), want, "eager observe {k}");
@@ -139,6 +151,32 @@ fn check_val_fixture(name: &str) -> Value {
         );
     }
 
+    // The read sequence, asserted here so `lazy_present_after_reads` and
+    // `present_after_each_read` are consumed by the same guard as the rest.
+    let fresh_ctx = Context::new();
+    let fresh = lazy_computed_map(&fresh_ctx);
+    let lookup = lookup_fn(entries);
+    let mut sizes = Vec::new();
+    for k in str_array(&fixture, "reads") {
+        fresh.get_or_insert_with(&fresh_ctx, k, lookup.clone());
+        sizes.push(fresh.present_count());
+    }
+    assert_eq!(
+        as_set(&fresh.present_keys()),
+        as_set(&exp_strs(&expected, "lazy_present_after_reads"))
+    );
+    if let Some(want_sizes) = expected.get_opt("present_after_each_read") {
+        let want: Vec<usize> = want_sizes
+            .as_array()
+            .expect("present_after_each_read")
+            .iter()
+            .map(|n| n.as_u64().expect("size") as usize)
+            .collect();
+        assert_eq!(sizes, want, "cumulative present-set sizes");
+    }
+
+    // The guard's Drop must run before `fixture` moves out.
+    expected.finish();
     fixture
 }
 
@@ -250,11 +288,13 @@ fn entry_kind_orthogonal_to_mode() {
         return;
     }
     let fixture = load_fixture("entry_kind_orthogonal_to_mode.json");
-    let expected = fixture.get("expected").unwrap();
-    assert_eq!(
-        expected.get("default_mode").and_then(|v| v.as_str()),
-        Some("eager")
+    // Guarded (`#lzassertunknownkeys`).
+    let expected = Expect::new(
+        format!("{SPEC_DIR}/entry_kind_orthogonal_to_mode.json"),
+        "expected",
+        fixture.get("expected").unwrap(),
     );
+    assert_eq!(expected["default_mode"].as_str(), Some("eager"));
 
     let spec_entries = fixture
         .get("spec")
@@ -301,7 +341,7 @@ fn entry_kind_orthogonal_to_mode() {
     assert_eq!(eager_slots.entry_kind(), EntryKind::Computed);
     let mut eager_present = as_set(&eager_cells.present_keys());
     eager_present.extend(eager_slots.present_keys());
-    assert_eq!(eager_present, as_set(&str_array(expected, "eager_present")));
+    assert_eq!(eager_present, as_set(&exp_strs(&expected, "eager_present")));
 
     // Lazy build: cells present at build (input cells are always materialized),
     // slots deferred until read.
@@ -317,7 +357,7 @@ fn entry_kind_orthogonal_to_mode() {
     );
     assert_eq!(
         present_at_build,
-        as_set(&str_array(expected, "lazy_present_at_build"))
+        as_set(&exp_strs(&expected, "lazy_present_at_build"))
     );
 
     // Reads (slot pulls) grow only the slot present set.
@@ -332,11 +372,11 @@ fn entry_kind_orthogonal_to_mode() {
     lazy_after.extend(lazy_slots.present_keys());
     assert_eq!(
         lazy_after,
-        as_set(&str_array(expected, "lazy_present_after_reads"))
+        as_set(&exp_strs(&expected, "lazy_present_after_reads"))
     );
 
     // Observational transparency across kinds.
-    let observe = expected.get("observe").and_then(|v| v.as_object()).unwrap();
+    let observe = expected["observe"].as_object().unwrap();
     for (k, want) in observe {
         let want = want.as_i64().unwrap();
         if cell_keys.contains(k) {

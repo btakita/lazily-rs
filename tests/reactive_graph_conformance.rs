@@ -53,6 +53,7 @@ use std::fs;
 
 use serde_json::Value;
 
+use common::Expect;
 use engine::{Report, arr, replay};
 use model::GraphModel;
 
@@ -196,6 +197,11 @@ fn run_corpus<M: GraphModel>() {
         // filename special case goes stale silently the moment a second
         // scenarios-shaped fixture is added. An unrecognised shape is a hard
         // error rather than a fallback to `steps`.
+        // ONE guard for the fixture-level `expected` tail (`#lzassertunknownkeys`),
+        // shared by the scenario replays and the `observationally_equal` check
+        // below, so no key of that block goes unread.
+        let fixture_expected =
+            Expect::new(format!("{SPEC_DIR}/{name}"), "expected", &fx["expected"]);
         let models: Vec<M>;
         let reports: Vec<Report> = match fx["shape"].as_str() {
             Some("steps") => {
@@ -210,7 +216,7 @@ fn run_corpus<M: GraphModel>() {
                 scenarios
                     .iter()
                     .zip(&models)
-                    .map(|(s, m)| replay(m, name, arr(&s["steps"]), Some(&fx["expected"])))
+                    .map(|(s, m)| replay(m, name, arr(&s["steps"]), Some(&fixture_expected)))
                     .collect()
             }
             Some(other) => panic!("{name}: unknown fixture shape {other}"),
@@ -219,7 +225,7 @@ fn run_corpus<M: GraphModel>() {
 
         // `observationally_equal`: the named scenarios must agree on every
         // observable, not merely each satisfy `expected` independently.
-        if let Some(pair) = fx["expected"]["observationally_equal"].as_array() {
+        if let Some(pair) = fixture_expected["observationally_equal"].as_array() {
             let names: Vec<&str> = fx["scenarios"]
                 .as_array()
                 .unwrap()

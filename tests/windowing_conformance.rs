@@ -5,6 +5,7 @@
 
 mod common;
 
+use common::Expect;
 use lazily::{Context, SessionWindow, SlidingWindow, Sum, TumblingCountWindow, TumblingTimeWindow};
 use serde_json::Value;
 
@@ -27,18 +28,26 @@ fn steps(fx: &Value) -> &Vec<Value> {
 fn ret(step: &Value) -> Option<u64> {
     step["returns"].as_u64()
 }
-fn exp_out(step: &Value) -> Option<u64> {
-    step["expected"]["output"].as_u64()
-}
-fn inval(step: &Value) -> bool {
-    step["expected"]["invalidates"]["output"].as_bool().unwrap()
-}
-
-fn check(ctx: &Context, observed: &lazily::Computed<Option<u64>>, step: &Value, out: Option<u64>) {
-    assert_eq!(out, exp_out(step), "output for {step}");
+/// Assert one step, with the `expected` block guarded (`#lzassertunknownkeys`):
+/// a key this runner never reads fails the fixture instead of passing unnoticed.
+fn check(
+    ctx: &Context,
+    observed: &lazily::Computed<Option<u64>>,
+    fixture: &str,
+    i: usize,
+    step: &Value,
+    out: Option<u64>,
+) {
+    let exp = Expect::new(
+        format!("{SPEC_DIR}/{fixture}"),
+        format!("steps[{i}].expected"),
+        &step["expected"],
+    );
+    let inv = exp.sub("invalidates");
+    assert_eq!(out, exp["output"].as_u64(), "output for {step}");
     let was = ctx.is_set(observed);
     let _ = observed.get(ctx);
-    assert_eq!(!was, inval(step), "inval for {step}");
+    assert_eq!(!was, inv["output"].as_bool().unwrap(), "inval for {step}");
 }
 
 #[test]
@@ -53,10 +62,17 @@ fn tumbling_count() {
     let oc = w.output_cell();
     let observed = ctx.computed(move |c| oc.get(c));
     let _ = observed.get(&ctx);
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
         let emitted = w.push(&ctx, step["op"]["value"].as_u64().unwrap());
         assert_eq!(emitted, ret(step), "emit for {step}");
-        check(&ctx, &observed, step, w.output(&ctx));
+        check(
+            &ctx,
+            &observed,
+            "tumbling_count.json",
+            i,
+            step,
+            w.output(&ctx),
+        );
     }
 }
 
@@ -72,7 +88,7 @@ fn tumbling_time() {
     let oc = w.output_cell();
     let observed = ctx.computed(move |c| oc.get(c));
     let _ = observed.get(&ctx);
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
         let op = &step["op"];
         let now = op["now"].as_u64().unwrap();
         let emitted = if op["type"] == "push" {
@@ -82,7 +98,14 @@ fn tumbling_time() {
             w.tick(&ctx, now)
         };
         assert_eq!(emitted, ret(step), "emit for {step}");
-        check(&ctx, &observed, step, w.output(&ctx));
+        check(
+            &ctx,
+            &observed,
+            "tumbling_time.json",
+            i,
+            step,
+            w.output(&ctx),
+        );
     }
 }
 
@@ -99,10 +122,17 @@ fn sliding_count() {
     let oc = w.output_cell();
     let observed = ctx.computed(move |c| oc.get(c));
     let _ = observed.get(&ctx);
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
         let emitted = w.push(&ctx, step["op"]["value"].as_u64().unwrap());
         assert_eq!(emitted, ret(step), "emit for {step}");
-        check(&ctx, &observed, step, w.output(&ctx));
+        check(
+            &ctx,
+            &observed,
+            "sliding_count.json",
+            i,
+            step,
+            w.output(&ctx),
+        );
     }
 }
 
@@ -118,7 +148,7 @@ fn session() {
     let oc = w.output_cell();
     let observed = ctx.computed(move |c| oc.get(c));
     let _ = observed.get(&ctx);
-    for step in steps(&fx) {
+    for (i, step) in steps(&fx).iter().enumerate() {
         let op = &step["op"];
         let now = op["now"].as_u64().unwrap();
         let emitted = if op["type"] == "push" {
@@ -127,6 +157,6 @@ fn session() {
             w.flush(&ctx, now)
         };
         assert_eq!(emitted, ret(step), "emit for {step}");
-        check(&ctx, &observed, step, w.output(&ctx));
+        check(&ctx, &observed, "session.json", i, step, w.output(&ctx));
     }
 }

@@ -13,6 +13,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
+use common::Expect;
 use lazily::{
     CausalReceipt, CommandApplyStatus, CommandMessage, CommandProjection, CommandProjectionImage,
     ReceiptMessage, ReceiptOutcome,
@@ -61,8 +62,13 @@ fn frames_of(obj: &Value) -> &Vec<Value> {
     obj["frames"].as_array().expect("frames array")
 }
 
+/// Guard a fixture's (or scenario's) `expect` block (`#lzassertunknownkeys`).
+fn expect_of<'a>(name: &str, label: &str, block: &'a Value) -> Expect<'a> {
+    Expect::new(format!("{FIXTURE_DIR}/{name}"), label.to_owned(), block)
+}
+
 /// Assert the reducer image equals the fixture's `expect.projection`.
-fn assert_projection(projection: &CommandProjection, expect: &Value) {
+fn assert_projection(projection: &CommandProjection, expect: &Expect) {
     let want: CommandProjectionImage =
         serde_json::from_value(expect["projection"].clone()).expect("decode expect.projection");
     assert_eq!(projection.to_image(), want, "projection image mismatch");
@@ -78,7 +84,10 @@ fn editor_route_submit_is_nonterminal() {
     for frame in frames_of(&fx) {
         fold_frame(&mut p, frame);
     }
-    assert_projection(&p, &fx["expect"]);
+    assert_projection(
+        &p,
+        &expect_of("editor_route_submit.json", "expect", &fx["expect"]),
+    );
     assert!(p.terminal_for("cmd-run-1").is_none());
 }
 
@@ -92,7 +101,10 @@ fn sync_tmux_layout_submit_shared_blob() {
     for frame in frames_of(&fx) {
         fold_frame(&mut p, frame);
     }
-    assert_projection(&p, &fx["expect"]);
+    assert_projection(
+        &p,
+        &expect_of("sync_tmux_layout_submit.json", "expect", &fx["expect"]),
+    );
 }
 
 #[test]
@@ -101,8 +113,13 @@ fn accepted_then_applied_receipt_is_terminal_only_at_receipt() {
         return;
     }
     let fx = load("accepted_then_applied_receipt.json");
+    let exp = expect_of(
+        "accepted_then_applied_receipt.json",
+        "expect",
+        &fx["expect"],
+    );
     let frames = frames_of(&fx);
-    let terminal_at = fx["expect"]["terminal_after_frame_index"]
+    let terminal_at = exp["terminal_after_frame_index"]
         .as_u64()
         .expect("terminal_after_frame_index") as usize;
 
@@ -116,7 +133,7 @@ fn accepted_then_applied_receipt_is_terminal_only_at_receipt() {
             assert!(is_terminal, "frame {i}: must be terminal");
         }
     }
-    assert_projection(&p, &fx["expect"]);
+    assert_projection(&p, &exp);
 }
 
 #[test]
@@ -125,8 +142,9 @@ fn stale_generation_events_and_receipts_are_ignored() {
         return;
     }
     let fx = load("stale_generation_ignored.json");
+    let exp = expect_of("stale_generation_ignored.json", "expect", &fx["expect"]);
     let frames = frames_of(&fx);
-    let ignored: Vec<usize> = fx["expect"]["ignored_frame_indices"]
+    let ignored: Vec<usize> = exp["ignored_frame_indices"]
         .as_array()
         .expect("ignored_frame_indices")
         .iter()
@@ -143,7 +161,7 @@ fn stale_generation_events_and_receipts_are_ignored() {
             );
         }
     }
-    assert_projection(&p, &fx["expect"]);
+    assert_projection(&p, &exp);
 }
 
 #[test]
@@ -152,11 +170,16 @@ fn terminal_conflict_fails_closed() {
         return;
     }
     let fx = load("terminal_conflict_fail_closed.json");
+    let exp = expect_of(
+        "terminal_conflict_fail_closed.json",
+        "expect",
+        &fx["expect"],
+    );
     let frames = frames_of(&fx);
-    let conflict_at = fx["expect"]["conflict_after_frame_index"]
+    let conflict_at = exp["conflict_after_frame_index"]
         .as_u64()
         .expect("conflict_after_frame_index") as usize;
-    let command_id = fx["expect"]["conflict_command_id"].as_str().unwrap();
+    let command_id = exp["conflict_command_id"].as_str().unwrap();
 
     let mut p = CommandProjection::new();
     for (i, frame) in frames.iter().enumerate() {
@@ -168,11 +191,15 @@ fn terminal_conflict_fails_closed() {
             );
         }
     }
-    assert!(p.has_conflict(command_id), "conflict must be flagged");
+    assert_eq!(
+        p.has_conflict(command_id),
+        exp["conflict"].as_bool().expect("conflict"),
+        "conflict must be flagged"
+    );
 
     // The applied outcome is preserved (no winner selection).
     let before: CommandProjectionImage =
-        serde_json::from_value(fx["expect"]["projection_before_conflict"].clone()).unwrap();
+        serde_json::from_value(exp["projection_before_conflict"].clone()).unwrap();
     assert_eq!(p.to_image(), before);
 }
 
@@ -182,13 +209,38 @@ fn cancel_preempts_nonterminal_scenarios() {
         return;
     }
     let fx = load("cancel_preempts_nonterminal.json");
-    for scenario in fx["scenarios"].as_array().expect("scenarios") {
+    for (si, scenario) in fx["scenarios"]
+        .as_array()
+        .expect("scenarios")
+        .iter()
+        .enumerate()
+    {
         let name = scenario["name"].as_str().unwrap();
+        let exp = expect_of(
+            "cancel_preempts_nonterminal.json",
+            &format!("scenarios[{si}].expect"),
+            &scenario["expect"],
+        );
         let mut p = CommandProjection::new();
-        for frame in scenario["frames"].as_array().unwrap() {
+        for (i, frame) in scenario["frames"].as_array().unwrap().iter().enumerate() {
+            // `ignored_frame_indices`: a late cancel against an already-terminal
+            // command must leave the projection exactly as it was. The reducer
+            // still *records* the input, so the observable is the image, not the
+            // apply status. Previously unread on this fixture.
+            let ignored = exp["ignored_frame_indices"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|v| v.as_u64() == Some(i as u64)));
+            let before = ignored.then(|| p.to_image());
             fold_frame(&mut p, frame);
+            if let Some(before) = before {
+                assert_eq!(
+                    p.to_image(),
+                    before,
+                    "scenario {name} frame {i}: must be ignored"
+                );
+            }
         }
-        assert_projection(&p, &scenario["expect"]);
+        assert_projection(&p, &exp);
         assert_eq!(
             p.terminal_for("cmd-run-1").map(|e| e.status),
             p.entry("cmd-run-1").map(|e| e.status),
@@ -207,7 +259,10 @@ fn reconnect_command_projection_resyncs() {
     for frame in frames_of(&fx) {
         fold_frame(&mut p, frame);
     }
-    assert_projection(&p, &fx["expect"]);
+    assert_projection(
+        &p,
+        &expect_of("reconnect_command_projection.json", "expect", &fx["expect"]),
+    );
 }
 
 #[test]
@@ -216,8 +271,9 @@ fn rpc_call_waits_for_terminal() {
         return;
     }
     let fx = load("rpc_call_waits_for_terminal.json");
+    let exp = expect_of("rpc_call_waits_for_terminal.json", "expect", &fx["expect"]);
     let frames = frames_of(&fx);
-    let rpc = &fx["expect"]["rpc"];
+    let rpc = exp.sub("rpc");
     let command_id = rpc["command_id"].as_str().unwrap();
     let resolves_at = rpc["resolves_after_frame_index"].as_u64().unwrap() as usize;
     let unresolved: Vec<usize> = rpc["unresolved_after_frame_indices"]
@@ -238,7 +294,16 @@ fn rpc_call_waits_for_terminal() {
             assert!(resolved, "frame {i}: RPC call must resolve here");
         }
     }
-    assert_projection(&p, &fx["expect"]);
+    // `rpc.terminal_status`: WHICH terminal the call resolved to, not merely that
+    // it resolved. A cancelled command also resolves an RPC call.
+    let want_status = rpc["terminal_status"].as_str().expect("terminal_status");
+    let got_status = p.terminal_for(command_id).expect("terminal").status;
+    assert_eq!(
+        serde_json::to_value(got_status).unwrap(),
+        Value::String(want_status.to_owned()),
+        "rpc.terminal_status"
+    );
+    assert_projection(&p, &exp);
 }
 
 #[test]
