@@ -146,6 +146,19 @@ jobs:
         with:
           node-version: "20"
 
+      # `signaling/test/protocol.test.ts` imports the canonical signaling
+      # fixtures as modules from `../../../lazily-spec/...`, i.e. a sibling of
+      # the workspace — the same layout the Rust job clones. Without it `tsc
+      # --noEmit` fails TS2307 on the fixture imports before a single test runs.
+      - name: Fetch canonical lazily-spec conformance fixtures
+        working-directory: .
+        run: git clone --depth 1 https://github.com/lazily-hub/lazily-spec.git ../lazily-spec
+
+      - name: Guard the sibling fixtures the typecheck imports
+        working-directory: .
+        run: |
+          test -d ../lazily-spec/conformance/signaling || { echo "::error::../lazily-spec/conformance/signaling missing — protocol.test.ts cannot typecheck"; exit 1; }
+
       - name: Install
         run: npm ci
 
