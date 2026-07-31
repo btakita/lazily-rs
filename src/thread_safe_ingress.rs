@@ -660,10 +660,23 @@ mod tests {
         assert_eq!(ingress.accepted(&ctx).len(), 32);
     }
 
+    /// The fan-out is atomic per OBSERVATION, and one observation is one graph
+    /// read — not two.
+    ///
+    /// `#lzrstornfanout`. This gate used to spawn a reader that called `value()`
+    /// and then `authority()` in a loop and rejected every pair but three. Those
+    /// are two independent `ctx.get`s, each taking and releasing the context lock,
+    /// so an admission landing between them is a plain read skew with nothing torn
+    /// anywhere — and the shipped assertion rejected exactly the one skew its own
+    /// read order can produce. It reddened CI roughly once in many runs.
+    ///
+    /// The reader here takes the pair through a SINGLE derived cell, so both reads
+    /// happen in one compute under one context-lock hold. That is the boundary the
+    /// batch actually guarantees, and it is guaranteed, not lucky: the first read
+    /// is ordered before the admission by a barrier, so the pre-handoff state is
+    /// always observed, and the post-handoff state is asserted after the join.
     #[test]
-    fn concurrent_readers_never_observe_a_partial_fan_out() {
-        // A reader racing an admission may see the old state or the new one, but
-        // never new-value-with-old-authority: the batch makes the fan-out atomic.
+    fn a_single_observation_never_straddles_a_generation_handoff() {
         let ctx = Arc::new(ThreadSafeContext::new());
         let ingress: ThreadSafeIngressCell<&'static str, u64, Sum> = ThreadSafeIngressCell::new(
             &ctx,
@@ -674,22 +687,109 @@ mod tests {
         .expect("policy");
         ingress.admit(&ctx, env("a", 1, 0, 0, 5));
 
+        let value = ingress.value_handle(&ctx, &"a");
+        let authority = ingress.authority_handle(&ctx, &"a");
+        let pair = ctx.computed(move |c| (c.get(&value), c.get(&authority).map(|a| a.generation)));
+
+        let first_read_taken = Arc::new(std::sync::Barrier::new(2));
+        let saw_old = Arc::new(AtomicUsize::new(0));
         let reader = {
             let ctx = Arc::clone(&ctx);
-            let ingress = ingress.clone();
+            let first_read_taken = Arc::clone(&first_read_taken);
+            let saw_old = Arc::clone(&saw_old);
             std::thread::spawn(move || {
-                for _ in 0..500 {
-                    let value = ingress.value(&ctx, &"a");
-                    let generation = ingress.authority(&ctx, &"a").map(|a| a.generation);
+                for iteration in 0..500 {
                     // Generation 2's baseline is 9; generation 1's window is 5.
-                    match (value, generation) {
-                        (Some(5), Some(1)) | (Some(9), Some(2)) | (None, Some(2)) => {}
+                    match ctx.get(&pair) {
+                        (Some(5), Some(1)) => {
+                            saw_old.fetch_add(1, Ordering::SeqCst);
+                        }
+                        (Some(9), Some(2)) => {}
                         other => panic!("partial fan-out observed: {other:?}"),
+                    }
+                    if iteration == 0 {
+                        first_read_taken.wait();
                     }
                 }
             })
         };
+        first_read_taken.wait();
         ingress.admit(&ctx, env("a", 2, 0, 0, 9));
         reader.join().expect("reader");
+
+        assert!(
+            saw_old.load(Ordering::SeqCst) >= 1,
+            "the pre-handoff state must actually be observed — a gate that only \
+             ever sees the settled state proves nothing"
+        );
+        assert_eq!(
+            ctx.get(&pair),
+            (Some(9), Some(2)),
+            "the handoff must be visible once it has landed"
+        );
+    }
+
+    /// The other half of `#lzrstornfanout`: two sequential reads are NOT a
+    /// snapshot, and the skew goes whichever way the reads are ordered.
+    ///
+    /// Deterministic — the reader is parked between its two reads until the
+    /// handoff has fully landed — so this is a standing statement of where the
+    /// atomicity boundary is, not a race. It is the counter-example to re-adding
+    /// a two-read racing assertion: BOTH mixed pairs are reachable this way,
+    /// including `new value, old authority`, which no amount of batching in the
+    /// shell can prevent.
+    #[test]
+    fn two_sequential_reads_are_not_a_snapshot_and_skew_either_way() {
+        for authority_first in [false, true] {
+            let ctx = Arc::new(ThreadSafeContext::new());
+            let ingress: ThreadSafeIngressCell<&'static str, u64, Sum> =
+                ThreadSafeIngressCell::new(
+                    &ctx,
+                    IngressPolicy::default(),
+                    IngressTransportKind::EventChannel,
+                    25,
+                )
+                .expect("policy");
+            ingress.admit(&ctx, env("a", 1, 0, 0, 5));
+
+            let first_read_taken = Arc::new(std::sync::Barrier::new(2));
+            let handoff_landed = Arc::new(std::sync::Barrier::new(2));
+            let reader = {
+                let ctx = Arc::clone(&ctx);
+                let ingress = ingress.clone();
+                let first_read_taken = Arc::clone(&first_read_taken);
+                let handoff_landed = Arc::clone(&handoff_landed);
+                std::thread::spawn(move || {
+                    if authority_first {
+                        let generation = ingress.authority(&ctx, &"a").map(|a| a.generation);
+                        first_read_taken.wait();
+                        handoff_landed.wait();
+                        (ingress.value(&ctx, &"a"), generation)
+                    } else {
+                        let value = ingress.value(&ctx, &"a");
+                        first_read_taken.wait();
+                        handoff_landed.wait();
+                        (value, ingress.authority(&ctx, &"a").map(|a| a.generation))
+                    }
+                })
+            };
+            first_read_taken.wait();
+            ingress.admit(&ctx, env("a", 2, 0, 0, 9));
+            handoff_landed.wait();
+
+            let observed = reader.join().expect("reader");
+            let expected = if authority_first {
+                // New value under the superseded fence — the pair the spec's
+                // prose names, reachable with nothing torn in the shell.
+                (Some(9), Some(1))
+            } else {
+                (Some(5), Some(2))
+            };
+            assert_eq!(
+                observed, expected,
+                "authority_first={authority_first}: two `ctx.get`s are two \
+                 observations, so an admission between them skews the pair"
+            );
+        }
     }
 }
