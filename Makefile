@@ -26,6 +26,7 @@ export LAZILY_CONFORMANCE_SCENARIOS = $(CONFORMANCE_SCENARIOS)
 
 .PHONY: \
 	conformance-coverage \
+	ci-reach \
 	conformance-manifest-reset \
 	check \
 	fmt \
@@ -75,7 +76,7 @@ test-ingress-family-conformance \
 	instrumentation-profile \
 	benchmark-spread
 
-	check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-reliable-sync-conformance test-durable-outbox test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-ingress-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-evidence benchmark-check conformance-coverage
+check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-reliable-sync-conformance test-durable-outbox test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-ingress-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-evidence benchmark-check conformance-coverage ci-reach
 
 fmt:
 >$(CARGO) fmt --all --check
@@ -389,3 +390,10 @@ conformance-manifest-reset:
 # evidence rather than evidence of absence. See the script header.
 conformance-coverage:
 >./scripts/check-conformance-coverage.sh
+
+# CI-reachability guard. Fails when a target above runs a gate no CI workflow
+# step reaches — the drift that hid the interop peer self-check in every binding
+# for months. It guards itself: `ci-reach` is in `check`, so CI has to run it too
+# or this target reports itself missing.
+ci-reach:
+>./scripts/check-ci-reach.sh

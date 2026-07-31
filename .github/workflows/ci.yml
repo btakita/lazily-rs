@@ -94,6 +94,13 @@ jobs:
       - name: Test distributed CRDT plane runtime integration (#lzcrdtplane5b)
         run: cargo +stable test --locked --features "distributed webrtc"
 
+      # Named explicitly rather than left to the feature-set step above. That
+      # step happens to compile this test target today; naming it is what makes
+      # the distributed conformance corpus a gate CI owns instead of a side
+      # effect of a feature list someone may narrow later.
+      - name: Test distributed conformance corpus
+        run: cargo +stable test --locked --features "distributed webrtc" --test distributed_conformance
+
       # The cross-binding wire-compatibility gate. `make check` has always run
       # it; no binding's CI ran it anywhere (#lzinteroppeerci). Nine bindings
       # have to agree on a byte layout, and the check proving they still do lived
@@ -276,6 +283,20 @@ jobs:
           test -s "$LAZILY_CONFORMANCE_SCENARIOS" || { echo "::error::scenario ledger $LAZILY_CONFORMANCE_SCENARIOS is absent or empty — the recorder never attached, so scenario coverage cannot be computed"; exit 1; }
           ./scripts/check-conformance-coverage.sh
 
+      # The gate that keeps every step above honest. It compares `make check`'s
+      # prerequisite closure against the run: bodies in this file and fails on
+      # any target CI does not reach. Comments inside run: bodies are stripped
+      # first — a naive grep for "make check" reported all nine bindings as
+      # covered and every one of those hits was a comment.
+      - name: CI-reachability guard
+        run: |
+          out=$(./scripts/check-ci-reach.sh 2>&1) || { echo "$out"; echo "::error::a make check gate is unreachable from CI"; exit 1; }
+          echo "$out"
+          echo "$out" | grep -q "check-ci-reach: OK" || {
+            echo "::error::the CI-reachability guard exited 0 without reaching its verdict"
+            exit 1
+          }
+
   # The budget gate (#vnmr). `make benchmark-check` has no skip: absent evidence
   # exits 2 and evidence measuring a different source tree exits 3. So CI has to
   # MEASURE before it can gate, and this job does exactly that.
@@ -356,6 +377,16 @@ jobs:
     name: Lean formal models (#lzleanmodel, #lzformal)
     runs-on: ubuntu-latest
     steps:
+      # This checkout is what lets the job run the very make targets `make
+      # check` runs, instead of an approximation of them. Both targets resolve
+      # their Lean package as a SIBLING of this repo (LEAN_SPEC_DIR,
+      # LEAN_FORMAL_DIR), so the three checkouts below sit side by side exactly
+      # as they do on a developer machine.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: lazily-rs
+
       - name: Checkout canonical lazily-spec
         uses: actions/checkout@v4
         with:
@@ -385,3 +416,18 @@ jobs:
           build: true
           test: false
           lint: false
+
+      # The two steps above build the models through the Lean action, which the
+      # CI-reachability guard cannot see: it reads run: bodies, and a `uses:`
+      # step has none. These two run the make targets themselves, which is what
+      # makes the guard's claim true rather than approximately true — and they
+      # additionally exercise the sibling-directory contract the targets carry,
+      # which the action steps do not. lean-action puts elan on PATH for later
+      # steps, and lake over an already-built package is a no-op.
+      - name: Build the lazily-spec Lean model through make
+        working-directory: lazily-rs
+        run: make test-lean-formal
+
+      - name: Build the lazily-formal Lean model through make
+        working-directory: lazily-rs
+        run: make test-lazily-formal
