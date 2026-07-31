@@ -161,6 +161,26 @@ this repo.
 - `tests/integration.rs` — 13 integration tests
 - `tests/spec_compliance.rs` — 68 spec compliance tests
 - `tests/conformance.rs` — cross-language IPC fixture round-trip tests (lazily-spec/conformance)
+- `tests/codec_roundtrip_conformance.rs` — the frame-codec obligation
+  (`#lzmsgpackparity`), over `lazily-spec/conformance/codec/*.json`. protocol.md
+  § Frame codecs makes `json` (reference) and `msgpack` (cross-language binary
+  default) MUST-level and requires every frame to round-trip through both for
+  all three `IpcMessage` variants — a requirement that lived only in prose,
+  because all four conformance rungs reason about fixture CONTENT replay and
+  content replay never exercises a codec. Each scenario decodes `wire`,
+  **re-encodes the decoded message**, decodes again, and asserts against the
+  SECOND decode; asserting against the fixture literal would prove nothing. The
+  msgpack half also decodes the produced bytes schema-lessly (`rmp_serde` into
+  `serde_json::Value`) and pins the external tag plus the SORTED body field
+  names, which is the only way to see the named-field rule: a positional encoder
+  passes every value assertion and is still non-conforming. Landing this found a
+  real defect — `encode_msgpack` used rmp-serde's default `is_human_readable()`
+  of `false`, which this crate reads as "positional", so msgpack wrote
+  `key: null` where § NodeKey requires it omitted. `IpcMessage::encode_msgpack`/
+  `decode_msgpack` now opt in with `.with_human_readable()`. Needs
+  `ipc,ipc-msgpack` (`make test-codec-roundtrip-conformance`); the feature is
+  not optional, because an unopened canonical fixture fails
+  `conformance-coverage` and a feature flag is not a carve-out
 - `tests/collections_family_conformance.rs` — the ordering/independence contract replayed against **all three execution models** (`SourceMap`, `ThreadSafeSourceMap`, `AsyncSourceMap`) via a `MapModel` trait whose only async-coloured method is `settle`. `collections_conformance.rs` covers the single-threaded flavor only, which is how the thread-safe/async ordering gap stayed invisible while `coverage.json` read green
 - `tests/collections_conformance.rs` — keyed cell collections compute fixtures (lazily-spec/conformance/collections); value/membership/order independence, atomic move, LIS reconciliation, memoized semantic tree, manufactured text identity, character CRDT convergence
 - `tests/materialization_conformance.rs` — `ComputedMap` materialization (`#reactivemap`) compute fixtures (lazily-spec/conformance/materialization/`*.json`); observational transparency eager (pre-mint) vs lazy (`get_or_insert_with`), deferral-not-deallocation present-set monotonicity, entry-kind orthogonal to strategy (input cells always materialized / derived slots deferred under lazy)

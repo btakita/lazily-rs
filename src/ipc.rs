@@ -614,6 +614,13 @@ impl serde::Serialize for NodeSnapshot {
         use serde::ser::SerializeStruct;
         // Omit a `None` key only in self-describing formats; positional codecs
         // (Postcard) must always carry the field so the schema stays stable.
+        //
+        // `is_human_readable` is serde's only encoder-supplied signal here and
+        // this crate reads it as "self-describing". msgpack IS self-describing
+        // but rmp-serde reports `false` by default, so `IpcMessage::encode_msgpack`
+        // opts in with `.with_human_readable()` (`#lzmsgpackparity`). A msgpack
+        // serializer built without that flag writes `key: null` and violates
+        // protocol.md § NodeKey.
         let emit_key = self.key.is_some() || !serializer.is_human_readable();
         let mut st = serializer.serialize_struct("NodeSnapshot", 3 + emit_key as usize)?;
         st.serialize_field("node", &self.node)?;
@@ -861,7 +868,9 @@ impl serde::Serialize for DeltaOp {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         // Two borrowed shadows differing only in `NodeAdd.key` omission. The
         // human-readable shadow omits a `None` key; the binary shadow always
-        // writes it so positional Postcard keeps a stable schema.
+        // writes it so positional Postcard keeps a stable schema. "Human
+        // readable" means SELF-DESCRIBING here — msgpack takes the `Hr` branch
+        // because `encode_msgpack` sets the flag (`#lzmsgpackparity`).
         #[derive(serde::Serialize)]
         #[serde(rename = "DeltaOp")]
         enum Hr<'a> {
@@ -1747,12 +1756,33 @@ impl IpcMessage {
 
     #[cfg(feature = "ipc-msgpack")]
     pub fn encode_msgpack(&self) -> Result<Vec<u8>, EncodeError> {
-        rmp_serde::to_vec_named(self).map_err(EncodeError::Msgpack)
+        let mut buf = Vec::new();
+        // `with_struct_map` is what `to_vec_named` does: named-field maps, not
+        // positional arrays (protocol.md § Frame codecs).
+        //
+        // `with_human_readable` is the SELF-DESCRIBING flag (`#lzmsgpackparity`).
+        // The optional-`key` omission in `NodeSnapshot`/`DeltaOp::NodeAdd` keys
+        // off `Serializer::is_human_readable`, which rmp-serde reports as
+        // `false` by default — so msgpack, a self-describing codec, was getting
+        // the positional-Postcard treatment and writing `key: null` where
+        // protocol.md § NodeKey requires it omitted. The flag is serde's only
+        // encoder-supplied signal here, and for these types it means exactly
+        // "self-describing": every branch that reads it is an omit-when-absent
+        // decision, never a formatting one.
+        let mut ser = rmp_serde::Serializer::new(&mut buf)
+            .with_struct_map()
+            .with_human_readable();
+        serde::Serialize::serialize(self, &mut ser).map_err(EncodeError::Msgpack)?;
+        Ok(buf)
     }
 
     #[cfg(feature = "ipc-msgpack")]
     pub fn decode_msgpack(bytes: &[u8]) -> Result<Self, DecodeError> {
-        rmp_serde::from_slice(bytes).map_err(DecodeError::Msgpack)
+        // Symmetric with `encode_msgpack`: the decoder must agree that msgpack
+        // is self-describing, or a `Deserialize` impl that branches on the flag
+        // would read the frame under the positional schema.
+        let mut de = rmp_serde::Deserializer::from_read_ref(bytes).with_human_readable();
+        serde::Deserialize::deserialize(&mut de).map_err(DecodeError::Msgpack)
     }
 
     #[cfg(feature = "ipc-binary")]

@@ -218,6 +218,16 @@ jobs:
       # compile to "running 0 tests" — exit 0, green tick, nothing asserted —
       # under any narrower feature set, which is the exact failure the guards
       # exist to reject.
+      # Frame-codec round-trip obligation (#lzmsgpackparity). `ipc-msgpack` is
+      # not optional: without it the msgpack fixture is never opened, and an
+      # unopened canonical fixture is exactly what the conformance-coverage
+      # guard fails on. msgpack is a protocol.md MUST — a feature flag is not a
+      # carve-out.
+      - name: Test frame-codec round-trip conformance against canonical spec fixtures
+        run: |
+          test -d ../lazily-spec/conformance/codec || { echo "::error::../lazily-spec/conformance/codec missing — codec_roundtrip_conformance.rs cannot run"; exit 1; }
+          cargo +stable test --locked --features ipc,ipc-msgpack --test codec_roundtrip_conformance
+
       - name: Test reliable-sync conformance against canonical spec fixtures
         run: |
           test -d ../lazily-spec/conformance/reliable-sync || { echo "::error::../lazily-spec/conformance/reliable-sync missing — reliable_sync_conformance.rs cannot run"; exit 1; }
