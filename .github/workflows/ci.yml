@@ -94,6 +94,14 @@ jobs:
       - name: Test distributed CRDT plane runtime integration (#lzcrdtplane5b)
         run: cargo +stable test --locked --features "distributed webrtc"
 
+      # The cross-binding wire-compatibility gate. `make check` has always run
+      # it; no binding's CI ran it anywhere (#lzinteroppeerci). Nine bindings
+      # have to agree on a byte layout, and the check proving they still do lived
+      # exclusively on developer machines — the exact shape of rot the
+      # conformance guards were moved into CI to stop.
+      - name: Interop peer self-check (#lzinteroppeerci)
+        run: cargo +stable run --locked --quiet --features "distributed webrtc" --bin lazily-interop-peer -- --self-check
+
       - name: Test signaling client feature
         run: cargo +stable test --locked --features signaling-client
 
