@@ -240,6 +240,14 @@ jobs:
           test -f ../lazily-spec/conformance/codec/nodeid_exact_range.json || { echo "::error::../lazily-spec/conformance/codec/nodeid_exact_range.json missing — nodeid_exact_range_conformance.rs cannot run"; exit 1; }
           cargo +stable test --locked --features ipc,ipc-msgpack --test nodeid_exact_range_conformance
 
+      # NodeKey null-leniency (#lzkeynullstrict). Omit-when-absent binds the
+      # ENCODER; a decoder must read an omitted `key` and an explicit
+      # `key: null` alike as absent, and must still emit the omitted form.
+      - name: Test NodeKey null-leniency against canonical spec fixtures
+        run: |
+          test -f ../lazily-spec/conformance/codec/nodekey_null_leniency.json || { echo "::error::../lazily-spec/conformance/codec/nodekey_null_leniency.json missing — nodekey_null_leniency_conformance.rs cannot run"; exit 1; }
+          cargo +stable test --locked --features ipc,ipc-msgpack --test nodekey_null_leniency_conformance
+
       - name: Test reliable-sync conformance against canonical spec fixtures
         run: |
           test -d ../lazily-spec/conformance/reliable-sync || { echo "::error::../lazily-spec/conformance/reliable-sync missing — reliable_sync_conformance.rs cannot run"; exit 1; }

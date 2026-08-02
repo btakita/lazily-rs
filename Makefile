@@ -51,6 +51,7 @@ export LAZILY_CONFORMANCE_SCENARIOS = $(CONFORMANCE_SCENARIOS)
 	test-ipc-conformance \
 	test-codec-roundtrip-conformance \
 	test-nodeid-exact-range-conformance \
+	test-nodekey-null-leniency-conformance \
 	test-reliable-sync-conformance \
 	test-durable-outbox \
 	test-collections-conformance \
@@ -78,7 +79,7 @@ test-ingress-family-conformance \
 	instrumentation-profile \
 	benchmark-spread
 
-check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-codec-roundtrip-conformance test-nodeid-exact-range-conformance test-reliable-sync-conformance test-durable-outbox test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-ingress-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-evidence benchmark-check conformance-coverage ci-reach
+check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-codec-roundtrip-conformance test-nodeid-exact-range-conformance test-nodekey-null-leniency-conformance test-reliable-sync-conformance test-durable-outbox test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-ingress-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-evidence benchmark-check conformance-coverage ci-reach
 
 fmt:
 >$(CARGO) fmt --all --check
@@ -181,6 +182,17 @@ test-codec-roundtrip-conformance:
 # reference reading of the fixture. Both codecs, same reason as above.
 test-nodeid-exact-range-conformance:
 >$(CARGO) test --locked --features ipc,ipc-msgpack --test nodeid_exact_range_conformance
+
+# NodeKey null-leniency (#lzkeynullstrict): replays
+# ../lazily-spec/conformance/codec/nodekey_null_leniency.json. Omit-when-absent
+# binds the ENCODER; a decoder must read both an omitted `key` and an explicit
+# `key: null` as absent. lazily-rs is the reference reading — serde already
+# accepted both and `skip_serializing_if` already omitted on the way out, which
+# is exactly why the null form reaches other bindings in the first place. The
+# runner also re-encodes and inspects field PRESENCE, because reading null as
+# absent and writing it back out is a correct decode with a broken encoder.
+test-nodekey-null-leniency-conformance:
+>$(CARGO) test --locked --features ipc,ipc-msgpack --test nodekey_null_leniency_conformance
 
 # Reliable sync (#lzsync): ResyncCoordinator / DurableOutbox / OR-set-LWW
 # liveness + the ResyncRequest/OutboxAck control-frame codec round-trip. Replays
