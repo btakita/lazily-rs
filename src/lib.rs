@@ -126,6 +126,7 @@ mod signaling_client;
 mod spill;
 mod stable_id;
 mod state_machine;
+mod state_table;
 pub mod statechart;
 pub mod stdlib;
 #[cfg(feature = "webrtc-str0m")]
@@ -353,6 +354,11 @@ pub use state_machine::AsyncStateMachine;
 pub use state_machine::StateMachine;
 #[cfg(feature = "thread-safe")]
 pub use state_machine::ThreadSafeStateMachine;
+pub use state_table::{
+    FiniteState, StateTable, TableCoverage, projected_state_table, state_table, table_coverage,
+};
+#[cfg(feature = "thread-safe")]
+pub use state_table::{thread_safe_projected_state_table, thread_safe_state_table};
 #[cfg(feature = "async")]
 pub use statechart::AsyncStateChart;
 #[cfg(feature = "thread-safe")]

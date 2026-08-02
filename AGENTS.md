@@ -93,6 +93,26 @@ this repo.
   await. Spec: `lazily-spec/docs/transport-ingress.md`; formal:
   `lazily-formal/LazilyFormal/Ingress.lean`
 - `src/time.rs` — temporal source primitives (`#lztime`): logical-clock-driven `TimelineSource` cores (`TimerCore`/`IntervalCore`/`CronCore`/`DeadlineCore`) split from thin reactive cells (`TimerCell` single-shot / `IntervalCell` periodic / `CronCell` pattern-periodic / `DeadlineCell<T>` value+deadline → `Deadlined`), plus `ManualClock`. Edge-only reactive invalidation; `BytesPayload` cores (`DeadlineCell` is `PyObjectPayload`). Foundation for leases/expiry/windows/presence.
+- `src/state_table.rs` — typed **state tables** (`#lazilystatetable`): a total pure
+  `StateTable::decide(&Input) -> Decision` over a *finite product state*, wired as a
+  `Computed`. The complement of `state_machine.rs`, not a variant of it —
+  `StateMachine` **owns** an accepted sequence of state changes, a `StateTable`
+  **derives** a decision from the current product of independently observed facts
+  and holds nothing, so replaying the same ordered facts into a fresh `Context`
+  reproduces the decision. `projected_state_table` builds **two** guarded cells
+  (project, then decide) rather than one: unbounded payloads — hashes, document
+  text, revisions — are classified into finite enum axes at the projection
+  boundary, and payload churn that leaves the product state unchanged stops there
+  and never reaches `decide`. Exhaustive `match` proves the function is *total*;
+  it does not prove the table is *reviewed*, so `FiniteState` + `table_coverage`
+  produce the Cartesian row set and `TableCoverage` asserts over it — every
+  declared decision reached, no row deciding a fall-through, and every assertion
+  failing on an empty row set instead of sweeping nothing (`#lzvacuousrun`;
+  `assert_at_least(0)` is rejected outright). Impossible combinations are meant to
+  be unrepresentable — nest the enum so the axes do not exist, or hand-write
+  `FiniteState` to filter through a smart constructor. `thread_safe_*`
+  counterparts under `thread-safe`. Plan:
+  `tasks/software/plan-lazily-state-tables.md`
 - `src/stdlib.rs` — Lazily standard-library conveniences layered over portable primitives rather than added to the graph kernel. `stdlib::Timer` binds logical `TimerCore` to Rust's monotone `Instant`; `Timeout<T>` adds caller-driven operation/cancellation polling, strict monotone deadlines, typed latched outcomes, and deterministic clock/wait seams without owning a future, executor, or thread; `RevisionBarrier` combines monotone revisions with derived predicates, barrier-owned cancellation, `Timer` deadlines, disposal, and application-owned keyed effect receipts while closing check-to-sleep lost wakeups.
 - `src/transport.rs` — cross-process zero-copy transport (`#lzzcpy`): `BlobBackend` adapter trait + `InProcessBackend` (wraps `ShmBlobArena`) + `ArrowBackend` (Arrow IPC stream bytes) + `ShmBackend` (POSIX `shm_open`+`mmap`, `shm` feature, Linux) + `spill_message`/`resolve_value` policy + `BlobRouter` multi-backend resolver
 - `src/crdt_tree.rs` — `CrdtTree` lossless document contract (`#lzcrdttree`): merge, frontier, delta, empty-frontier snapshot, and materialized value; implemented by `TextCrdt`
@@ -158,6 +178,17 @@ this repo.
   excuse. Self-tested in `tests/expect_guard.rs`, including one case per
   read-then-discard shape (named skip in a consuming loop, value bound but never
   compared, comparison against a literal)
+- `tests/state_table_pilot.rs` — the `#lazilystatetable` pilot: Agent Doc's
+  retained-document-transition decision as a typed table (Phase 1 — written
+  *before* any Agent Doc runtime change, so nothing here reaches into that repo).
+  Covers the plan's whole coverage contract: the row set and every decision
+  reached, impossible rows unrepresentable (11 constructible of a naive 32), both
+  arrival orders for independently propagated facts, replay into a fresh context,
+  the effect sink seeing one wake per *distinct* decision, and a successful
+  publication settling the table as a fed-back observation rather than an ACK
+  gate. Mutation-checked in four directions — collapse the two cells into one,
+  drop the decision guard, disable the dominating frontier row, and delete an
+  axis variant — each reddens a different test
 - `tests/integration.rs` — 13 integration tests
 - `tests/spec_compliance.rs` — 68 spec compliance tests
 - `tests/conformance.rs` — cross-language IPC fixture round-trip tests (lazily-spec/conformance)
@@ -320,30 +351,20 @@ authoring `AGENTS.md`, `SKILL.md`, or runbooks in this repo must read:
 
 before making changes.
 
-<!-- tsift:code-navigation v=0.1.77 -->
+<!-- tsift:code-navigation v=0.1.78 -->
 ## Code Navigation
 
-Keep this block self-contained for Codex/OpenCode prompt reuse. If this repository also ships current `.claude/skills/tsift/SKILL.md` or `runbooks/code-navigation.md`, use those deeper runbooks for command detail instead of expanding this block.
+Run `tsift status` at session start from the owning repo root. If the task or file lives under a git submodule (for example `src/tsift/...`), switch to that submodule root first so the harness loads the narrower local instructions and repo state instead of the superproject root. If status prints a `run:` recommendation for stale or missing tsift state, run `tsift status --fix` before relying on tsift results; when the harness cannot perform write commands, ask the user to run the printed command instead.
 
-Run `tsift status` at session start from the owning repo root. If the task or file lives under a git submodule (for example `src/tsift/...`), switch to that submodule root first so the harness loads the narrower local instructions and repo state instead of the superproject root. If status prints a `run:` recommendation for stale or missing tsift state, run `tsift status --fix` before relying on tsift results; when the harness cannot perform write commands, ask the user to run the printed command instead. Codex projects can install a prompt-time auto-reindex hook with `tsift init --codex`; OpenCode projects can install per-project tsift command shortcuts with `tsift init --opencode`.
+Prefer tsift envelopes over raw reads:
+- `tsift --envelope search <query>` instead of `grep`/`rg`
+- `tsift --envelope source-read <file>` / `tsift --envelope symbol-read <symbol>` instead of `cat`/`head`
+- `tsift --envelope explain <symbol>` and `tsift graph <symbol> --callers` / `--callees` for call graphs
+- `tsift diff-digest [path]` instead of `git diff`, `git show`, or patch-style `git log`
+- `tsift --envelope session-review <path>` / `tsift --envelope context-pack <path>` instead of replaying long session docs, transcripts, or runtime logs
+- `tsift --envelope digest-runner --kind test|log --path . --shell-command '<command>'` instead of raw test/build output
 
-Use the commands listed in its `use:` output:
-- `tsift --envelope source-read <file> --budget normal` — AST-symbol projection with span metadata and source-window expansion commands (prefer over cat/head for source code files)
-- `tsift --envelope symbol-read <symbol> --budget normal` — token-budgeted symbol body, AST span metadata, child refs, and graph/source expansion commands
-- `tsift --envelope search <query> --budget normal` — AST-aware hybrid search preview (prefer over grep/rg)
-- `tsift --envelope explain <symbol> --budget normal` — callers, callees, community preview
-- `tsift graph <symbol> --callers` / `--callees` — call graph navigation
-- `tsift summarize <symbol>` — cached summary (only when listed in `use:`)
-- `tsift workflow search` — ordered exact/search/explain/summarize/digest recipe that preserves result handles across expansions
-
-When a search envelope includes `report.scale_guard`, run one of its `narrow_commands` before dispatching parallel agents. The guard means the original result set or corpus is broad enough that fan-out should start from a narrower cited handle, path, or exact query.
-
-Prefer bounded digest commands over raw transcript, diff, and verbose-log reads:
-- `tsift --envelope session-review <path> --next-context --budget normal` or `tsift --envelope context-pack <path> --budget normal` instead of replaying long session docs, JSONL transcripts, or agent-doc runtime logs with `cat`, `tail`, or `sed`.
-- `tsift diff-digest [path]` (`--cached`, `--revision <rev>`) instead of `git diff`, `git show`, or patch-style `git log`.
-- `tsift --envelope digest-runner --kind test --path . --shell-command '<test command>'` / `tsift --envelope digest-runner --kind log --path . --shell-command '<build command>'` for noisy test/build/install output, or let the rewrite/hooks create those artifact-backed envelopes for `cargo test`, `pytest`, and verbose cargo commands.
-- If RTK is installed, digest-runner delegates supported generic command families through `rtk rewrite` and records the chosen compact filter in `report.filter` while preserving tsift artifact handles.
-- Codex, OpenCode, and other harnesses without Claude-style `PreToolUse` hooks should run `tsift rewrite --run '<command>'` before broad `rg`/recursive grep, raw transcript/session/log reads, `git diff`/`git show`/single-patch `git log`, `cargo test`/`pytest`, and cargo build/check/clippy/install commands so the same search, session-digest, diff-digest, and digest-runner rewrites apply manually. OpenCode can install this path as `/tsift-rewrite-run` with `tsift init --opencode`.
+Command detail lives in [`runbooks/code-navigation.md`](runbooks/code-navigation.md) — budgets, `tsift workflow search`, `report.scale_guard` handling, the harness rewrite path for `PreToolUse`-less harnesses, and Codex/OpenCode integration. `tsift init` writes and versions that runbook alongside this block, so it is present in every initialized checkout; read it before broad exploration instead of expanding this block. A repository that also ships a current `.claude/skills/tsift/SKILL.md` should use that skill as the deeper source.
 
 For local verification, run `make check` before committing. After local changes, check the latest GitHub Actions CI run with `gh run list --workflow CI --limit 1` and fix any failing tests before calling the work complete.
 
