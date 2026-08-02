@@ -56,6 +56,14 @@ pub enum WebrtcSignalingError {
     Closed,
     /// The data channel did not open before the timeout elapsed.
     Timeout,
+    /// The signaling server rejected the handshake with an `error` frame
+    /// (`permission_denied`, `unknown_target`, …).
+    Server {
+        /// The server's machine-readable error code.
+        code: String,
+        /// The server's human-readable message.
+        message: String,
+    },
 }
 
 impl std::fmt::Display for WebrtcSignalingError {
@@ -65,6 +73,9 @@ impl std::fmt::Display for WebrtcSignalingError {
             Self::Str0mNet(e) => write!(f, "webrtc signaling str0m: {e}"),
             Self::Closed => write!(f, "webrtc signaling: connection closed mid-handshake"),
             Self::Timeout => write!(f, "webrtc signaling: data channel did not open in time"),
+            Self::Server { code, message } => {
+                write!(f, "webrtc signaling: server error `{code}`: {message}")
+            }
         }
     }
 }
@@ -121,11 +132,13 @@ pub async fn answer_next_offer(
     // Wait for the first offer, stashing any candidate that races ahead of it.
     let mut early_candidates: Vec<String> = Vec::new();
     let (peer, offer_sdp) = loop {
-        match recv_before(client, deadline).await? {
-            ServerMessage::Offer { from, sdp } => break (from, sdp),
-            ServerMessage::Ice { candidate, .. } => early_candidates.push(candidate),
-            // Roster / answer / relay frames are not part of accepting an offer.
-            _ => {}
+        match classify_handshake_frame(recv_before(client, deadline).await?)? {
+            HandshakeFrame::Offer { from, sdp } => break (from, sdp),
+            HandshakeFrame::Ice { candidate } => early_candidates.push(candidate),
+            // Roster / relay frames, and an answer to an offer we never sent, are
+            // not part of accepting an offer. A server `error` frame is NOT in
+            // this set — `classify_handshake_frame` has already failed on it.
+            HandshakeFrame::Answer { .. } | HandshakeFrame::Ignored => {}
         }
     };
 
@@ -183,14 +196,139 @@ async fn pump_until_open(
     Ok(())
 }
 
+/// What one decoded signaling frame means to an in-flight handshake.
+#[derive(Debug)]
+enum HandshakeFrame {
+    /// A peer is offering us a connection.
+    Offer { from: PeerId, sdp: String },
+    /// Our offer was answered.
+    Answer { sdp: String },
+    /// A trickled ICE candidate.
+    Ice { candidate: String },
+    /// A roster / relay frame: understood, and not part of a handshake.
+    Ignored,
+}
+
+/// Classify one signaling frame for the handshake loops, failing the handshake on
+/// a server `error` frame.
+///
+/// Both loops previously ended in `_ => {}`, which swallowed
+/// [`ServerMessage::Error`] — the frame the relay sends for `permission_denied`
+/// or `unknown_target`. A rejected handshake then sat in the loop until
+/// `open_timeout` elapsed and reported [`WebrtcSignalingError::Timeout`], i.e. it
+/// diagnosed a network stall for what the server had already explained. The match
+/// is exhaustive by variant, so a new `ServerMessage` is a compile error here
+/// rather than one more silently dropped frame.
+fn classify_handshake_frame(msg: ServerMessage) -> Result<HandshakeFrame, WebrtcSignalingError> {
+    match msg {
+        ServerMessage::Offer { from, sdp } => Ok(HandshakeFrame::Offer { from, sdp }),
+        ServerMessage::Answer { sdp, .. } => Ok(HandshakeFrame::Answer { sdp }),
+        ServerMessage::Ice { candidate, .. } => Ok(HandshakeFrame::Ice { candidate }),
+        ServerMessage::Error { code, message } => {
+            Err(WebrtcSignalingError::Server { code, message })
+        }
+        ServerMessage::Welcome { .. }
+        | ServerMessage::PeerJoined { .. }
+        | ServerMessage::PeerLeft { .. }
+        | ServerMessage::Relay { .. } => Ok(HandshakeFrame::Ignored),
+    }
+}
+
 /// Apply a single signaling frame to the in-flight handshake. Only the offerer's
 /// `answer` and either side's trickled `ice` advance an in-progress connection;
-/// roster / relay frames are ignored here.
+/// roster / relay frames are ignored here and a server `error` frame fails the
+/// handshake (see [`classify_handshake_frame`]).
 fn apply_handshake_frame(net: &Str0mNet, msg: ServerMessage) -> Result<(), WebrtcSignalingError> {
-    match msg {
-        ServerMessage::Answer { sdp, .. } => net.accept_answer(&sdp)?,
-        ServerMessage::Ice { candidate, .. } => net.add_remote_candidate(&candidate)?,
-        _ => {}
+    match classify_handshake_frame(msg)? {
+        HandshakeFrame::Answer { sdp } => net.accept_answer(&sdp)?,
+        HandshakeFrame::Ice { candidate } => net.add_remote_candidate(&candidate)?,
+        HandshakeFrame::Offer { .. } | HandshakeFrame::Ignored => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_server_error_frame_fails_the_handshake_instead_of_being_ignored() {
+        let frame = ServerMessage::Error {
+            code: "permission_denied".to_string(),
+            message: "peer 2 is not in room-1".to_string(),
+        };
+        match classify_handshake_frame(frame) {
+            Err(WebrtcSignalingError::Server { code, message }) => {
+                assert_eq!(code, "permission_denied");
+                assert_eq!(message, "peer 2 is not in room-1");
+            }
+            other => panic!("a server error frame must fail the handshake, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_server_error_is_reported_with_its_code_and_message() {
+        let err = WebrtcSignalingError::Server {
+            code: "unknown_target".to_string(),
+            message: "no such peer".to_string(),
+        };
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("unknown_target") && rendered.contains("no such peer"),
+            "the error names the server's code and message: {rendered}"
+        );
+    }
+
+    #[test]
+    fn roster_frames_are_still_ignored_by_the_handshake() {
+        for frame in [
+            ServerMessage::Welcome {
+                peer: PeerId(1),
+                peers: vec![PeerId(2)],
+            },
+            ServerMessage::PeerJoined { peer: PeerId(2) },
+            ServerMessage::PeerLeft { peer: PeerId(2) },
+            ServerMessage::Relay {
+                from: PeerId(2),
+                payload: serde_json::Value::Null,
+            },
+        ] {
+            let label = format!("{frame:?}");
+            match classify_handshake_frame(frame) {
+                Ok(HandshakeFrame::Ignored) => {}
+                other => panic!("{label} must stay ignored, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn handshake_frames_still_classify_as_themselves() {
+        let offer = ServerMessage::Offer {
+            from: PeerId(7),
+            sdp: "v=0-offer".to_string(),
+        };
+        match classify_handshake_frame(offer) {
+            Ok(HandshakeFrame::Offer { from, sdp }) => {
+                assert_eq!(from, PeerId(7));
+                assert_eq!(sdp, "v=0-offer");
+            }
+            other => panic!("an offer must classify as an offer, got {other:?}"),
+        }
+        let answer = ServerMessage::Answer {
+            from: PeerId(7),
+            sdp: "v=0-answer".to_string(),
+        };
+        match classify_handshake_frame(answer) {
+            Ok(HandshakeFrame::Answer { sdp }) => assert_eq!(sdp, "v=0-answer"),
+            other => panic!("an answer must classify as an answer, got {other:?}"),
+        }
+        let ice = ServerMessage::Ice {
+            from: PeerId(7),
+            candidate: "candidate:1".to_string(),
+        };
+        match classify_handshake_frame(ice) {
+            Ok(HandshakeFrame::Ice { candidate }) => assert_eq!(candidate, "candidate:1"),
+            other => panic!("an ice frame must classify as ice, got {other:?}"),
+        }
+    }
 }

@@ -191,20 +191,54 @@ impl ChartDef {
     }
 }
 
+/// Read an optional string field, rejecting a present-but-non-string value.
+///
+/// `.and_then(|v| v.as_str())` reads a present `{"parent": 7}` as *absent*, which
+/// for `parent` promotes the state to a second root and for `initial` demotes a
+/// compound state to atomic. A malformed field is a malformed chart, not an
+/// omitted one (`#failclosedsweep`).
+#[cfg(feature = "statechart-json")]
+fn optional_str(
+    id: &str,
+    obj: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<Option<String>, String> {
+    match obj.get(field) {
+        None => Ok(None),
+        Some(serde_json::Value::String(s)) => Ok(Some(s.clone())),
+        Some(other) => Err(format!(
+            "state {id}: `{field}` must be a string, got {other}"
+        )),
+    }
+}
+
+/// Read an optional boolean field, rejecting a present-but-non-boolean value.
+///
+/// spec `state-charts.md` § Implementation status: a binding "MUST reject any
+/// feature it does not implement explicitly (never silently ignore a `parallel`,
+/// `history`, `entry/exit/run`, or `{"expr": …}` guard)". `{"parallel": "true"}`
+/// read through `as_bool()` is precisely that silent ignore.
+#[cfg(feature = "statechart-json")]
+fn optional_bool(
+    what: &str,
+    obj: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<Option<bool>, String> {
+    match obj.get(field) {
+        None => Ok(None),
+        Some(serde_json::Value::Bool(b)) => Ok(Some(*b)),
+        Some(other) => Err(format!("{what}: `{field}` must be a boolean, got {other}")),
+    }
+}
+
 #[cfg(feature = "statechart-json")]
 fn parse_state(id: &str, raw: &serde_json::Value) -> Result<StateDef, String> {
     let obj = raw
         .as_object()
         .ok_or_else(|| format!("state {id} must be an object"))?;
-    let parent = obj.get("parent").and_then(|v| v.as_str()).map(String::from);
-    let initial = obj
-        .get("initial")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let default = obj
-        .get("default")
-        .and_then(|v| v.as_str())
-        .map(String::from);
+    let parent = optional_str(id, obj, "parent")?;
+    let initial = optional_str(id, obj, "initial")?;
+    let default = optional_str(id, obj, "default")?;
 
     if obj.get("run").is_some() {
         return Err(format!(
@@ -212,20 +246,66 @@ fn parse_state(id: &str, raw: &serde_json::Value) -> Result<StateDef, String> {
         ));
     }
 
-    let kind = if let Some(h) = obj.get("history").and_then(|v| v.as_str()) {
-        Kind::History(match h {
+    let history = optional_str(id, obj, "history")?;
+    let parallel = optional_bool(&format!("state {id}"), obj, "parallel")?;
+    let kind = if let Some(h) = &history {
+        Kind::History(match h.as_str() {
             "shallow" => HistoryKind::Shallow,
             "deep" => HistoryKind::Deep,
             other => return Err(format!("state {id}: unknown history kind `{other}`")),
         })
-    } else if obj.get("parallel").and_then(|v| v.as_bool()) == Some(true) {
+    } else if parallel == Some(true) {
         Kind::Parallel
-    } else if matches!(obj.get("kind").and_then(|v| v.as_str()), Some("final")) {
-        Kind::Final
     } else if obj.contains_key("initial") {
         Kind::Compound
     } else {
         Kind::Atomic
+    };
+
+    // `kind` is documented as OPTIONAL and inferred (spec `state-charts.md`:
+    // "`kind` is optional and inferred"), over the closed domain
+    // `atomic | compound | parallel | history | final`. It was previously read
+    // with `matches!(…, Some("final"))`, so every other value — including the
+    // `parallel` and `history` the spec forbids ignoring, and outright typos —
+    // fell through to the inferred kind with no diagnostic. Now an unknown value
+    // is rejected by name, and a known value must agree with what the rest of the
+    // state declares, since `final` is the only kind carrying information the
+    // other fields do not.
+    let kind = match obj.get("kind") {
+        None => kind,
+        Some(serde_json::Value::String(declared)) => match declared.as_str() {
+            // `final` is the one kind nothing else implies, so it is taken at its
+            // word — but not over a state that has ALSO declared itself a history
+            // pseudo-state or an AND-state, which is a contradiction the reader
+            // must not silently resolve in either direction.
+            "final" if matches!(kind, Kind::History(_) | Kind::Parallel) => {
+                return Err(format!(
+                    "state {id}: `kind: final` contradicts the state's own `history`/`parallel` declaration"
+                ));
+            }
+            "final" => Kind::Final,
+            "atomic" | "compound" | "parallel" | "history" => {
+                let inferred = match kind {
+                    Kind::Atomic => "atomic",
+                    Kind::Compound => "compound",
+                    Kind::Parallel => "parallel",
+                    Kind::History(_) => "history",
+                    Kind::Final => "final",
+                };
+                if declared != inferred {
+                    return Err(format!(
+                        "state {id}: declared kind `{declared}` contradicts the state's own fields (inferred `{inferred}`)"
+                    ));
+                }
+                kind
+            }
+            other => {
+                return Err(format!(
+                    "state {id}: unknown kind `{other}` (expected atomic|compound|parallel|history|final)"
+                ));
+            }
+        },
+        Some(other) => return Err(format!("state {id}: `kind` must be a string, got {other}")),
     };
 
     let entry = parse_action_list(obj.get("entry"))?;
@@ -292,7 +372,12 @@ fn parse_transition(raw: &serde_json::Value) -> Result<Transition, String> {
                 Some(_) => return Err("guard must be a string".into()),
             };
             let action = parse_action_list(o.get("action"))?;
-            let internal = o.get("internal").and_then(|v| v.as_bool()).unwrap_or(false);
+            // `{"internal": "true"}` used to read as `false` here, silently
+            // turning an internal transition into an external one (which exits
+            // and re-enters the source state, firing entry/exit actions the chart
+            // author asked to suppress).
+            let internal = optional_bool(&format!("transition to `{target}`"), o, "internal")?
+                .unwrap_or(false);
             Ok(Transition {
                 target,
                 guard,
@@ -1020,6 +1105,164 @@ fn record_region(
                 .collect();
             history.insert(hist_child, Recording::Deep(set));
         }
+    }
+}
+
+/// `#failclosedsweep`: the chart loader rejects a malformed discriminator instead
+/// of reading it as an absent one.
+///
+/// spec `state-charts.md` § Implementation status: a binding "MUST reject any
+/// feature it does not implement explicitly (never silently ignore a `parallel`,
+/// `history`, `entry/exit/run`, or `{"expr": …}` guard)". Every case below used to
+/// parse successfully into a chart that quietly meant something else.
+#[cfg(all(test, feature = "statechart-json"))]
+mod parse_strictness_tests {
+    use super::*;
+
+    fn chart(states: &str) -> Result<ChartDef, String> {
+        let text = format!(r#"{{ "initial": "root", "states": {states} }}"#);
+        let v: serde_json::Value = serde_json::from_str(&text).expect("test json parses");
+        ChartDef::from_json(&v)
+    }
+
+    fn rejection(states: &str) -> String {
+        chart(states).expect_err("this chart must be rejected")
+    }
+
+    #[test]
+    fn an_unknown_state_kind_is_rejected_by_name() {
+        let err = rejection(r#"{ "root": { "kind": "banana" } }"#);
+        assert!(
+            err.contains("unknown kind") && err.contains("banana"),
+            "the rejection names the offending value: {err}"
+        );
+    }
+
+    #[test]
+    fn a_declared_kind_that_contradicts_the_state_is_rejected() {
+        // `kind: "parallel"` with no `parallel: true` is the silent-ignore case the
+        // spec calls out: it used to parse as an atomic state.
+        let err = rejection(r#"{ "root": { "kind": "parallel" } }"#);
+        assert!(
+            err.contains("contradicts") && err.contains("parallel"),
+            "the rejection explains the contradiction: {err}"
+        );
+    }
+
+    #[test]
+    fn a_final_kind_over_a_parallel_or_history_state_is_rejected() {
+        for states in [
+            r#"{ "root": { "kind": "final", "parallel": true } }"#,
+            r#"{ "root": { "initial": "h" }, "h": { "parent": "root", "kind": "final", "history": "deep" } }"#,
+        ] {
+            let err = rejection(states);
+            assert!(
+                err.contains("`kind: final` contradicts"),
+                "a final state cannot also be parallel/history: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_consistent_declared_kind_is_still_accepted() {
+        let def = chart(
+            r#"{
+                "root": { "kind": "compound", "initial": "leaf" },
+                "leaf": { "parent": "root", "kind": "atomic" }
+            }"#,
+        )
+        .expect("a chart whose declared kinds agree with its fields still loads");
+        assert_eq!(def.kind("root"), Kind::Compound);
+        assert_eq!(def.kind("leaf"), Kind::Atomic);
+
+        let parallel = chart(
+            r#"{
+                "root": { "kind": "parallel", "parallel": true },
+                "a": { "parent": "root" },
+                "b": { "parent": "root" }
+            }"#,
+        )
+        .expect("`kind: parallel` with `parallel: true` agrees");
+        assert_eq!(parallel.kind("root"), Kind::Parallel);
+    }
+
+    #[test]
+    fn a_non_boolean_parallel_flag_is_rejected_not_ignored() {
+        let err = rejection(r#"{ "root": { "parallel": "true" } }"#);
+        assert!(
+            err.contains("`parallel` must be a boolean"),
+            "a string `parallel` is rejected rather than read as not-parallel: {err}"
+        );
+    }
+
+    #[test]
+    fn a_non_string_history_is_rejected_not_ignored() {
+        let err =
+            rejection(r#"{ "root": { "initial": "h" }, "h": { "parent": "root", "history": 5 } }"#);
+        assert!(
+            err.contains("`history` must be a string"),
+            "a numeric `history` is rejected rather than demoting the pseudo-state: {err}"
+        );
+    }
+
+    #[test]
+    fn a_non_string_parent_is_rejected_not_promoted_to_root() {
+        // Read through `as_str()` this was `None`, i.e. a SECOND parent-less root.
+        let err = rejection(r#"{ "root": { "initial": "leaf" }, "leaf": { "parent": 7 } }"#);
+        assert!(
+            err.contains("`parent` must be a string"),
+            "a numeric `parent` is rejected rather than making the state a root: {err}"
+        );
+    }
+
+    #[test]
+    fn a_non_string_initial_is_rejected_not_demoted_to_atomic() {
+        let err = rejection(r#"{ "root": { "initial": 3 } }"#);
+        assert!(
+            err.contains("`initial` must be a string"),
+            "a numeric `initial` is rejected rather than read as absent: {err}"
+        );
+    }
+
+    #[test]
+    fn a_non_boolean_transition_internal_flag_is_rejected_not_ignored() {
+        let err = rejection(
+            r#"{
+                "root": { "initial": "a" },
+                "a": { "parent": "root", "on": { "go": { "target": "b", "internal": "yes" } } },
+                "b": { "parent": "root" }
+            }"#,
+        );
+        assert!(
+            err.contains("`internal` must be a boolean"),
+            "a string `internal` is rejected rather than silently turning the transition external: {err}"
+        );
+    }
+
+    #[test]
+    fn a_well_formed_internal_transition_still_parses() {
+        let def = chart(
+            r#"{
+                "root": { "initial": "a" },
+                "a": { "parent": "root", "on": { "go": { "target": "a", "internal": true } } }
+            }"#,
+        )
+        .expect("a boolean `internal` still loads");
+        assert!(
+            def.states["a"].transitions["go"].internal,
+            "the internal flag survives the stricter parse"
+        );
+    }
+
+    #[test]
+    fn an_unknown_history_kind_is_still_rejected() {
+        let err = rejection(
+            r#"{ "root": { "initial": "h" }, "h": { "parent": "root", "history": "sideways" } }"#,
+        );
+        assert!(
+            err.contains("unknown history kind") && err.contains("sideways"),
+            "the pre-existing history rejection is unchanged: {err}"
+        );
     }
 }
 

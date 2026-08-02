@@ -272,6 +272,16 @@ fn terminal_status_of(outcome: ReceiptOutcome, reason: Option<&str>) -> CommandS
             Some("cancelled") => CommandStatus::Cancelled,
             Some("superseded") => CommandStatus::Superseded,
             Some("timed_out") => CommandStatus::TimedOut,
+            // INTENTIONAL leniency (`#failclosedsweep`). Terminality is decided by
+            // `outcome`, a closed enum; `reason` only REFINES an already-terminal
+            // rejection. The wire type is an open string — `schemas/receipts.json`
+            // types it `OptionalString` and documents it as the "terminal reason
+            // (rejection cause, cancel reason, timeout)", so a producer is expected
+            // to send free text a consumer has never seen. Folding an unrecognised
+            // reason (and a missing one) to `Rejected` keeps the fold total without
+            // inventing a status: the command is still terminal, still rejected, and
+            // the original string stays on the receipt for the caller to read.
+            // Pinned by `an_unknown_rejection_reason_still_folds_to_rejected`.
             _ => CommandStatus::Rejected,
         },
         // Non-terminal outcomes never reach here (guarded by is_terminal).
@@ -682,6 +692,47 @@ mod tests {
         let entry = p.terminal_for("cmd-1").unwrap();
         assert_eq!(entry.status, CommandStatus::Applied);
         assert_eq!(entry.terminal_receipt_id.as_deref(), Some("rcpt-1"));
+    }
+
+    /// Pins the INTENTIONAL leniency in `terminal_status_of`: `reason` is an open
+    /// wire string, so a value outside the three protocol-significant ones folds
+    /// to `Rejected` — terminal, rejected, reason preserved on the receipt — while
+    /// the three known reasons still refine the status.
+    #[test]
+    fn an_unknown_rejection_reason_still_folds_to_rejected() {
+        for (reason, expected) in [
+            ("cancelled", CommandStatus::Cancelled),
+            ("superseded", CommandStatus::Superseded),
+            ("timed_out", CommandStatus::TimedOut),
+            ("disk_on_fire", CommandStatus::Rejected),
+            ("", CommandStatus::Rejected),
+        ] {
+            let mut p = CommandProjection::new();
+            p.submit(&submit_fixture("cmd-1", 42));
+            assert_eq!(
+                p.observe_receipt(&rejected_receipt(
+                    "rcpt-1",
+                    "cmd-1",
+                    "project-controller",
+                    42,
+                    reason,
+                )),
+                CommandApplyStatus::Recorded
+            );
+            let entry = p
+                .terminal_for("cmd-1")
+                .expect("a rejection is terminal whatever its reason");
+            assert_eq!(
+                entry.status, expected,
+                "reason `{reason}` folds to {expected:?}"
+            );
+            assert!(entry.terminal, "reason `{reason}` is still terminal");
+            assert_eq!(
+                entry.reason.as_deref(),
+                Some(reason),
+                "the original reason string survives the fold"
+            );
+        }
     }
 
     #[test]

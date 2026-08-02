@@ -125,7 +125,9 @@ jobs:
       # trees, so neither the signaling-client step nor the webrtc-str0m step
       # above compiles this test binary.
       - name: Test WebRTC handshake over signaling
-        run: cargo +stable test --locked --features "signaling-client webrtc-str0m" --test webrtc_signaling
+        run: |
+          cargo +stable test --locked --features "signaling-client webrtc-str0m" --lib webrtc_signaling::
+          cargo +stable test --locked --features "signaling-client webrtc-str0m" --test webrtc_signaling
 
       # FFI / IPC codec matrix (#lzguardsnotinci). Four invocations, not one: the
       # JSON and binary codecs are separate feature trees over the SAME test
@@ -142,6 +144,14 @@ jobs:
 
       - name: Test IPC transport (binary codec)
         run: cargo +stable test --locked --features ipc-binary --test ipc
+
+      # #lzspecbase64: the json-base64 codec's tests are feature-gated and no other
+      # step enables the feature, so before this they compiled under clippy and ran
+      # nowhere. The --lib half carries the encoder's byte-array guards.
+      - name: Test IPC transport (json-base64 codec)
+        run: |
+          cargo +stable test --locked --features json-base64 --lib ipc::
+          cargo +stable test --locked --features json-base64 --test ipc
 
       # Cross-process zero-copy transport: POSIX shm_open + mmap, plus the
       # fork() cross-process smoke. Linux-only, which ubuntu-latest is.
@@ -264,6 +274,7 @@ jobs:
         run: |
           cargo +stable test --locked --features ipc --test durable_outbox
           cargo +stable test --locked --features durable-sqlite --test durable_outbox
+          cargo +stable test --locked --features durable-sqlite --lib outbox::
 
       # All three map flavors. Under anything narrower than --all-features this
       # binary reports "running 0 tests" and exits 0.
@@ -290,7 +301,9 @@ jobs:
           cargo +stable test --locked --features "lossless-tree serde" --test lossless_tree_conformance --test lossless_tree_proptest --test lossless_tree_schema --test crdt_tree_laws
 
       - name: Test statechart conformance against canonical spec fixtures
-        run: cargo +stable test --locked --features statechart-json --test statechart_conformance
+        run: |
+          cargo +stable test --locked --features statechart-json --test statechart_conformance
+          cargo +stable test --locked --features statechart-json --lib statechart::
 
       - name: Test loom model
         run: cargo +stable test --locked --features loom --test thread_safe_loom

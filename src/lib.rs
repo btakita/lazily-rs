@@ -265,7 +265,7 @@ pub use ipc::{
     DeltaSinceRequest, EdgeSnapshot, IpcMessage, IpcPayload, IpcSink, IpcSource, IpcValue,
     KeyIndex, NODE_KEY_MAX_LEN, NODE_KEY_MAX_SEGMENTS, NodeKey, NodeKeyError, NodeSnapshot,
     NodeState, OutboxAck, PROTOCOL_ID, PROTOCOL_MAJOR_VERSION, ResyncRequest, SHM_BLOB_HEADER_LEN,
-    ShmBlobArena, ShmBlobArenaError, ShmBlobRef, Snapshot, WireStamp,
+    ShmBlobArena, ShmBlobArenaError, ShmBlobRef, Snapshot, UnknownBlobBackend, WireStamp,
 };
 #[cfg(all(
     feature = "ipc",

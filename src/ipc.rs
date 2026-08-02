@@ -63,24 +63,57 @@ impl BlobBackendKind {
         }
     }
 
-    /// Parses a backend discriminator from its wire string. Unknown strings
-    /// fall back to [`BlobBackendKind::Shm`] (the default) so a legacy or
-    /// forward-compatible descriptor never hard-fails resolution.
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "arrow" => Self::Arrow,
-            "in_process" => Self::InProcess,
-            _ => Self::Shm,
-        }
-    }
-
     /// Whether this is the default backend ([`Shm`]). Used by
     /// `skip_serializing_if` so legacy descriptors omit the field.
     ///
     /// [`Shm`]: BlobBackendKind::Shm
     pub const fn is_default(&self) -> bool {
         matches!(self, Self::Shm)
+    }
+}
+
+/// A `backend` discriminator that is present on the wire but names no backend
+/// this build knows about (`#failclosedsweep`).
+///
+/// Carries the offending string so the rejection names the value rather than
+/// reporting a generic decode failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownBlobBackend(pub String);
+
+impl fmt::Display for UnknownBlobBackend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "unknown blob backend `{}` (expected \"shm\" | \"arrow\" | \"in_process\")",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for UnknownBlobBackend {}
+
+impl std::str::FromStr for BlobBackendKind {
+    type Err = UnknownBlobBackend;
+
+    /// Parses a backend discriminator from its wire string.
+    ///
+    /// An unrecognised string is **rejected**, not defaulted. Forward
+    /// compatibility for this field is carried by its *absence* — `backend` is
+    /// `#[serde(default, skip_serializing_if = "is_default")]`, so a legacy
+    /// encoder that predates the discriminator omits it and decodes as `Shm`
+    /// without ever reaching this parse. A backend string this build does not
+    /// know therefore means a peer spilled the bytes into a backend that is not
+    /// present here (spec `zero-copy-transport.md`: "New backends … plug in by
+    /// implementing the contract and adding a `backend` enum value"), and
+    /// silently reading it as `Shm` would route resolution into the shared-memory
+    /// arena — exactly the misroute the `resolve_wrong_backend` theorem forbids.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "shm" => Ok(Self::Shm),
+            "arrow" => Ok(Self::Arrow),
+            "in_process" => Ok(Self::InProcess),
+            other => Err(UnknownBlobBackend(other.to_string())),
+        }
     }
 }
 
@@ -105,7 +138,10 @@ impl<'de> serde::Deserialize<'de> for BlobBackendKind {
                 f.write_str("a blob backend string (\"shm\" | \"arrow\" | \"in_process\")")
             }
             fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                Ok(BlobBackendKind::from_str(v))
+                // A present-but-unknown discriminator fails the decode naming the
+                // offending value; an ABSENT field is what stays lenient, via
+                // `#[serde(default)]` on `ShmBlobRef::backend`.
+                v.parse().map_err(serde::de::Error::custom)
             }
         }
         deserializer.deserialize_str(V)
@@ -1219,7 +1255,15 @@ impl KeyIndex {
                     ..
                 } => self.insert(key.clone(), *node),
                 DeltaOp::NodeRemove { node } => self.remove_node(*node),
-                _ => {}
+                // Every remaining wire op is listed rather than absorbed by a
+                // catch-all, so adding a `DeltaOp` variant that carries a key is
+                // a compile error here instead of a silently unindexed key.
+                DeltaOp::NodeAdd { key: None, .. }
+                | DeltaOp::CellSet { .. }
+                | DeltaOp::SlotValue { .. }
+                | DeltaOp::Invalidate { .. }
+                | DeltaOp::EdgeAdd { .. }
+                | DeltaOp::EdgeRemove { .. } => {}
             }
         }
     }
@@ -2166,8 +2210,61 @@ mod base64_transform {
             .as_array()
             .expect("checked array")
             .iter()
-            .map(|n| n.as_u64().unwrap_or(0) as u8)
+            .map(|n| {
+                // This walks a tree THIS crate just produced with
+                // `serde_json::to_value(&IpcMessage)`, so an `Inline`/`Payload`
+                // element is always a `u8`. A non-integer or out-of-range element
+                // means the tree was built by something else; substituting 0 (the
+                // former `unwrap_or(0) as u8`) would silently ship corrupted bytes
+                // under a checksum computed over the corruption.
+                let raw = n.as_u64().unwrap_or_else(|| {
+                    panic!("json-base64 encode: byte-array element is not an integer: {n}")
+                });
+                u8::try_from(raw).unwrap_or_else(|_| {
+                    panic!("json-base64 encode: byte-array element out of u8 range: {raw}")
+                })
+            })
             .collect()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_non_integer_byte_element_is_rejected_not_zeroed() {
+            let mut value = serde_json::json!({ "Inline": ["nope"] });
+            let panicked = std::panic::catch_unwind(move || encode_byte_arrays(&mut value));
+            let err = panicked.expect_err("a non-integer byte element must not encode");
+            let message = err
+                .downcast_ref::<String>()
+                .expect("panic payload is a formatted string");
+            assert!(
+                message.contains("not an integer") && message.contains("nope"),
+                "the rejection names the offending element: {message}"
+            );
+        }
+
+        #[test]
+        fn an_out_of_range_byte_element_is_rejected_not_truncated() {
+            let mut value = serde_json::json!({ "Payload": [256] });
+            let panicked = std::panic::catch_unwind(move || encode_byte_arrays(&mut value));
+            let err = panicked.expect_err("an out-of-range byte element must not encode");
+            let message = err
+                .downcast_ref::<String>()
+                .expect("panic payload is a formatted string");
+            assert!(
+                message.contains("out of u8 range") && message.contains("256"),
+                "the rejection names the offending element: {message}"
+            );
+        }
+
+        #[test]
+        fn a_well_formed_byte_array_still_encodes() {
+            let mut value = serde_json::json!({ "Inline": [104, 105] });
+            encode_byte_arrays(&mut value);
+            assert_eq!(value["Inline"], serde_json::json!("aGk="));
+        }
     }
 }
 

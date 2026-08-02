@@ -583,7 +583,14 @@ pub fn spill_message(
                     DeltaOp::NodeAdd { state, .. } => {
                         total += spill_state(state, backend, threshold);
                     }
-                    _ => {}
+                    // The payload-free ops are listed rather than absorbed by a
+                    // catch-all, so a future `DeltaOp` that carries bytes is a
+                    // compile error here instead of a payload that silently
+                    // bypasses spilling and ships inline.
+                    DeltaOp::Invalidate { .. }
+                    | DeltaOp::NodeRemove { .. }
+                    | DeltaOp::EdgeAdd { .. }
+                    | DeltaOp::EdgeRemove { .. } => {}
                 }
             }
         }

@@ -357,6 +357,52 @@ mod tests {
         assert!(recv(&pb).is_none());
     }
 
+    /// Pins the deny-by-default arm in `authorize_inbound` (`#failclosedsweep`):
+    /// the op filter's catch-all is an authority boundary, not an oversight. A
+    /// peer may write a source cell it is allowed to write and nothing else —
+    /// structure ops (`NodeAdd` / `NodeRemove` / `EdgeAdd` / `EdgeRemove`) and
+    /// authority-derived `SlotValue`/`Invalidate` publications are dropped even
+    /// when the peer holds write permission on the node.
+    #[test]
+    fn structural_ops_from_a_peer_are_dropped_even_with_write_permission() {
+        use crate::NodeState;
+        let (a, b) = (PeerId(1), PeerId(2));
+        let forgeries = vec![
+            DeltaOp::NodeAdd {
+                node: NodeId(1),
+                type_tag: "t".to_string(),
+                state: NodeState::Payload(vec![9]),
+                key: None,
+            },
+            DeltaOp::NodeRemove { node: NodeId(1) },
+            DeltaOp::EdgeAdd {
+                dependent: NodeId(1),
+                dependency: NodeId(1),
+            },
+            DeltaOp::EdgeRemove {
+                dependent: NodeId(1),
+                dependency: NodeId(1),
+            },
+            DeltaOp::slot_value(NodeId(1), vec![9u8]),
+            DeltaOp::invalidate(NodeId(1)),
+        ];
+        for op in forgeries {
+            let mut hub = BridgeHub::new();
+            // A holds READ + WRITE on N1: only the op KIND can be what stops it.
+            let pa = attach(&mut hub, a, perms(a, &[1], &[1]));
+            let pb = attach(&mut hub, b, perms(b, &[1], &[]));
+
+            send(&pa, &IpcMessage::Delta(Delta::new(0, 1, vec![op.clone()])));
+            let routed = hub.poll().unwrap();
+
+            assert_eq!(routed, 0, "{op:?} must not be routed");
+            assert!(
+                recv(&pb).is_none(),
+                "{op:?} must not reach another peer as authoritative state"
+            );
+        }
+    }
+
     #[test]
     fn crdt_sync_fans_out_to_readers_only() {
         use crate::ipc::{CrdtOp, WireStamp};

@@ -48,6 +48,7 @@ export LAZILY_CONFORMANCE_SCENARIOS = $(CONFORMANCE_SCENARIOS)
 	test-ffi-binary \
 	test-ipc \
 	test-ipc-binary \
+	test-json-base64 \
 	test-ipc-conformance \
 	test-codec-roundtrip-conformance \
 	test-nodeid-exact-range-conformance \
@@ -79,7 +80,7 @@ test-ingress-family-conformance \
 	instrumentation-profile \
 	benchmark-spread
 
-check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-codec-roundtrip-conformance test-nodeid-exact-range-conformance test-nodekey-null-leniency-conformance test-reliable-sync-conformance test-durable-outbox test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-ingress-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-evidence benchmark-check conformance-coverage ci-reach
+check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-json-base64 test-ipc-conformance test-codec-roundtrip-conformance test-nodeid-exact-range-conformance test-nodekey-null-leniency-conformance test-reliable-sync-conformance test-durable-outbox test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-ingress-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-evidence benchmark-check conformance-coverage ci-reach
 
 fmt:
 >$(CARGO) fmt --all --check
@@ -158,6 +159,13 @@ test-ffi-binary:
 test-ipc:
 >$(CARGO) test --locked --features ffi --test ipc
 
+# #lzspecbase64: the json-base64 codec had no executing target at all — its
+# blocks in tests/ipc.rs are `#[cfg(feature = "json-base64")]` and no recipe
+# enabled the feature, so they compiled under clippy and ran nowhere.
+test-json-base64:
+>$(CARGO) test --locked --features json-base64 --lib ipc::
+>$(CARGO) test --locked --features json-base64 --test ipc
+
 test-ipc-binary:
 >$(CARGO) test --locked --features ipc-binary --test ipc
 
@@ -213,6 +221,9 @@ test-reliable-sync-conformance:
 test-durable-outbox:
 >$(CARGO) test --locked --features ipc --test durable_outbox
 >$(CARGO) test --locked --features durable-sqlite --test durable_outbox
+# The sqlite store's own corrupt-row guard (#failclosedsweep) is a lib test:
+# `--test durable_outbox` cannot reach `rusqlite` to write a malformed row.
+>$(CARGO) test --locked --features durable-sqlite --lib outbox::
 
 # Cross-process zero-copy transport (#lzzcpy): BlobBackend trait +
 # InProcessBackend / ArrowBackend + POSIX ShmBackend (shm feature). The lib
@@ -309,6 +320,9 @@ test-schema-compliance:
 
 test-statechart-conformance:
 >$(CARGO) test --locked --features statechart-json --test statechart_conformance
+# The JSON chart loader's rejection tests (#failclosedsweep) live beside the
+# parser, so the feature-gated lib tests need their own invocation.
+>$(CARGO) test --locked --features statechart-json --lib statechart::
 
 test-lean-formal:
 >test -d "$(LEAN_SPEC_DIR)" || { echo "missing $(LEAN_SPEC_DIR); clone lazily-spec as a sibling or set LEAN_SPEC_DIR"; exit 1; }
@@ -335,6 +349,7 @@ test-webrtc:
 # relay (#lzwebrtcwire): real WebSocket offer/answer/ICE on 127.0.0.1 plus the
 # real Str0mNet UDP/DTLS/SCTP transport. Needs both feature trees.
 test-webrtc-signaling:
+>$(CARGO) test --locked --features "signaling-client webrtc-str0m" --lib webrtc_signaling::
 >$(CARGO) test --locked --features "signaling-client webrtc-str0m" --test webrtc_signaling
 
 # WebSocket DataChannel backend (#akp3): in-process loopback over a real WS

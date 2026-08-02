@@ -271,7 +271,20 @@ mod sqlite {
                     let value = row.get_ref(1)?;
                     let frame = match value {
                         ValueRef::Blob(bytes) | ValueRef::Text(bytes) => bytes.to_vec(),
-                        _ => Vec::new(),
+                        // A `frame_json` cell that is NULL / INTEGER / REAL is a
+                        // corrupt row, not an empty frame. Substituting `Vec::new()`
+                        // (the former `_ => Vec::new()`) replayed a zero-byte frame
+                        // to the peer as though it were the durable record for that
+                        // epoch, and advanced the replay past it. Fail the row into
+                        // the per-row error branch below: it is reported and skipped,
+                        // and no fabricated frame reaches the wire.
+                        other => {
+                            return Err(rusqlite::Error::InvalidColumnType(
+                                1,
+                                format!("frame_json (epoch {epoch}) is {:?}", other.data_type()),
+                                other.data_type(),
+                            ));
+                        }
                     };
                     Ok((epoch, frame))
                 }) {
@@ -333,6 +346,101 @@ mod sqlite {
 
         pub fn document_hash(&self) -> &str {
             self.store().document_hash()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::outbox::DurableOutbox;
+        use crate::{Delta, IpcMessage};
+
+        fn frame(epoch: u64) -> IpcMessage {
+            IpcMessage::Delta(Delta::new(epoch.saturating_sub(1), epoch, vec![]))
+        }
+
+        /// `#failclosedsweep`: a `frame_json` cell of the wrong SQLite storage
+        /// class is a corrupt row. It used to scan as `(epoch, vec![])` — an
+        /// epoch the outbox reported as retained and replayable while carrying a
+        /// zero-byte frame.
+        #[test]
+        fn a_corrupt_frame_column_is_reported_and_skipped_not_read_as_an_empty_frame() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("corrupt.db");
+            {
+                let mut outbox = SqliteOutbox::open(&path, "doc").unwrap();
+                outbox.append(1, frame(1));
+                outbox.append(2, frame(2));
+            }
+            // Corrupt epoch 1's frame into an INTEGER column.
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute(
+                    "UPDATE reliable_sync_outbox SET frame_json = 42 WHERE document_hash = ?1 AND epoch = 1",
+                    params!["doc"],
+                )
+                .unwrap();
+            drop(connection);
+
+            let store = SqliteStore::open(&path, "doc").unwrap();
+            let scanned = store.scan_after(0);
+            assert_eq!(
+                scanned.iter().map(|(e, _)| *e).collect::<Vec<_>>(),
+                vec![2],
+                "the corrupt row is skipped, not scanned as an empty frame"
+            );
+            assert!(
+                !scanned.iter().any(|(_, frame)| frame.is_empty()),
+                "no fabricated zero-byte frame reaches the caller"
+            );
+
+            let outbox = SqliteOutbox::open(&path, "doc").unwrap();
+            assert_eq!(
+                outbox.retained_epochs(),
+                vec![2],
+                "a corrupt row is not advertised as a retained, replayable epoch"
+            );
+            assert_eq!(
+                outbox
+                    .replay_from(0)
+                    .into_iter()
+                    .map(|(e, _)| e)
+                    .collect::<Vec<_>>(),
+                vec![2],
+                "the well-formed row still replays"
+            );
+        }
+
+        #[test]
+        fn well_formed_blob_and_text_frames_still_scan() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("mixed.db");
+            {
+                let mut outbox = SqliteOutbox::open(&path, "doc").unwrap();
+                outbox.append(1, frame(1));
+            }
+            // A TEXT-typed frame column is the legacy `frame_json` shape and must
+            // keep scanning.
+            let connection = Connection::open(&path).unwrap();
+            let text = serde_json::to_string(&frame(2)).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO reliable_sync_outbox (document_hash, epoch, frame_json) VALUES (?1, ?2, ?3)",
+                    params!["doc", 2i64, text],
+                )
+                .unwrap();
+            drop(connection);
+
+            let store = SqliteStore::open(&path, "doc").unwrap();
+            assert_eq!(
+                store
+                    .scan_after(0)
+                    .iter()
+                    .map(|(e, _)| *e)
+                    .collect::<Vec<_>>(),
+                vec![1, 2],
+                "BLOB and TEXT frames both scan"
+            );
         }
     }
 }

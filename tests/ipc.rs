@@ -1167,3 +1167,111 @@ mod capability_handshake {
         assert!(msg.is_control());
     }
 }
+
+/// `#failclosedsweep`: the `backend` descriptor discriminator.
+///
+/// Forward compatibility for this field is carried by its ABSENCE — `backend` is
+/// `#[serde(default, skip_serializing_if)]`, so a legacy descriptor that predates
+/// the discriminator still decodes as `shm`. A present-but-unknown value means a
+/// peer spilled the payload into a backend this build does not have, and reading
+/// it as `shm` would route resolution into the shared-memory arena — the misroute
+/// `zero-copy-transport.md`'s `resolve_wrong_backend` theorem forbids.
+mod blob_backend_discriminator {
+    use lazily::{BlobBackendKind, ShmBlobRef};
+
+    fn descriptor_json(backend: &str) -> String {
+        format!(
+            r#"{{"offset":0,"len":4,"generation":1,"epoch":1,"checksum":7,"backend":"{backend}"}}"#
+        )
+    }
+
+    #[test]
+    fn an_unknown_backend_string_is_rejected_by_name() {
+        let err = serde_json::from_str::<ShmBlobRef>(&descriptor_json("rdma"))
+            .expect_err("an unknown backend must not decode");
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("rdma"),
+            "the decode error names the offending discriminator: {rendered}"
+        );
+    }
+
+    #[test]
+    fn the_three_known_backends_still_decode() {
+        for (wire, expected) in [
+            ("shm", BlobBackendKind::Shm),
+            ("arrow", BlobBackendKind::Arrow),
+            ("in_process", BlobBackendKind::InProcess),
+        ] {
+            let descriptor: ShmBlobRef = serde_json::from_str(&descriptor_json(wire))
+                .unwrap_or_else(|e| panic!("`{wire}` must decode: {e}"));
+            assert_eq!(descriptor.backend, expected);
+        }
+    }
+
+    #[test]
+    fn an_absent_backend_field_still_defaults_to_shm() {
+        // The legacy descriptor form: no discriminator at all. This is the case
+        // the leniency was there for, and it is handled by `#[serde(default)]`,
+        // not by the parse.
+        let descriptor: ShmBlobRef =
+            serde_json::from_str(r#"{"offset":0,"len":4,"generation":1,"epoch":1,"checksum":7}"#)
+                .expect("a legacy descriptor without `backend` still decodes");
+        assert_eq!(descriptor.backend, BlobBackendKind::Shm);
+    }
+
+    #[test]
+    fn the_parse_reports_the_offending_value() {
+        let err: lazily::UnknownBlobBackend = "cuda_ipc".parse::<BlobBackendKind>().unwrap_err();
+        assert_eq!(err.0, "cuda_ipc");
+        assert!(err.to_string().contains("cuda_ipc"));
+    }
+}
+
+/// `#failclosedsweep`: the `json-base64` codec's decode leniency.
+///
+/// `decode_byte_arrays` uses `.decode(text).ok()` and leaves the field untouched
+/// when the base64 does not decode. That is not a silent substitution: the field
+/// stays a string where the typed decode requires a byte sequence, so the message
+/// fails to decode rather than arriving with an empty or truncated payload. This
+/// test is what makes that distinguishable from an accident.
+#[cfg(feature = "json-base64")]
+mod json_base64_decode_leniency {
+    use lazily::{EdgeSnapshot, IpcMessage, NodeId, NodeSnapshot, Snapshot};
+
+    fn message() -> IpcMessage {
+        IpcMessage::Snapshot(Snapshot::new(
+            1,
+            vec![NodeSnapshot::payload(NodeId(1), "bytes", vec![1, 2, 3, 4])],
+            vec![EdgeSnapshot::new(NodeId(1), NodeId(1))],
+            vec![NodeId(1)],
+        ))
+    }
+
+    #[test]
+    fn a_corrupt_base64_payload_fails_the_decode_rather_than_decoding_to_nothing() {
+        let encoded = message().encode_json_base64().unwrap();
+        let text = String::from_utf8(encoded).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let payload = value["Snapshot"]["nodes"][0]["state"]["Payload"]
+            .as_str()
+            .expect("the base64 codec wrote the payload as a string");
+        assert!(!payload.is_empty());
+        value["Snapshot"]["nodes"][0]["state"]["Payload"] =
+            serde_json::Value::String("!!!! not base64 !!!!".to_string());
+
+        let corrupt = serde_json::to_vec(&value).unwrap();
+        let err = IpcMessage::decode_json_base64(&corrupt)
+            .expect_err("a payload that is not base64 must not decode");
+        let _ = err;
+    }
+
+    #[test]
+    fn a_well_formed_base64_payload_still_decodes() {
+        let encoded = message().encode_json_base64().unwrap();
+        assert_eq!(
+            IpcMessage::decode_json_base64(&encoded).expect("valid base64 decodes"),
+            message()
+        );
+    }
+}

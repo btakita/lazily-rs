@@ -93,6 +93,13 @@ where
         // The op's state IS the remote register's converged value, so binding a fresh
         // cell from the decoded register seeds the new entry directly; the subsequent
         // `merge_state` in `ingest` is then an idempotent no-op.
+        // INTENTIONAL leniency (`#failclosedsweep`), same contract as
+        // `PlaneCell::merge_state`: `bytes` come from a peer, so an undecodable
+        // state means that peer registered a different type under this family
+        // namespace. Returning `None` declines to materialize the entry — the key
+        // stays absent locally rather than materializing a wrong-typed cell — and
+        // `ingest` continues with the rest of the frame. Pinned by
+        // `an_undecodable_family_state_declines_to_materialize_the_key`.
         let remote: LwwRegister<V> = serde_json::from_slice(bytes).ok()?;
         Some(Box::new(ReplicatedCell::bind(ctx, remote)))
     }
@@ -119,6 +126,21 @@ where
     fn merge_state(&mut self, ctx: &Context, bytes: &[u8]) -> bool {
         match serde_json::from_slice::<C>(bytes) {
             Ok(remote) => self.merge_remote(ctx, &remote),
+            // INTENTIONAL leniency (`#failclosedsweep`). `bytes` is a remote
+            // replica's converged state, written by another process or another
+            // binding; a decode failure means that peer has a different CRDT type
+            // registered under this node than we do. The plane keeps liveness: one
+            // undecodable op is dropped and every other op in the same `CrdtSync`
+            // still applies, because a poison frame from one peer must not stall a
+            // shared session for everyone else.
+            //
+            // The consequence is convergence, not corruption: this replica reports
+            // no change, so no wrong value is published — but the op's stamp IS
+            // observed and logged by `ingest`, so the frontier advances past it and
+            // a later resync will NOT re-deliver it. The two replicas stay divergent
+            // for that node until a subsequent op re-states the value in a form this
+            // replica can decode. Pinned by
+            // `an_undecodable_remote_state_is_dropped_without_stalling_the_frame`.
             Err(_) => false,
         }
     }
@@ -691,6 +713,98 @@ mod tests {
         assert_eq!(b.ingest(&ctx_b, &frame, 100), 1, "first apply lands");
         assert_eq!(b.ingest(&ctx_b, &frame, 101), 0, "re-apply is a no-op");
         assert_eq!(b.value::<LwwRegister<i64>>(NodeId(1)), Some(11));
+    }
+
+    /// Pins the INTENTIONAL leniency in `PlaneCell::merge_state`: a remote state
+    /// this replica cannot decode is dropped, the rest of the frame still applies,
+    /// and the local value is unchanged — liveness over strictness on a decode
+    /// path a peer writes.
+    #[test]
+    fn an_undecodable_remote_state_is_dropped_without_stalling_the_frame() {
+        let ctx_a = Context::new();
+        let mut a = CrdtPlaneRuntime::new(PeerId(1));
+        a.register(NodeId(1), None, lww_cell(&ctx_a, 0));
+        a.register(NodeId(2), None, lww_cell(&ctx_a, 0));
+        let good = a
+            .local_update::<LwwRegister<i64>, _>(&ctx_a, NodeId(2), 100, |r, s| {
+                r.set(11, s);
+            })
+            .unwrap();
+
+        let ctx_b = Context::new();
+        let mut b = CrdtPlaneRuntime::new(PeerId(2));
+        b.register(NodeId(1), None, lww_cell(&ctx_b, 7));
+        b.register(NodeId(2), None, lww_cell(&ctx_b, 0));
+
+        // A peer that registered a different type under NodeId(1) ships state this
+        // replica cannot decode as `LwwRegister<i64>`.
+        let poison = CrdtOp::new(
+            NodeId(1),
+            WireStamp {
+                wall_time: 99,
+                logical: 0,
+                peer: 1,
+            },
+            IpcValue::Inline(br#"{"not":"a register"}"#.to_vec()),
+        );
+
+        let frame = CrdtSync::new(a.wire_frontier(), vec![poison, good]);
+        b.ingest(&ctx_b, &frame, 200);
+
+        assert_eq!(
+            b.value::<LwwRegister<i64>>(NodeId(1)),
+            Some(7),
+            "the undecodable op publishes no value — the local replica is untouched"
+        );
+        assert_eq!(
+            b.value::<LwwRegister<i64>>(NodeId(2)),
+            Some(11),
+            "the well-formed op in the SAME frame still applies"
+        );
+    }
+
+    /// Pins the INTENTIONAL leniency in `LwwFamilyFactory::materialize`: a family
+    /// op whose state this replica cannot decode declines to materialize the key
+    /// rather than materializing a wrong-typed cell, and the rest of the frame
+    /// still materializes.
+    #[test]
+    fn an_undecodable_family_state_declines_to_materialize_the_key() {
+        let ctx_a = Context::new();
+        let mut a = CrdtPlaneRuntime::new(PeerId(1));
+        a.register_family_lww::<bool>(&ctx_a, "live");
+        let good = a
+            .family_set_lww::<bool>(&ctx_a, "live", "3", true, 101)
+            .unwrap();
+
+        let ctx_b = Context::new();
+        let mut b = CrdtPlaneRuntime::new(PeerId(2));
+        b.register_family_lww::<bool>(&ctx_b, "live");
+
+        let poison = CrdtOp::keyed(
+            NodeId(900),
+            NodeKey::new("live/2").unwrap(),
+            WireStamp {
+                wall_time: 100,
+                logical: 0,
+                peer: 1,
+            },
+            IpcValue::Inline(b"not-json-at-all".to_vec()),
+        );
+
+        let frame = CrdtSync::new(a.wire_frontier(), vec![poison, good]);
+        b.ingest(&ctx_b, &frame, 200);
+
+        assert_eq!(
+            b.family_keys("live"),
+            vec![NodeKey::new("live/3").unwrap()],
+            "the undecodable key stays absent; the decodable one still materializes"
+        );
+        assert_eq!(b.family_value_lww::<bool>("live", "3"), Some(true));
+        assert_eq!(
+            b.family_value_lww::<bool>("live", "2"),
+            None,
+            "no wrong-typed cell was materialized for the undecodable key"
+        );
     }
 
     #[test]

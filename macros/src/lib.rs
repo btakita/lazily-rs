@@ -158,13 +158,21 @@ fn expand_factory_item(kind: &str, item: ItemFn) -> syn::Result<proc_macro2::Tok
                 move |#ctx_ident| #body,
             )
         },
-        _ => unreachable!("unknown lazily factory kind"),
+        // `kind` is a crate-internal literal — the four `#[proc_macro_attribute]`
+        // entry points pass "slot" or "cell" and nothing parses it from user input.
+        // The message still carries the value: a panic that names nothing is a
+        // panic nobody can diagnose (#failclosedsweep).
+        other => unreachable!("unknown lazily factory kind: {other}"),
     };
 
     let handle_ty = match kind {
         "slot" => quote! { ::lazily::TypedSlotHandle<#schema_ty, #value_ty> },
         "cell" => quote! { ::lazily::TypedCellHandle<#schema_ty, #value_ty> },
-        _ => unreachable!("unknown lazily factory kind"),
+        // `kind` is a crate-internal literal — the four `#[proc_macro_attribute]`
+        // entry points pass "slot" or "cell" and nothing parses it from user input.
+        // The message still carries the value: a panic that names nothing is a
+        // panic nobody can diagnose (#failclosedsweep).
+        other => unreachable!("unknown lazily factory kind: {other}"),
     };
 
     let get_impl = match kind {
@@ -220,7 +228,11 @@ fn expand_factory_item(kind: &str, item: ItemFn) -> syn::Result<proc_macro2::Tok
                 }
             }
         },
-        _ => unreachable!("unknown lazily factory kind"),
+        // `kind` is a crate-internal literal — the four `#[proc_macro_attribute]`
+        // entry points pass "slot" or "cell" and nothing parses it from user input.
+        // The message still carries the value: a panic that names nothing is a
+        // panic nobody can diagnose (#failclosedsweep).
+        other => unreachable!("unknown lazily factory kind: {other}"),
     };
 
     let set_impl = match kind {
@@ -236,7 +248,11 @@ fn expand_factory_item(kind: &str, item: ItemFn) -> syn::Result<proc_macro2::Tok
             }
         },
         "slot" => quote! {},
-        _ => unreachable!("unknown lazily factory kind"),
+        // `kind` is a crate-internal literal — the four `#[proc_macro_attribute]`
+        // entry points pass "slot" or "cell" and nothing parses it from user input.
+        // The message still carries the value: a panic that names nothing is a
+        // panic nobody can diagnose (#failclosedsweep).
+        other => unreachable!("unknown lazily factory kind: {other}"),
     };
 
     Ok(quote! {
