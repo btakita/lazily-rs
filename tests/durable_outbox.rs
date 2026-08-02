@@ -168,7 +168,7 @@ fn stale_sqlite_handle_cannot_regress_serialized_cursor() {
             handle => panic!("unknown fixture handle {handle}"),
         }
     }
-    let exp = expect(scenario);
+    let exp = expect(scenario.value());
     let expected = exp.assert_key_with("loaded_cursor", |want| {
         let want = want.as_u64().expect("loaded_cursor u64");
         assert_eq!(stale.acked_through(), want);

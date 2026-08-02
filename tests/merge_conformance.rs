@@ -85,9 +85,9 @@ fn mergecell_algebra_fixture() {
         common::scenarios(&format!("{SPEC_DIR}/mergecell_algebra.json"), &fixture)
     {
         match scenario["policy"].as_str().expect("policy string") {
-            "KeepLatest" => replay_scenario::<KeepLatest>(si, scenario),
-            "Sum" => replay_scenario::<Sum>(si, scenario),
-            "Max" => replay_scenario::<Max>(si, scenario),
+            "KeepLatest" => replay_scenario::<KeepLatest>(si, scenario.value()),
+            "Sum" => replay_scenario::<Sum>(si, scenario.value()),
+            "Max" => replay_scenario::<Max>(si, scenario.value()),
             other => panic!("unknown policy in fixture: {other}"),
         }
         // Flag sanity: the fixture's declared flags must match the policy consts.

@@ -28,14 +28,17 @@ fn load(name: &str) -> serde_json::Value {
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {path}: {e}"))
 }
 
-/// Address a scenario by name AND record it as replayed (`#lzscenariocoverage`).
+/// Address a scenario by name (`#lzscenariocoverage`).
 ///
 /// This file addresses scenarios one at a time rather than looping, which is
 /// exactly the shape that let `derived_live_doc_aggregate_converges_under_retry`
 /// go unreplayed while `liveness_orset_lww.json` still counted as covered — the
-/// fixture manifest sees the file, not the scenario. The lookup and the ledger
-/// entry are the same call, so a scenario cannot be replayed unrecorded.
-fn scenario<'a>(fixture: &str, fx: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+/// fixture manifest sees the file, not the scenario.
+///
+/// The LOOKUP does not book (`#lzscenariobodyskip`): matching on the name walks
+/// past every scenario ahead of it, and selecting a scenario is not replaying it.
+/// The returned view books when this file reads the scenario's payload.
+fn scenario<'a>(fixture: &str, fx: &'a serde_json::Value, name: &str) -> common::ScenarioView<'a> {
     common::scenario_by_name(&format!("{SPEC_DIR}/{fixture}"), fx, name)
 }
 
@@ -193,7 +196,7 @@ fn multi_epoch_delta_fixture() {
         &fx,
         "span_3_applies_equal_to_unit_fold",
     );
-    let exp = expect("multi_epoch_delta.json", sc);
+    let exp = expect("multi_epoch_delta.json", sc.value());
     let base = sc["delta"]["base_epoch"].as_u64().unwrap();
     let epoch = sc["delta"]["epoch"].as_u64().unwrap();
     assert!(epoch > base + 1, "fixture pins a multi-epoch span");
@@ -237,7 +240,7 @@ fn multi_epoch_delta_fixture() {
         &fx,
         "gap_rule_unchanged_under_span",
     );
-    let exp = expect("multi_epoch_delta.json", sc);
+    let exp = expect("multi_epoch_delta.json", sc.value());
     let d = lazily::Delta::new(
         sc["delta"]["base_epoch"].as_u64().unwrap(),
         sc["delta"]["epoch"].as_u64().unwrap(),
@@ -276,7 +279,7 @@ fn resync_gap_converge_fixture() {
         &fx,
         "drop_suffix_then_resync_converges",
     );
-    let exp = expect("resync_gap_converge.json", sc);
+    let exp = expect("resync_gap_converge.json", sc.value());
     // `drop_suffix` is replayed twice: once as receiver A (the dropped delta
     // never arrives) and once as a receiver that saw everything, because
     // `equals_no_drop_receiver` is a claim ABOUT the pair.
@@ -351,7 +354,7 @@ fn resync_gap_converge_fixture() {
 
     // single_request_per_gap: while resyncing, ahead-of-cursor deltas are Ignored (one request).
     let sc = scenario("resync_gap_converge.json", &fx, "single_request_per_gap");
-    let exp = expect("resync_gap_converge.json", sc);
+    let exp = expect("resync_gap_converge.json", sc.value());
     let mut coord = ResyncCoordinator::with_epoch(sc["start_last_epoch"].as_u64().unwrap());
     let mut requests = 0usize;
     for frame in sc["inbound"].as_array().unwrap() {
@@ -376,7 +379,7 @@ fn idempotent_redelivery_fixture() {
         "duplicate_current_head_is_ignored",
     ] {
         let sc = scenario("idempotent_redelivery.json", &fx, name);
-        let exp = expect("idempotent_redelivery.json", sc);
+        let exp = expect("idempotent_redelivery.json", sc.value());
         let mut coord = ResyncCoordinator::with_epoch(sc["start_last_epoch"].as_u64().unwrap());
         // `state_after` / `net_effect_unchanged` are about the VIEW, not the
         // cursor: the replayed delta carries `node 1 = 99`, so a receiver that
@@ -510,8 +513,8 @@ fn outbox_replay_after_crash_fixture() {
         &fx,
         "crash_between_append_and_ack_replays_on_reconnect",
     );
-    let exp = expect("outbox_replay_after_crash.json", sc);
-    let appended = frames_from(sc, "appended");
+    let exp = expect("outbox_replay_after_crash.json", sc.value());
+    let appended = frames_from(sc.value(), "appended");
     let ack = sc["ack_through"].as_u64().unwrap();
     let cursor = sc["reconnect_cursor"].as_u64().unwrap();
 
@@ -587,8 +590,8 @@ fn outbox_replay_after_crash_fixture() {
         &fx,
         "send_failure_retains_frame_for_next_tick",
     );
-    let exp = expect("outbox_replay_after_crash.json", sc);
-    let appended = frames_from(sc, "appended");
+    let exp = expect("outbox_replay_after_crash.json", sc.value());
+    let appended = frames_from(sc.value(), "appended");
     let mut mem = InMemoryOutbox::new();
     for (epoch, msg) in &appended {
         mem.append(*epoch, msg.clone()); // append succeeds; the "send" fails, frame stays
@@ -748,7 +751,7 @@ fn liveness_orset_lww_fixture() {
         &fx,
         "open_set_add_wins_over_stale_remove",
     );
-    let exp = expect("liveness_orset_lww.json", sc);
+    let exp = expect("liveness_orset_lww.json", sc.value());
     exp.prose(
         "reason",
         "prose explaining WHY add wins; the observable is `present`, asserted below",
@@ -811,7 +814,7 @@ fn liveness_orset_lww_fixture() {
         &fx,
         "lww_alive_highest_stamp_wins",
     );
-    let exp = expect("liveness_orset_lww.json", sc);
+    let exp = expect("liveness_orset_lww.json", sc.value());
     let ops = sc["ops"].as_array().unwrap();
     let first = &ops[0];
     let mut reg = WireLwwRegister::new(stamp(&first["stamp"]), first["value"].as_bool().unwrap());
@@ -860,7 +863,7 @@ fn liveness_orset_lww_fixture() {
         &fx,
         "whole_editor_death_cascades",
     );
-    let exp = expect("liveness_orset_lww.json", sc);
+    let exp = expect("liveness_orset_lww.json", sc.value());
     exp.prose(
         "note",
         "prose restating the cascade in words; the observables are live_docs_before/after",
@@ -939,7 +942,7 @@ fn liveness_orset_lww_fixture() {
         &fx,
         "derived_live_doc_aggregate_converges_under_retry",
     );
-    let exp = expect("liveness_orset_lww.json", sc);
+    let exp = expect("liveness_orset_lww.json", sc.value());
     let ops: Vec<&serde_json::Value> = sc["ops"].as_array().expect("ops").iter().collect();
     assert!(
         sc["replicas"].as_array().expect("replicas").len() >= 2,

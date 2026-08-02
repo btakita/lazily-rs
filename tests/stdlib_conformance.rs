@@ -119,7 +119,7 @@ fn replay_timers(path: &str, fixture: &Value) {
         let base = Instant::now();
         let mut timer = None;
         let mut logical_deadline = None;
-        for (index, step) in steps(scenario).iter().enumerate() {
+        for (index, step) in steps(scenario.value()).iter().enumerate() {
             let actual = match step["op"].as_str().expect("timer op") {
                 "start" => {
                     let now = step["now"].as_u64().expect("timer now");
@@ -162,7 +162,7 @@ fn replay_timers(path: &str, fixture: &Value) {
                 }
                 op => panic!("unknown timer op {op}"),
             };
-            assert_step("stdlib_timer_v1", scenario, index, actual);
+            assert_step("stdlib_timer_v1", scenario.value(), index, actual);
         }
     }
 }
@@ -172,7 +172,7 @@ fn replay_timeouts(path: &str, fixture: &Value) {
         let base = Instant::now();
         let mut timeout = None::<Timeout<String>>;
         let mut logical_deadline = None;
-        for (index, step) in steps(scenario).iter().enumerate() {
+        for (index, step) in steps(scenario.value()).iter().enumerate() {
             let actual = match step["op"].as_str().expect("timeout op") {
                 "start" => {
                     let now = step["now"].as_u64().expect("timeout now");
@@ -274,7 +274,7 @@ fn replay_timeouts(path: &str, fixture: &Value) {
                 }
                 op => panic!("unknown timeout op {op}"),
             };
-            assert_step("stdlib_timeout_v1", scenario, index, actual);
+            assert_step("stdlib_timeout_v1", scenario.value(), index, actual);
         }
     }
 }
@@ -313,7 +313,7 @@ fn replay_barriers(path: &str, fixture: &Value) {
         let mut barrier = None;
         let mut required_revision = 0_u64;
         let mut deadline = None;
-        for (index, step) in steps(scenario).iter().enumerate() {
+        for (index, step) in steps(scenario.value()).iter().enumerate() {
             let actual = match step["op"].as_str().expect("barrier op") {
                 "start" => {
                     required_revision = step["required_revision"].as_u64().expect("required");
@@ -332,7 +332,12 @@ fn replay_barriers(path: &str, fixture: &Value) {
                             ("disposed", None)
                         };
                         let actual = barrier_observation(outcome, &current, reason);
-                        assert_step("stdlib_revision_barrier_v1", scenario, index, actual);
+                        assert_step(
+                            "stdlib_revision_barrier_v1",
+                            scenario.value(),
+                            index,
+                            actual,
+                        );
                         continue;
                     }
                     let observed = step["observed_revision"]
@@ -439,7 +444,12 @@ fn replay_barriers(path: &str, fixture: &Value) {
                 }
                 op => panic!("unknown barrier op {op}"),
             };
-            assert_step("stdlib_revision_barrier_v1", scenario, index, actual);
+            assert_step(
+                "stdlib_revision_barrier_v1",
+                scenario.value(),
+                index,
+                actual,
+            );
         }
     }
 }
@@ -449,7 +459,7 @@ fn independent_failures(path: &str, fixture: &Value, mutation: Option<&str>) -> 
     let mut failures = BTreeSet::new();
     for (_index, _id, scenario) in scenarios(path, fixture) {
         let mut state = Map::new();
-        for step in steps(scenario) {
+        for step in steps(scenario.value()) {
             let actual = independent_step(feature, &mut state, step, mutation);
             if actual != step["expect"] {
                 failures.insert(scenario["id"].as_str().expect("scenario id").to_owned());

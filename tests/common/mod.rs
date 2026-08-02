@@ -220,11 +220,99 @@ pub fn record_scenario(path: impl AsRef<Path>, id: &str, source: ScenarioIdSourc
     }
 }
 
-/// The scenarios of `fixture`, recording each id at the moment it is YIELDED.
+/// Keys that IDENTIFY or narrate a scenario rather than drive one
+/// (`#lzscenariobodyskip`). Reading only these is *looking at the label*, not
+/// replaying: a dispatch chain that reads `name`, matches no arm and falls
+/// through has replayed nothing, and a by-name lookup walks past every scenario
+/// ahead of its match. Booking on those reads is what let a skipped body book
+/// itself.
 ///
-/// This is the seam the contract prefers: recording is automatic, so a runner
-/// added later cannot forget it, and a runner that `break`s early records only
-/// what it reached.
+/// No scenario in the corpus carries only these, so every one is reachable
+/// through some payload key.
+pub const SCENARIO_LABEL_KEYS: [&str; 9] = [
+    "comment",
+    "description",
+    "id",
+    "label",
+    "name",
+    "note",
+    "notes",
+    "reason",
+    "why",
+];
+
+/// One scenario, booked as replayed on the first read of its PAYLOAD.
+///
+/// Yielding is not replaying (`#lzscenariobodyskip`). The ledger used to book at
+/// the moment the iterator handed a scenario over, which cannot tell a loop body
+/// that ran from one that `continue`d — the iterator sees the same thing either
+/// way — so a skipped scenario booked itself and this rung stayed silent about
+/// the very defect it exists for. lazily-py proved that against the contract's
+/// own probe; this is the port of its fix.
+///
+/// The `steps`/`ops`/`frames`/`expect` of a scenario are read only by a runner
+/// about to replay it, so those reads book. `id`/`name`/`description` are what a
+/// skip reads on its way past, so those stay silent.
+pub struct ScenarioView<'a> {
+    path: String,
+    id: String,
+    source: ScenarioIdSource,
+    scenario: &'a serde_json::Value,
+}
+
+impl<'a> ScenarioView<'a> {
+    fn book(&self) {
+        record_scenario(&self.path, &self.id, self.source);
+    }
+
+    fn touch(&self, key: &str) {
+        if !SCENARIO_LABEL_KEYS.contains(&key) {
+            self.book();
+        }
+    }
+
+    /// The resolved id. A label read: never books.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Look a key up, booking unless it is a label key.
+    pub fn get(&self, key: &str) -> Option<&'a serde_json::Value> {
+        self.touch(key);
+        self.scenario.get(key)
+    }
+
+    /// The whole scenario, BOOKED — for handing the payload to a replay helper.
+    /// Reaching for the entire object is the strongest statement a runner can
+    /// make that it is about to replay this scenario, so it books unconditionally.
+    pub fn value(&self) -> &'a serde_json::Value {
+        self.book();
+        self.scenario
+    }
+
+    /// The whole scenario WITHOUT booking, for inspecting a label before deciding
+    /// whether to replay. Use it only where a read really is a look, never as a
+    /// way to reach the payload — that is the skip this rung exists to catch.
+    pub fn peek(&self) -> &'a serde_json::Value {
+        self.scenario
+    }
+}
+
+impl std::ops::Index<&str> for ScenarioView<'_> {
+    type Output = serde_json::Value;
+
+    fn index(&self, key: &str) -> &Self::Output {
+        self.touch(key);
+        &self.scenario[key]
+    }
+}
+
+/// The scenarios of `fixture`, each booked when its payload is first read.
+///
+/// This is the seam the contract prefers: booking is automatic, so a runner added
+/// later cannot forget it, a `break` leaves the rest unbooked, and — unlike the
+/// yield-time booking this replaced — a `continue` past the payload leaves that
+/// one unbooked too.
 pub struct Scenarios<'a> {
     path: String,
     items: std::iter::Enumerate<std::slice::Iter<'a, serde_json::Value>>,
@@ -232,17 +320,25 @@ pub struct Scenarios<'a> {
 
 impl<'a> Iterator for Scenarios<'a> {
     /// `(index, id, scenario)`.
-    type Item = (usize, String, &'a serde_json::Value);
+    type Item = (usize, String, ScenarioView<'a>);
 
     fn next(&mut self) -> Option<Self::Item> {
         let (index, scenario) = self.items.next()?;
         let (id, source) = scenario_id(scenario, index);
-        record_scenario(&self.path, &id, source);
-        Some((index, id, scenario))
+        Some((
+            index,
+            id.clone(),
+            ScenarioView {
+                path: self.path.clone(),
+                id,
+                source,
+                scenario,
+            },
+        ))
     }
 }
 
-/// Iterate `fixture["scenarios"]`, recording each scenario as replayed.
+/// Iterate `fixture["scenarios"]`.
 ///
 /// Panics when the fixture carries no `scenarios` array — a runner that reaches
 /// for the array is claiming there is one, and "zero scenarios" is not a replay.
@@ -260,35 +356,41 @@ pub fn scenarios<'a>(path: &str, fixture: &'a serde_json::Value) -> Scenarios<'a
     }
 }
 
-/// Look a scenario up by `name` (or `id`) and record it as replayed.
+/// Look a scenario up by `name` (or `id`).
 ///
-/// For the many runners that address scenarios individually rather than in a
-/// loop — the record still happens exactly once, at the point of replay.
+/// The LOOKUP does not book (`#lzscenariobodyskip`): matching on the id walks past
+/// every scenario ahead of it, and a scenario selected and then not replayed is
+/// not replayed. The returned view books when its payload is read.
 pub fn scenario_by_name<'a>(
     path: &str,
     fixture: &'a serde_json::Value,
     name: &str,
-) -> &'a serde_json::Value {
+) -> ScenarioView<'a> {
     let items = fixture["scenarios"]
         .as_array()
         .unwrap_or_else(|| panic!("{path}: fixture carries no `scenarios` array"));
     for (index, scenario) in items.iter().enumerate() {
         let (id, source) = scenario_id(scenario, index);
         if id == name {
-            record_scenario(path, &id, source);
-            return scenario;
+            return ScenarioView {
+                path: path.to_owned(),
+                id,
+                source,
+                scenario,
+            };
         }
     }
     panic!("{path}: scenario `{name}` not found");
 }
 
-/// Address a scenario by position and record it as replayed. For fixtures whose
-/// scenarios carry no identifier at all, and for runners that legitimately index.
+/// Address a scenario by position. For fixtures whose scenarios carry no
+/// identifier at all, and for runners that legitimately index. Books on payload
+/// read, exactly as the other two seams do.
 pub fn scenario_at<'a>(
     path: &str,
     fixture: &'a serde_json::Value,
     index: usize,
-) -> &'a serde_json::Value {
+) -> ScenarioView<'a> {
     let items = fixture["scenarios"]
         .as_array()
         .unwrap_or_else(|| panic!("{path}: fixture carries no `scenarios` array"));
@@ -296,8 +398,12 @@ pub fn scenario_at<'a>(
         .get(index)
         .unwrap_or_else(|| panic!("{path}: no scenario at index {index}"));
     let (id, source) = scenario_id(scenario, index);
-    record_scenario(path, &id, source);
-    scenario
+    ScenarioView {
+        path: path.to_owned(),
+        id,
+        source,
+        scenario,
+    }
 }
 
 fn conformance_id(path: &Path) -> Option<String> {

@@ -143,8 +143,15 @@ this repo.
   `reliable-sync/liveness_orset_lww.json` was exactly that, and the key guards
   cannot see it either, because an unreplayed scenario contributes no unconsumed
   and no unasserted key. `common::scenarios` / `scenario_by_name` /
-  `scenario_at` record each id as it is replayed (resolution `id` -> `name` ->
-  positional `#<n>`, the order every binding shares) into
+  `scenario_at` hand back a `ScenarioView` that books on the first read of the
+  scenario's PAYLOAD (`#lzscenariobodyskip`) — never at the yield, which cannot
+  tell a loop body that ran from one that `continue`d, and never at a by-name
+  lookup, which walks past every scenario ahead of its match. `id`, `name`,
+  `description` and the rest of `SCENARIO_LABEL_KEYS` stay silent, so a dispatch
+  chain that reads the label and matches no arm books nothing; `.value()` books
+  and hands the whole scenario to a replay helper, `.peek()` is the escape hatch
+  that does not. Id resolution is `id` -> `name` -> positional `#<n>`, the order
+  every binding shares, recorded into
   `$LAZILY_CONFORMANCE_SCENARIOS`, and the guard script compares that ledger with
   the scenarios each OPENED fixture carries on disk, in both directions. The
   excuse list `KNOWN_UNREPLAYED_SCENARIOS` ("fixture|id|reason") sits beside

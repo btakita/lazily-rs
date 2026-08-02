@@ -785,8 +785,8 @@ fn run_stableid_fixture(name: &str) {
         }
 
         // --- alignment scenarios (old + new) ---
-        let old = build_blocks(scenario, "old");
-        let new = build_blocks(scenario, "new");
+        let old = build_blocks(scenario.value(), "old");
+        let new = build_blocks(scenario.value(), "new");
 
         let al = align(&old, &new);
         expect.assert_key_if_present("matches", |matches| {
