@@ -50,6 +50,7 @@ export LAZILY_CONFORMANCE_SCENARIOS = $(CONFORMANCE_SCENARIOS)
 	test-ipc-binary \
 	test-ipc-conformance \
 	test-codec-roundtrip-conformance \
+	test-nodeid-exact-range-conformance \
 	test-reliable-sync-conformance \
 	test-durable-outbox \
 	test-collections-conformance \
@@ -77,7 +78,7 @@ test-ingress-family-conformance \
 	instrumentation-profile \
 	benchmark-spread
 
-check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-codec-roundtrip-conformance test-reliable-sync-conformance test-durable-outbox test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-ingress-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-evidence benchmark-check conformance-coverage ci-reach
+check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-ipc-conformance test-codec-roundtrip-conformance test-nodeid-exact-range-conformance test-reliable-sync-conformance test-durable-outbox test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-ingress-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-evidence benchmark-check conformance-coverage ci-reach
 
 fmt:
 >$(CARGO) fmt --all --check
@@ -170,6 +171,16 @@ test-ipc-conformance:
 # MUST, and a feature flag is not a carve-out.
 test-codec-roundtrip-conformance:
 >$(CARGO) test --locked --features ipc,ipc-msgpack --test codec_roundtrip_conformance
+
+# NodeId exact-representation bound (#lzspecdecoderbound): replays
+# ../lazily-spec/conformance/codec/nodeid_exact_range.json. protocol.md stated
+# the 2^53 bound as a PRODUCER obligation and left the decoder half undefined;
+# the clause now says a decoder that cannot represent a received identifier
+# exactly MUST reject the frame rather than round it. lazily-rs is u64-wide, so
+# it must ACCEPT every scenario — including u64::MAX — which makes this the
+# reference reading of the fixture. Both codecs, same reason as above.
+test-nodeid-exact-range-conformance:
+>$(CARGO) test --locked --features ipc,ipc-msgpack --test nodeid_exact_range_conformance
 
 # Reliable sync (#lzsync): ResyncCoordinator / DurableOutbox / OR-set-LWW
 # liveness + the ResyncRequest/OutboxAck control-frame codec round-trip. Replays

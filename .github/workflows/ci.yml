@@ -228,6 +228,18 @@ jobs:
           test -d ../lazily-spec/conformance/codec || { echo "::error::../lazily-spec/conformance/codec missing — codec_roundtrip_conformance.rs cannot run"; exit 1; }
           cargo +stable test --locked --features ipc,ipc-msgpack --test codec_roundtrip_conformance
 
+      # NodeId exact-representation bound (#lzspecdecoderbound). protocol.md
+      # § NodeId / PeerId stated the 2^53 bound as a PRODUCER obligation and left
+      # the decoder half undefined; it now requires a decoder that cannot
+      # represent a received identifier exactly to REJECT the frame rather than
+      # round it. lazily-rs is u64-wide, so it must ACCEPT every scenario —
+      # including u64::MAX — which makes it the reference reading of the fixture.
+      # Both codecs, same reason as above.
+      - name: Test NodeId exact-representation bound against canonical spec fixtures
+        run: |
+          test -f ../lazily-spec/conformance/codec/nodeid_exact_range.json || { echo "::error::../lazily-spec/conformance/codec/nodeid_exact_range.json missing — nodeid_exact_range_conformance.rs cannot run"; exit 1; }
+          cargo +stable test --locked --features ipc,ipc-msgpack --test nodeid_exact_range_conformance
+
       - name: Test reliable-sync conformance against canonical spec fixtures
         run: |
           test -d ../lazily-spec/conformance/reliable-sync || { echo "::error::../lazily-spec/conformance/reliable-sync missing — reliable_sync_conformance.rs cannot run"; exit 1; }
