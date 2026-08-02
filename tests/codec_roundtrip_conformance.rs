@@ -62,12 +62,16 @@ fn assert_fixture_block(path: &str, fixture: &Value, codec: &str, byte_canonical
     a.assert_key("self_describing", true);
     a.assert_key("byte_canonical", byte_canonical);
     a.assert_key("required_of_binding", "MUST");
+    // Expectation-side dispatch, fail-closed (`#lzscenariobodyskip`). The bare
+    // `else` ASSUMED the binary role for every codec that was not `json`, so a
+    // third codec — or a typo — would have been asserted against the wrong
+    // half of the reference-vs-byte-canonical distinction and passed.
     a.assert_key(
         "role",
-        if codec == "json" {
-            "reference"
-        } else {
-            "cross_language_binary_default"
+        match codec {
+            "json" => "reference",
+            "msgpack" => "cross_language_binary_default",
+            other => panic!("{path}: unknown codec `{other}` in fixture block"),
         },
     );
     a.assert_key(
@@ -325,7 +329,12 @@ fn msgpack_frames_round_trip() {
                     sorted_field_names(&body["ops"][1]),
                 );
             }
-            _ => {}
+            // `Delta` carries no nested field-name obligation. Naming it is the
+            // point: the `_ => {}` this replaced silently skipped the nested
+            // assertions for ANY tag, so an encoder emitting an unexpected
+            // external tag changed which assertions ran (`#lzscenariobodyskip`).
+            "Delta" => {}
+            other => panic!("{id}: unknown encoded envelope tag `{other}`"),
         }
 
         assert_values(&exp, &round);

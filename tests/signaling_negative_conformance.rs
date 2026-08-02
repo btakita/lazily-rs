@@ -58,7 +58,12 @@ fn decode(direction: &str, wire: &Value) -> Result<Value, String> {
         "server" => ServerMessage::from_json_slice(&bytes)
             .and_then(serde_json::to_value)
             .map_err(|error| error.to_string()),
-        other => Err(format!("unknown fixture direction {other:?}")),
+        // Fail-closed (`#lzscenariobodyskip`). This used to return `Err`, which
+        // the negative loop below asserts with `is_err()` — so a `rejects` case
+        // carrying a misspelled `direction` was "rejected" because the RUNNER
+        // did not recognise the direction, never because the codec rejected the
+        // frame. The fixture's whole claim went unexercised and the case passed.
+        other => panic!("unknown fixture direction {other:?}"),
     }
 }
 

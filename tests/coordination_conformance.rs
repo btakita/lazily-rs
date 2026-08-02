@@ -228,7 +228,15 @@ fn quorum() {
     let _ = observed.get(&ctx);
 
     for (i, step) in steps(&fx).iter().enumerate() {
-        let got = q.arrive(&ctx, step["op"]["peer"].as_u64().unwrap());
+        // `op.type` was the one discriminator in this file nobody read: every
+        // step replayed as an `arrive` regardless of what the fixture named
+        // (`#lzscenariobodyskip`). Every other coordination runner dispatches
+        // on it with a failing catch-all; this one did not.
+        let op = &step["op"];
+        let got = match op["type"].as_str().expect("op type") {
+            "vote" => q.arrive(&ctx, op["peer"].as_u64().unwrap()),
+            other => panic!("unknown op {other}"),
+        };
         assert_eq!(got, step["returns"].as_bool().unwrap());
         let exp = expected("quorum.json", i, step);
         let inv = exp.sub("invalidates");

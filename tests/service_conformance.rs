@@ -61,12 +61,21 @@ fn health() {
         let exp = expected("health.json", i, step);
         let inv = exp.sub("invalidates");
         let op = &step["op"];
-        h.set(
-            &ctx,
-            op["name"].as_str().unwrap(),
-            op["up"].as_bool().unwrap(),
-            op["critical"].as_bool().unwrap(),
-        );
+        // `op.type` was unread here and in `readiness`, while `discovery` and
+        // `service_registry` dispatch on it with a failing catch-all
+        // (`#lzscenariobodyskip`): every step replayed as a `set` regardless of
+        // what the fixture named, so a future `evict`/`clear` op would have
+        // registered a component instead and the `expected` block would have
+        // been compared against the wrong aggregate.
+        match op["type"].as_str().unwrap() {
+            "set" => h.set(
+                &ctx,
+                op["name"].as_str().unwrap(),
+                op["up"].as_bool().unwrap(),
+                op["critical"].as_bool().unwrap(),
+            ),
+            other => panic!("unknown op {other}"),
+        }
         exp.assert_key_with("health", |want| {
             let want = match want.as_str().unwrap() {
                 "Healthy" => Health::Healthy,
@@ -98,11 +107,14 @@ fn readiness() {
         let exp = expected("readiness.json", i, step);
         let inv = exp.sub("invalidates");
         let op = &step["op"];
-        r.set(
-            &ctx,
-            op["name"].as_str().unwrap(),
-            op["ready"].as_bool().unwrap(),
-        );
+        match op["type"].as_str().unwrap() {
+            "set" => r.set(
+                &ctx,
+                op["name"].as_str().unwrap(),
+                op["ready"].as_bool().unwrap(),
+            ),
+            other => panic!("unknown op {other}"),
+        }
         exp.assert_key_at("ready", r.ready(), &format!("step {step}"));
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);

@@ -32,8 +32,25 @@ fn steps(fx: &Value) -> &Vec<Value> {
     fx["steps"].as_array().unwrap()
 }
 
+/// `op.now`, with the op's discriminator read and CHECKED first
+/// (`#lzscenariobodyskip`).
+///
+/// All four temporal runners replayed every step as a `tick` while `op.type`
+/// sat unread in the fixture. `tick` happens to be the only spelling the corpus
+/// carries today, so the gap was invisible — but a fixture adding `arm`,
+/// `cancel` or `reset` would have replayed as a tick, and the step's `expected`
+/// block would have been compared against a clock advance the fixture never
+/// asked for.
 fn now_of(step: &Value) -> u64 {
-    step["op"]["now"].as_u64().unwrap()
+    let op = &step["op"];
+    match op["type"]
+        .as_str()
+        .unwrap_or_else(|| panic!("temporal step op carries no `type`: {step}"))
+    {
+        "tick" => {}
+        other => panic!("unknown temporal op `{other}` in {step}"),
+    }
+    op["now"].as_u64().unwrap()
 }
 
 fn edge_of(step: &Value) -> bool {
@@ -70,9 +87,15 @@ fn timer_single_shot() {
         let exp = expected("timer_single_shot.json", i, step);
         let inv = exp.sub("invalidates");
         exp.assert_key_at("fired", timer.has_fired(&ctx), &format!("step {step}"));
+        // Expectation-side dispatch, fail-closed (`#lzscenariobodyskip`). The
+        // `_` arm used to swallow every spelling but `"()"` and assert `None`
+        // instead — an unrecognised `value` did not skip the assertion, it
+        // silently CHANGED which assertion ran, so the fixture said one thing
+        // and the runner checked another and passed.
         exp.assert_key_with("value", |want| match want.as_str() {
             Some("()") => assert_eq!(timer.value(&ctx), Some(())),
-            _ => assert_eq!(timer.value(&ctx), None),
+            None if want.is_null() => assert_eq!(timer.value(&ctx), None),
+            _ => panic!("unknown expected timer value {want}"),
         });
         exp.assert_key_with("next_fire", |want| {
             assert_eq!(timer.next_fire(), want.as_u64())
@@ -173,8 +196,16 @@ fn deadline_expiry() {
         let exp = expected("deadline_expiry.json", i, step);
         let inv = exp.sub("invalidates");
         let state = d.state(&ctx);
+        // Expectation-side dispatch, fail-closed (`#lzscenariobodyskip`). The
+        // bare `== "Expired"` was a binary over a three-plus-valued field: any
+        // spelling that was not exactly `Expired` — a lowercase `expired`, a
+        // later third state — silently became "assert Live" and passed.
         exp.assert_key_with("state", |want| {
-            let want_expired = want.as_str().unwrap() == "Expired";
+            let want_expired = match want.as_str().unwrap() {
+                "Expired" => true,
+                "Live" => false,
+                other => panic!("unknown expected deadline state `{other}`"),
+            };
             assert_eq!(state.is_expired(), want_expired);
         });
         assert_eq!(state.value(), &value); // value preserved across the flip

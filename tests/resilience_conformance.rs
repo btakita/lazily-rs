@@ -105,7 +105,14 @@ fn retry() {
     for (i, step) in steps(&fx).iter().enumerate() {
         let exp = expected("retry.json", i, step);
         let inv = exp.sub("invalidates");
-        let got = r.next_delay(&ctx);
+        // `op.type` was unread here while every other resilience runner
+        // dispatches on it with a failing catch-all (`#lzscenariobodyskip`):
+        // every step replayed as `next_delay` no matter what the fixture named,
+        // so a `reset` or `record` op would have advanced the backoff instead.
+        let got = match step["op"]["type"].as_str().expect("op type") {
+            "next" => r.next_delay(&ctx),
+            other => panic!("unknown op {other}"),
+        };
         assert_eq!(got, step["returns"].as_u64().unwrap(), "delay for {step}");
         exp.assert_key_at("delay", r.delay(&ctx), &format!("step {step}"));
         let was = ctx.is_set(&observed);

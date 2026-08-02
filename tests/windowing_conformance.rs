@@ -28,6 +28,19 @@ fn steps(fx: &Value) -> &Vec<Value> {
 fn ret(step: &Value) -> Option<u64> {
     step["returns"].as_u64()
 }
+/// The step's op discriminator, read and CHECKED (`#lzscenariobodyskip`).
+///
+/// The count-driven windows used to replay every step as a `push` without ever
+/// looking at `op.type`, and the time-driven ones dispatched with a bare `else`
+/// that ASSUMED the only other spelling. Both are the same fail-open: a fixture
+/// naming an op this runner does not implement replays as something else, the
+/// `expected` block is compared against state the named op never touched, and
+/// the scenario books itself as replayed.
+fn op_type<'a>(fixture: &str, op: &'a Value) -> &'a str {
+    op["type"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{fixture}: step op carries no `type`: {op}"))
+}
 /// Assert one step, with the `expected` block guarded (`#lzassertunknownkeys`):
 /// a key this runner never reads fails the fixture instead of passing unnoticed.
 fn check(
@@ -65,7 +78,11 @@ fn tumbling_count() {
     let observed = ctx.computed(move |c| oc.get(c));
     let _ = observed.get(&ctx);
     for (i, step) in steps(&fx).iter().enumerate() {
-        let emitted = w.push(&ctx, step["op"]["value"].as_u64().unwrap());
+        let op = &step["op"];
+        let emitted = match op_type("tumbling_count.json", op) {
+            "push" => w.push(&ctx, op["value"].as_u64().unwrap()),
+            other => panic!("tumbling_count.json: unknown windowing op `{other}`"),
+        };
         assert_eq!(emitted, ret(step), "emit for {step}");
         check(
             &ctx,
@@ -93,11 +110,13 @@ fn tumbling_time() {
     for (i, step) in steps(&fx).iter().enumerate() {
         let op = &step["op"];
         let now = op["now"].as_u64().unwrap();
-        let emitted = if op["type"] == "push" {
-            w.push(&ctx, now, op["value"].as_u64().unwrap());
-            None
-        } else {
-            w.tick(&ctx, now)
+        let emitted = match op_type("tumbling_time.json", op) {
+            "push" => {
+                w.push(&ctx, now, op["value"].as_u64().unwrap());
+                None
+            }
+            "tick" => w.tick(&ctx, now),
+            other => panic!("tumbling_time.json: unknown windowing op `{other}`"),
         };
         assert_eq!(emitted, ret(step), "emit for {step}");
         check(
@@ -125,7 +144,11 @@ fn sliding_count() {
     let observed = ctx.computed(move |c| oc.get(c));
     let _ = observed.get(&ctx);
     for (i, step) in steps(&fx).iter().enumerate() {
-        let emitted = w.push(&ctx, step["op"]["value"].as_u64().unwrap());
+        let op = &step["op"];
+        let emitted = match op_type("sliding_count.json", op) {
+            "push" => w.push(&ctx, op["value"].as_u64().unwrap()),
+            other => panic!("sliding_count.json: unknown windowing op `{other}`"),
+        };
         assert_eq!(emitted, ret(step), "emit for {step}");
         check(
             &ctx,
@@ -153,10 +176,10 @@ fn session() {
     for (i, step) in steps(&fx).iter().enumerate() {
         let op = &step["op"];
         let now = op["now"].as_u64().unwrap();
-        let emitted = if op["type"] == "push" {
-            w.push(&ctx, now, op["value"].as_u64().unwrap())
-        } else {
-            w.flush(&ctx, now)
+        let emitted = match op_type("session.json", op) {
+            "push" => w.push(&ctx, now, op["value"].as_u64().unwrap()),
+            "flush" => w.flush(&ctx, now),
+            other => panic!("session.json: unknown windowing op `{other}`"),
         };
         assert_eq!(emitted, ret(step), "emit for {step}");
         check(&ctx, &observed, "session.json", i, step, w.output(&ctx));

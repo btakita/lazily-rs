@@ -40,6 +40,19 @@ fn op_val(step: &Value) -> String {
 fn ret(step: &Value) -> Option<String> {
     step["returns"].as_str().map(|s| s.to_string())
 }
+/// The step's op discriminator, read and CHECKED (`#lzscenariobodyskip`).
+///
+/// `sample_count` and `probabilistic_sample` used to replay every step as an
+/// `input` without reading `op.type` at all, and the four time-driven operators
+/// dispatched with a bare `else` that ASSUMED `tick`. Both are the same
+/// fail-open: a fixture naming an op this runner does not implement replays as
+/// something else, and the step's `expected` block is then compared against
+/// state the named op never produced.
+fn op_type<'a>(fixture: &str, step: &'a Value) -> &'a str {
+    step["op"]["type"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{fixture}: step op carries no `type`: {step}"))
+}
 /// Run a fixture whose emit projection is a `Source<Option<String>>`, given a
 /// per-step driver returning the emitted value and the current output.
 ///
@@ -90,11 +103,13 @@ fn debounce() {
     let out = cell.output_cell();
     let observed = ctx.computed(move |c| out.get(c));
     run(&ctx, "debounce.json", &fx, observed, |step| {
-        let emitted = if step["op"]["type"] == "input" {
-            cell.input(&ctx, op_now(step), op_val(step));
-            None
-        } else {
-            cell.tick(&ctx, op_now(step))
+        let emitted = match op_type("debounce.json", step) {
+            "input" => {
+                cell.input(&ctx, op_now(step), op_val(step));
+                None
+            }
+            "tick" => cell.tick(&ctx, op_now(step)),
+            other => panic!("debounce.json: unknown rateshape op `{other}`"),
         };
         (emitted, cell.output(&ctx))
     });
@@ -108,10 +123,10 @@ fn run_throttle(name: &str, edge: ThrottleEdge) {
     let out = cell.output_cell();
     let observed = ctx.computed(move |c| out.get(c));
     run(&ctx, name, &fx, observed, |step| {
-        let emitted = if step["op"]["type"] == "input" {
-            cell.input(&ctx, op_now(step), op_val(step))
-        } else {
-            cell.tick(&ctx, op_now(step))
+        let emitted = match op_type(name, step) {
+            "input" => cell.input(&ctx, op_now(step), op_val(step)),
+            "tick" => cell.tick(&ctx, op_now(step)),
+            other => panic!("{name}: unknown rateshape op `{other}`"),
         };
         (emitted, cell.output(&ctx))
     });
@@ -145,7 +160,10 @@ fn sample_count() {
     let out = cell.output_cell();
     let observed = ctx.computed(move |c| out.get(c));
     run(&ctx, "sample_count.json", &fx, observed, |step| {
-        let emitted = cell.input(&ctx, op_val(step));
+        let emitted = match op_type("sample_count.json", step) {
+            "input" => cell.input(&ctx, op_val(step)),
+            other => panic!("sample_count.json: unknown rateshape op `{other}`"),
+        };
         (emitted, cell.output(&ctx))
     });
 }
@@ -162,11 +180,13 @@ fn sample_time() {
     let out = cell.output_cell();
     let observed = ctx.computed(move |c| out.get(c));
     run(&ctx, "sample_time.json", &fx, observed, |step| {
-        let emitted = if step["op"]["type"] == "input" {
-            cell.input(&ctx, op_val(step));
-            None
-        } else {
-            cell.tick(&ctx, op_now(step))
+        let emitted = match op_type("sample_time.json", step) {
+            "input" => {
+                cell.input(&ctx, op_val(step));
+                None
+            }
+            "tick" => cell.tick(&ctx, op_now(step)),
+            other => panic!("sample_time.json: unknown rateshape op `{other}`"),
         };
         (emitted, cell.output(&ctx))
     });
@@ -186,8 +206,13 @@ fn probabilistic_sample() {
     let out = cell.output_cell();
     let observed = ctx.computed(move |c| out.get(c));
     run(&ctx, "probabilistic_sample.json", &fx, observed, |step| {
-        let draw = step["op"]["draw"].as_f64().unwrap();
-        let emitted = cell.input_with_draw(&ctx, op_val(step), draw);
+        let emitted = match op_type("probabilistic_sample.json", step) {
+            "input" => {
+                let draw = step["op"]["draw"].as_f64().unwrap();
+                cell.input_with_draw(&ctx, op_val(step), draw)
+            }
+            other => panic!("probabilistic_sample.json: unknown rateshape op `{other}`"),
+        };
         (emitted, cell.output(&ctx))
     });
 }

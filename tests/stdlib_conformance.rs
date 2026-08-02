@@ -500,12 +500,31 @@ fn terminal(state: &Map<String, Value>, adapter_counts: bool) -> Value {
     Value::Object(result)
 }
 
+/// The step's op, read and CHECKED against the ops this model implements
+/// (`#lzscenariobodyskip`).
+///
+/// The independent models used to test `step["op"] == "start"` and then let
+/// everything else fall through to the second op WITHOUT checking it. An op
+/// this model does not implement was therefore replayed as an observe/poll —
+/// the model advanced, the fixture's `expected` block was compared against the
+/// wrong transition, and nothing named the unknown op.
+fn model_op<'a>(step: &'a Value, known: &[&str]) -> &'a str {
+    let op = step["op"]
+        .as_str()
+        .unwrap_or_else(|| panic!("step carries no `op`: {step}"));
+    assert!(
+        known.contains(&op),
+        "unknown model op `{op}` (known: {known:?}) in {step}"
+    );
+    op
+}
+
 fn independent_timer(
     state: &mut Map<String, Value>,
     step: &Value,
     mutation: Option<&str>,
 ) -> Value {
-    if step["op"] == "start" {
+    if model_op(step, &["start", "observe"]) == "start" {
         let now = step["now"].as_u64().unwrap();
         let duration = step["duration"].as_u64().unwrap();
         let Some(deadline) = now.checked_add(duration) else {
@@ -559,7 +578,7 @@ fn independent_timeout(
     step: &Value,
     mutation: Option<&str>,
 ) -> Value {
-    if step["op"] == "start" {
+    if model_op(step, &["start", "poll"]) == "start" {
         let now = step["now"].as_u64().unwrap();
         let duration = step["duration"].as_u64().unwrap();
         let Some(deadline) = now.checked_add(duration) else {
@@ -610,8 +629,17 @@ fn independent_timeout(
         state.insert("status".into(), json!("timed_out"));
         return json!({"outcome": "timed_out", "operation_calls": 0, "cancellation_calls": 0});
     }
-    let operation = step["operation"].as_str().unwrap();
-    let cancellation = step["cancellation"].as_str().unwrap();
+    // Both drive if-chains whose tail ASSUMES `pending`; validate the spelling
+    // so an unknown one names itself instead of quietly meaning "pending"
+    // (`#lzscenariobodyskip`).
+    let operation = match step["operation"].as_str().unwrap() {
+        known @ ("completed" | "pending" | "unavailable") => known,
+        other => panic!("unknown operation `{other}` in {step}"),
+    };
+    let cancellation = match step["cancellation"].as_str().unwrap() {
+        known @ ("cancelled" | "pending" | "unavailable") => known,
+        other => panic!("unknown cancellation `{other}` in {step}"),
+    };
     if mutation == Some("cancellation_before_completion") && cancellation == "cancelled" {
         state.insert("status".into(), json!("cancelled"));
         return json!({"outcome": "cancelled", "operation_calls": 1, "cancellation_calls": 1});
@@ -788,11 +816,19 @@ fn independent_barrier(
         result["cancellation_calls"] = json!(0);
         return result;
     }
-    if step["cancellation"] == "cancelled" {
-        state.insert("status".into(), json!("cancelled"));
-    } else if step["cancellation"] == "unavailable" {
-        state.insert("status".into(), json!("unavailable"));
-        state.insert("reason".into(), json!("cancellation_unavailable"));
+    // Fail-closed tail (`#lzscenariobodyskip`): the chain had no final `else`,
+    // so a cancellation spelling this model does not know silently behaved like
+    // `pending` and the barrier observation was asserted against it.
+    match step["cancellation"].as_str().expect("cancellation") {
+        "cancelled" => {
+            state.insert("status".into(), json!("cancelled"));
+        }
+        "unavailable" => {
+            state.insert("status".into(), json!("unavailable"));
+            state.insert("reason".into(), json!("cancellation_unavailable"));
+        }
+        "pending" => {}
+        other => panic!("unknown cancellation `{other}` in {step}"),
     }
     let mut result = model_barrier_observation(state);
     result["cancellation_calls"] = json!(1);
