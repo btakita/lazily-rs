@@ -150,16 +150,21 @@ this repo.
   `description` and the rest of `SCENARIO_LABEL_KEYS` stay silent, so a dispatch
   chain that reads the label and matches no arm books nothing; `.value()` books
   and hands the whole scenario to a replay helper, `.peek()` is the escape hatch
-  that does not. Id resolution is `id` -> `name` -> positional `#<n>`, the order
-  every binding shares, recorded into
-  `$LAZILY_CONFORMANCE_SCENARIOS`, and the guard script compares that ledger with
-  the scenarios each OPENED fixture carries on disk, in both directions. The
+  that does not. Id resolution is `id`, else `name` — the order every binding
+  shares, recorded into `$LAZILY_CONFORMANCE_SCENARIOS`, and the guard script
+  compares that ledger with the scenarios each OPENED fixture carries on disk, in
+  both directions. The positional `#<n>` fallback is gone (`#lzspecscenarioids`),
+  and as of `#recommendedconformanceco` the canonical spelling is settled at
+  `id`: every scenario in the corpus carries a unique snake_case one, lazily-spec's
+  `scenario-identity-check` requires it, and `name` is demoted to an optional
+  human label. So the `name` leg no longer fires for the canonical corpus, and
+  `common::scenario_by_id` matches on the resolved id rather than the prose —
+  keying a lookup on `name` is the same defect as keying it on position, because
+  35 scenarios named themselves with a sentence a copy-edit could reword. The
   excuse list `KNOWN_UNREPLAYED_SCENARIOS` ("fixture|id|reason") sits beside
   `KNOWN_UNCOVERED` so there is one place to read what this binding does not
   prove; it is currently EMPTY — every scenario of every opened fixture is
-  replayed. Positional-fallback ids are reported, not silently accepted
-  (`collections/mergecell_algebra.json` carries no identifier at all; adding one
-  is a lazily-spec change)
+  replayed
 - `tests/common/expect.rs` — the assertion-key guard
   (`#lzassertunknownkeys`, `#lzconsumednotasserted`), the two rungs below the
   manifest. Rung 2: having OPENED a fixture, did the runner CONSUME the keys it
@@ -358,7 +363,7 @@ authoring `AGENTS.md`, `SKILL.md`, or runbooks in this repo must read:
 
 before making changes.
 
-<!-- tsift:code-navigation v=0.1.78 -->
+<!-- tsift:code-navigation v=0.1.79 -->
 ## Code Navigation
 
 Run `tsift status` at session start from the owning repo root. If the task or file lives under a git submodule (for example `src/tsift/...`), switch to that submodule root first so the harness loads the narrower local instructions and repo state instead of the superproject root. If status prints a `run:` recommendation for stale or missing tsift state, run `tsift status --fix` before relying on tsift results; when the harness cannot perform write commands, ask the user to run the printed command instead.

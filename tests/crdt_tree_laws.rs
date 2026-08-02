@@ -156,7 +156,7 @@ fn crdt_tree_replays_canonical_fixture() {
         assert_eq!(
             empty.len(),
             want.as_array().expect("delta").len(),
-            "own frontier emits an empty delta"
+            "own_frontier_emits_empty_delta"
         )
     });
     steady_expect.assert_key("apply_changed", steady.apply_delta(&empty));

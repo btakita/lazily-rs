@@ -71,7 +71,7 @@
 //! `$LAZILY_CONFORMANCE_SCENARIOS` at the point of replay, and
 //! `scripts/check-conformance-coverage.sh` compares it against the scenarios
 //! present in each opened fixture on disk, in both directions. Prefer the
-//! iteration helpers ([`scenarios`], [`scenario_by_name`], [`scenario_at`]) so a
+//! iteration helpers ([`scenarios`], [`scenario_by_id`], [`scenario_at`]) so a
 //! new runner cannot forget to record.
 //!
 //! Ids resolve `id`, else `name`, identically in every binding. There is no
@@ -175,6 +175,15 @@ impl ScenarioIdSource {
 /// The order is fixed and identical in every binding — a binding that preferred
 /// `name` over `id` would build a ledger that cannot be compared with anyone
 /// else's, and the whole point of the corpus is that the nine agree.
+///
+/// As of `#recommendedconformanceco` the canonical spelling is settled: `id`,
+/// with `name` demoted to an optional human label, and every scenario in the
+/// corpus carries one. The `name` leg is therefore no longer load-bearing for
+/// the canonical corpus — lazily-spec's `scenario-identity-check` requires a
+/// unique snake_case `id` on every scenario — and survives only for
+/// out-of-corpus fixtures a runner may read. Keying identity on `name` was the
+/// same defect as keying it on position: 35 scenarios named themselves with a
+/// prose sentence, so a copy-edit silently rebound the entry.
 ///
 /// The positional `#<n>` fallback is GONE (`#lzspecscenarioids`). It existed so
 /// this rung was not blocked on a shared-corpus edit, and it was load-bearing for
@@ -385,17 +394,17 @@ pub fn scenarios<'a>(path: &str, fixture: &'a serde_json::Value) -> Scenarios<'a
 /// The LOOKUP does not book (`#lzscenariobodyskip`): matching on the id walks past
 /// every scenario ahead of it, and a scenario selected and then not replayed is
 /// not replayed. The returned view books when its payload is read.
-pub fn scenario_by_name<'a>(
+pub fn scenario_by_id<'a>(
     path: &str,
     fixture: &'a serde_json::Value,
-    name: &str,
+    wanted: &str,
 ) -> ScenarioView<'a> {
     let items = fixture["scenarios"]
         .as_array()
         .unwrap_or_else(|| panic!("{path}: fixture carries no `scenarios` array"));
     for (index, scenario) in items.iter().enumerate() {
         let (id, source) = scenario_id(scenario, index);
-        if id == name {
+        if id == wanted {
             return ScenarioView {
                 path: path.to_owned(),
                 id,
@@ -404,7 +413,7 @@ pub fn scenario_by_name<'a>(
             };
         }
     }
-    panic!("{path}: scenario `{name}` not found");
+    panic!("{path}: scenario `{wanted}` not found");
 }
 
 /// Address a scenario by position. For fixtures whose scenarios carry no

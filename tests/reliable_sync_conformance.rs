@@ -39,7 +39,7 @@ fn load(name: &str) -> serde_json::Value {
 /// past every scenario ahead of it, and selecting a scenario is not replaying it.
 /// The returned view books when this file reads the scenario's payload.
 fn scenario<'a>(fixture: &str, fx: &'a serde_json::Value, name: &str) -> common::ScenarioView<'a> {
-    common::scenario_by_name(&format!("{SPEC_DIR}/{fixture}"), fx, name)
+    common::scenario_by_id(&format!("{SPEC_DIR}/{fixture}"), fx, name)
 }
 
 /// Guard a scenario's `expect` block (`#lzassertunknownkeys`). Every key the

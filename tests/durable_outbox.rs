@@ -151,11 +151,7 @@ fn stale_sqlite_handle_cannot_regress_serialized_cursor() {
     use lazily::SqliteOutbox;
 
     let fixture = fixture().expect("lazily-spec outbox-store fixture");
-    let scenario = common::scenario_by_name(
-        FIXTURE,
-        &fixture,
-        "stale handle cannot regress serialized cursor",
-    );
+    let scenario = common::scenario_by_id(FIXTURE, &fixture, "stale_handle_cannot_regress_cursor");
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("stale-cursor.db");
     let mut stale = SqliteOutbox::open(&path, "doc").unwrap();
