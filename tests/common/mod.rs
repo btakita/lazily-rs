@@ -74,12 +74,16 @@
 //! iteration helpers ([`scenarios`], [`scenario_by_name`], [`scenario_at`]) so a
 //! new runner cannot forget to record.
 //!
-//! Ids resolve `id` -> `name` -> positional `#<n>` (0-based), identically in
-//! every binding, because the corpus is not uniform: three `stdlib` fixtures key
-//! by `id`, 28 by `name`, and `collections/mergecell_algebra.json` carries no
-//! identifier at all. The positional fallback is *reported* by the guard rather
-//! than silently accepted — its visibility is what makes the corpus gap fixable
-//! upstream later.
+//! Ids resolve `id`, else `name`, identically in every binding. There is no
+//! third option (`#lzspecscenarioids`): the positional `#<n>` fallback existed
+//! so this rung was not blocked on a shared-corpus edit, and it was load-bearing
+//! for exactly one fixture — `collections/mergecell_algebra.json`, whose three
+//! scenarios were distinguishable only by `policy`. They now carry ids, and
+//! lazily-spec's `scenario-identity-check` keeps every scenario identified, so an
+//! unidentified one is a hard failure here rather than a note. A ledger entry
+//! recorded BY POSITION silently rebinds to a different scenario when the corpus
+//! array is reordered, which is precisely the kind of quietly-wrong evidence this
+//! ladder exists to prevent.
 
 #![allow(dead_code)]
 
@@ -148,15 +152,13 @@ pub fn record_conformance_read(path: &Path) {
 // ---------------------------------------------------------------------------
 
 /// Which field a scenario's id came from. Carried into the ledger so the guard
-/// can REPORT a positional fallback instead of silently accepting it.
+/// reads the same identity the runner recorded.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ScenarioIdSource {
-    /// The scenario carries an explicit `id` (the three `stdlib` fixtures).
+    /// The scenario carries an explicit `id`.
     Id,
-    /// The scenario carries a `name` (28 of the 31 scenario-bearing fixtures).
+    /// The scenario carries a `name`.
     Name,
-    /// Neither — the id is the 0-based position, spelled `#<n>`.
-    Index,
 }
 
 impl ScenarioIdSource {
@@ -164,24 +166,46 @@ impl ScenarioIdSource {
         match self {
             Self::Id => "id",
             Self::Name => "name",
-            Self::Index => "index",
         }
     }
 }
 
-/// Resolve a scenario's id: `id`, else `name`, else the positional `#<n>`.
+/// Resolve a scenario's id: `id`, else `name`. There is no third option.
 ///
 /// The order is fixed and identical in every binding — a binding that preferred
 /// `name` over `id` would build a ledger that cannot be compared with anyone
 /// else's, and the whole point of the corpus is that the nine agree.
+///
+/// The positional `#<n>` fallback is GONE (`#lzspecscenarioids`). It existed so
+/// this rung was not blocked on a shared-corpus edit, and it was load-bearing for
+/// exactly one fixture; the corpus now identifies every scenario, and
+/// lazily-spec's `scenario-identity-check` keeps it that way. Keeping the
+/// fallback would leave the ledger able to record a scenario BY POSITION, where
+/// inserting one ahead of it silently rebinds that entry — and every excuse
+/// naming it — to a different scenario, with nothing turning red. A fallback that
+/// nothing needs is a hole waiting to become load-bearing again, so an
+/// unidentified scenario is now a hard failure.
 pub fn scenario_id(scenario: &serde_json::Value, index: usize) -> (String, ScenarioIdSource) {
-    if let Some(id) = scenario.get("id").and_then(|v| v.as_str()) {
+    if let Some(id) = scenario
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+    {
         return (id.to_owned(), ScenarioIdSource::Id);
     }
-    if let Some(name) = scenario.get("name").and_then(|v| v.as_str()) {
+    if let Some(name) = scenario
+        .get("name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+    {
         return (name.to_owned(), ScenarioIdSource::Name);
     }
-    (format!("#{index}"), ScenarioIdSource::Index)
+    panic!(
+        "scenario at index {index} carries neither `id` nor `name`. The replay ledger \
+         would have to record it by POSITION, where inserting a scenario ahead of it \
+         silently rebinds that entry to a different scenario. Give it a stable id \
+         upstream in lazily-spec (#lzspecscenarioids)."
+    )
 }
 
 fn scenarios_seen() -> &'static Mutex<HashSet<String>> {

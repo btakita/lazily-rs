@@ -191,8 +191,8 @@ echo "conformance coverage OK: $covered/$total canonical fixtures OPENED by the 
 # to satisfy it. This phase compares the runtime scenario ledger
 # (tests/common/mod.rs `record_scenario`) against the scenarios each opened
 # fixture actually carries on disk. JSON parsing is why this leg is python — the
-# ids live inside the fixtures, and `grep` cannot resolve `id` -> `name` ->
-# positional without reading the structure.
+# ids live inside the fixtures, and `grep` cannot resolve `id` -> `name` without
+# reading the structure.
 if ! command -v python3 >/dev/null 2>&1; then
   echo "FAIL: python3 is required to read scenario ids out of the corpus." >&2
   exit 1
@@ -237,7 +237,15 @@ for line in open(ledger_path):
 
 
 def scenario_ids(path):
-    """`id` -> `name` -> positional `#<n>`, the order every binding shares."""
+    """`id` -> `name`. There is no third option (#lzspecscenarioids).
+
+    The positional `#<n>` fallback is gone. It let the ledger record a scenario
+    BY POSITION, where inserting one ahead of it silently rebinds that entry --
+    and any excuse naming it -- to a different scenario with nothing turning red.
+    The corpus now identifies every scenario and lazily-spec's
+    `scenario-identity-check` keeps it that way, so an unidentified scenario here
+    is a hard failure rather than a note.
+    """
     try:
         with open(path) as handle:
             doc = json.load(handle)
@@ -250,19 +258,28 @@ def scenario_ids(path):
         return None
     out = []
     for index, scenario in enumerate(scenarios):
-        if isinstance(scenario, dict) and isinstance(scenario.get("id"), str):
-            out.append((scenario["id"], "id"))
-        elif isinstance(scenario, dict) and isinstance(scenario.get("name"), str):
-            out.append((scenario["name"], "name"))
-        else:
-            out.append(("#%d" % index, "index"))
+        identifier = None
+        if isinstance(scenario, dict):
+            for key in ("id", "name"):
+                value = scenario.get(key)
+                if isinstance(value, str) and value.strip():
+                    identifier = (value, key)
+                    break
+        if identifier is None:
+            sys.stderr.write(
+                "ERROR: %s scenario at index %d carries neither `id` nor `name`.\n"
+                "       The ledger would record it by POSITION, which silently rebinds\n"
+                "       on a corpus reorder. Give it a stable id upstream in lazily-spec\n"
+                "       (#lzspecscenarioids).\n" % (path, index)
+            )
+            sys.exit(1)
+        out.append(identifier)
     return out
 
 
 problems = 0
 replayed = 0
 total = 0
-positional = []
 
 excuses = []
 for raw in os.environ.get("SCENARIO_EXCUSES", "").splitlines():
@@ -303,8 +320,6 @@ for fixture in sorted(opened):
         total += 1
         if scenario_id in seen:
             replayed += 1
-            if seen[scenario_id] == "index":
-                positional.append("%s :: %s" % (fixture, scenario_id))
             continue
         if scenario_id in excused_ids.get(fixture, ()):  # excused, see below
             continue
@@ -317,8 +332,6 @@ for fixture in sorted(opened):
             "KNOWN_UNREPLAYED_SCENARIOS.\n" % (fixture, scenario_id, fixture, scenario_id)
         )
         problems += 1
-        if source == "index":
-            positional.append("%s :: %s (not replayed)" % (fixture, scenario_id))
 
 # The evidence channel guards itself, exactly as the fixture manifest does: an
 # id the corpus does not carry means the recorder and the corpus disagree, and
@@ -375,19 +388,6 @@ for fixture, scenario_id, _reason in excuses:
             "if replay ever stops.\n" % (fixture, scenario_id)
         )
         problems += 1
-
-if positional:
-    # Reported, never silently accepted. The fallback exists so this guard is not
-    # blocked on a corpus edit; its visibility is what makes the gap fixable
-    # upstream. Adding the missing identifiers is a lazily-spec change.
-    sys.stderr.write(
-        "NOTE: %d scenario id(s) fell back to the POSITIONAL index — the fixture "
-        "carries\n"
-        "      neither `id` nor `name`, so the ledger cannot survive a reorder "
-        "upstream:\n" % len(positional)
-    )
-    for entry in sorted(set(positional)):
-        sys.stderr.write("      %s\n" % entry)
 
 if problems:
     sys.stderr.write("scenario coverage FAILED: %d problem(s)\n" % problems)

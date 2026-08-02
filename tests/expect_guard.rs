@@ -223,3 +223,44 @@ fn a_drop_while_unwinding_does_not_mask_the_real_failure() {
     let _e = Expect::new("f.json", "expected", &v);
     panic!("the real failure");
 }
+
+// ---------------------------------------------------------------------------
+// Scenario identity (`#lzspecscenarioids`)
+// ---------------------------------------------------------------------------
+//
+// The ledger's `id` -> `name` resolution used to end in a positional `#<n>`
+// fallback. That fallback is the reason these tests exist rather than a comment:
+// a ledger entry recorded BY POSITION silently rebinds to a different scenario
+// when the corpus array is reordered, and nothing turns red — the guard compares
+// "index 1 was replayed" against whatever now sits at index 1 and agrees with
+// itself. lazily-spec now identifies every scenario, so the fallback is a hard
+// failure here, and these pin that in both directions.
+
+#[test]
+fn scenario_id_prefers_id_over_name() {
+    let sc = json!({ "id": "keep_latest", "name": "ignored" });
+    assert_eq!(common::scenario_id(&sc, 7).0, "keep_latest");
+}
+
+#[test]
+fn scenario_id_falls_back_to_name() {
+    let sc = json!({ "name": "repair_converges" });
+    assert_eq!(common::scenario_id(&sc, 7).0, "repair_converges");
+}
+
+#[test]
+#[should_panic(expected = "carries neither `id` nor `name`")]
+fn scenario_id_refuses_an_unidentified_scenario() {
+    let sc = json!({ "policy": "Sum" });
+    let _ = common::scenario_id(&sc, 1);
+}
+
+#[test]
+#[should_panic(expected = "carries neither `id` nor `name`")]
+fn scenario_id_refuses_a_blank_identifier() {
+    // A blank id is not an identifier. Accepting it would put every blank-id
+    // scenario in the corpus under the SAME ledger entry, which reads as
+    // "replayed" the moment any one of them runs.
+    let sc = json!({ "id": "  ", "name": "" });
+    let _ = common::scenario_id(&sc, 2);
+}
