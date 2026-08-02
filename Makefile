@@ -53,6 +53,7 @@ export LAZILY_CONFORMANCE_SCENARIOS = $(CONFORMANCE_SCENARIOS)
 	test-codec-roundtrip-conformance \
 	test-nodeid-exact-range-conformance \
 	test-nodekey-null-leniency-conformance \
+	test-blob-backend-discriminator-conformance \
 	test-reliable-sync-conformance \
 	test-durable-outbox \
 	test-collections-conformance \
@@ -80,7 +81,7 @@ test-ingress-family-conformance \
 	instrumentation-profile \
 	benchmark-spread
 
-check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-json-base64 test-ipc-conformance test-codec-roundtrip-conformance test-nodeid-exact-range-conformance test-nodekey-null-leniency-conformance test-reliable-sync-conformance test-durable-outbox test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-ingress-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-evidence benchmark-check conformance-coverage ci-reach
+check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-json-base64 test-ipc-conformance test-codec-roundtrip-conformance test-nodeid-exact-range-conformance test-nodekey-null-leniency-conformance test-blob-backend-discriminator-conformance test-reliable-sync-conformance test-durable-outbox test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-ingress-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-evidence benchmark-check conformance-coverage ci-reach
 
 fmt:
 >$(CARGO) fmt --all --check
@@ -201,6 +202,20 @@ test-nodeid-exact-range-conformance:
 # absent and writing it back out is a correct decode with a broken encoder.
 test-nodekey-null-leniency-conformance:
 >$(CARGO) test --locked --features ipc,ipc-msgpack --test nodekey_null_leniency_conformance
+
+# Blob-backend discriminator strictness (#lzblobbackendstrict): replays
+# ../lazily-spec/conformance/codec/blob_backend_discriminator.json. An OMITTED
+# `backend` MUST decode as `shm` — that absence is the forward-compat channel,
+# and the only one — while a PRESENT value outside {shm, arrow, in_process} MUST
+# be rejected NAMING the token, never normalized. Normalizing routes a foreign
+# descriptor into the shm arena, which is the misroute `resolve_wrong_backend`
+# forbids; it swaps a guarantee discharged structurally by routing for one
+# discharged probabilistically by a checksum. The runner also re-encodes and
+# inspects field PRESENCE, because rejecting the unknown token and then emitting
+# `backend: "shm"` is a conforming decoder with a broken encoder. Both codecs,
+# same reason as above.
+test-blob-backend-discriminator-conformance:
+>$(CARGO) test --locked --features ipc,ipc-msgpack --test blob_backend_discriminator_conformance
 
 # Reliable sync (#lzsync): ResyncCoordinator / DurableOutbox / OR-set-LWW
 # liveness + the ResyncRequest/OutboxAck control-frame codec round-trip. Replays

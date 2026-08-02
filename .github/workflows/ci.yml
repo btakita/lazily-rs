@@ -258,6 +258,18 @@ jobs:
           test -f ../lazily-spec/conformance/codec/nodekey_null_leniency.json || { echo "::error::../lazily-spec/conformance/codec/nodekey_null_leniency.json missing — nodekey_null_leniency_conformance.rs cannot run"; exit 1; }
           cargo +stable test --locked --features ipc,ipc-msgpack --test nodekey_null_leniency_conformance
 
+      # Blob-backend discriminator strictness (#lzblobbackendstrict). The
+      # `backend` field's two forms get OPPOSITE answers: an OMITTED value MUST
+      # decode as `shm` — that absence is the forward-compat channel, and the
+      # only one — while a PRESENT value outside {shm, arrow, in_process} MUST be
+      # rejected NAMING the token, never normalized, because normalizing routes a
+      # foreign descriptor into the shm arena. The encoder half is checked too:
+      # `backend` must be omitted for `shm` and emitted for `arrow`.
+      - name: Test blob-backend discriminator strictness against canonical spec fixtures
+        run: |
+          test -f ../lazily-spec/conformance/codec/blob_backend_discriminator.json || { echo "::error::../lazily-spec/conformance/codec/blob_backend_discriminator.json missing — blob_backend_discriminator_conformance.rs cannot run"; exit 1; }
+          cargo +stable test --locked --features ipc,ipc-msgpack --test blob_backend_discriminator_conformance
+
       - name: Test reliable-sync conformance against canonical spec fixtures
         run: |
           test -d ../lazily-spec/conformance/reliable-sync || { echo "::error::../lazily-spec/conformance/reliable-sync missing — reliable_sync_conformance.rs cannot run"; exit 1; }
