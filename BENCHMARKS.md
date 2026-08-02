@@ -861,7 +861,7 @@ and large fan-out benefit most.
 
 lazily is implemented across three languages with shared semantics:
 
-| | [lazily-rs](https://crates.io/crates/lazily) | [lazily-zig](https://github.com/btakita/lazily-zig) | [lazily-py](https://github.com/btakita/lazily-py) |
+| | [lazily-rs](https://crates.io/crates/lazily) | [lazily-zig](https://github.com/lazily-hub/lazily-zig) | [lazily-py](https://github.com/lazily-hub/lazily-py) |
 |---|---|---|---|
 | Context | Owned `Context` struct | Explicit allocator | Plain `dict` |
 | Slot creation | `Box<dyn Fn>` closures | `comptime` function pointers | Lambdas |
@@ -871,8 +871,8 @@ lazily is implemented across three languages with shared semantics:
 
 ## Related
 
-- [lazily-zig](https://github.com/btakita/lazily-zig) — Zig implementation with FFI support
-- [lazily-py](https://github.com/btakita/lazily-py) — Python implementation with context-as-dict
+- [lazily-zig](https://github.com/lazily-hub/lazily-zig) — Zig implementation with FFI support
+- [lazily-py](https://github.com/lazily-hub/lazily-py) — Python implementation with context-as-dict
 - [Blog post: Lazily — Reactive Primitives Done Right](https://briantakita.me/posts/lazily-reactive-signals)
 
 ## License

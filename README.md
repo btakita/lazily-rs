@@ -100,8 +100,8 @@ canonical matrix with per-cell notes and platform carve-outs lives in
 <!-- coverage-table:end -->
 
 CRDT convergence and the wire protocol are pinned by the shared conformance fixtures
-and JSON Schemas in [`lazily-spec`](../lazily-spec) and the Lean models in
-[`lazily-formal`](../lazily-formal).
+and JSON Schemas in [`lazily-spec`](https://github.com/lazily-hub/lazily-spec) and the Lean models in
+[`lazily-formal`](https://github.com/lazily-hub/lazily-formal).
 
 ## Development
 
@@ -587,7 +587,7 @@ LAZILY_SCALE_N=5000000 cargo bench --features scale-bench --bench scale   # Goog
 
 lazily is implemented across three languages with shared semantics:
 
-| | [lazily-rs](https://crates.io/crates/lazily) | [lazily-zig](https://github.com/btakita/lazily-zig) | [lazily-py](https://github.com/btakita/lazily-py) |
+| | [lazily-rs](https://crates.io/crates/lazily) | [lazily-zig](https://github.com/lazily-hub/lazily-zig) | [lazily-py](https://github.com/lazily-hub/lazily-py) |
 |---|---|---|---|
 | Context | Owned `Context` struct | Explicit allocator | Plain `dict` |
 | Slot creation | `Box<dyn Fn>` closures | `comptime` function pointers | Lambdas |
@@ -623,8 +623,8 @@ and ships a small `ShmBlobRef` descriptor; the receiver **resolves** the
 descriptor against the same backend and reads the bytes in place — no copy, no
 checksum recompute.
 
-Spec: [`lazily-spec/docs/zero-copy-transport.md`](../lazily-spec/docs/zero-copy-transport.md).
-Formal: [`lazily-formal/LazilyFormal/ZeroCopyTransport.lean`](../lazily-formal/LazilyFormal/ZeroCopyTransport.lean)
+Spec: [`lazily-spec/docs/zero-copy-transport.md`](https://github.com/lazily-hub/lazily-spec/blob/main/docs/zero-copy-transport.md).
+Formal: [`lazily-formal/LazilyFormal/ZeroCopyTransport.lean`](https://github.com/lazily-hub/lazily-formal/blob/main/LazilyFormal/ZeroCopyTransport.lean)
 — proves spill-then-resolve identity, backend isolation, ABA/generation safety,
 and checksum integrity for **any** backend satisfying the contract.
 
@@ -699,8 +699,8 @@ table would.
 
 - [lazily-spec](https://github.com/lazily-hub/lazily-spec) — language-agnostic wire protocol + conformance fixtures shared by every binding
 - [lazily-formal](https://github.com/lazily-hub/lazily-formal) — Lean 4 formal model (flat FSM kernel, full Harel state chart, reactive graph kernel, keyed collections, ordered tree, LIS reconciliation, async slot state) with universal proofs every binding inherits
-- [lazily-zig](https://github.com/btakita/lazily-zig) — Zig implementation with FFI support
-- [lazily-py](https://github.com/btakita/lazily-py) — Python implementation with context-as-dict
+- [lazily-zig](https://github.com/lazily-hub/lazily-zig) — Zig implementation with FFI support
+- [lazily-py](https://github.com/lazily-hub/lazily-py) — Python implementation with context-as-dict
 - [Blog post: Lazily — Reactive Primitives Done Right](https://briantakita.me/posts/lazily-reactive-signals)
 
 ## License

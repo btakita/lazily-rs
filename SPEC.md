@@ -2132,7 +2132,7 @@ the frontier advertisement (metadata, not node content) so the receiver still co
 sound watermark. Convergence (`merge` is a commutative/associative/idempotent semilattice)
 and the watermark/GC safety contract (a collectable tombstone is observed by every replica)
 are formally proven in `../lazily-spec/formal/lean/LazilyFormal/CRDT.lean` and documented in
-[`protocol.md`](../lazily-spec/protocol.md) §Distributed.
+[`protocol.md`](https://github.com/lazily-hub/lazily-spec/blob/main/protocol.md) §Distributed.
 
 The wire format, codec round-trips, permission filtering, and point-to-point
 `IpcSink`/`IpcSource` delivery land in `#lzcrdtplane5a`.
