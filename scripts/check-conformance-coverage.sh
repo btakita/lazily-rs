@@ -134,6 +134,13 @@ done <<< "$OPENED"
 # fixture in the opened set" can drift apart, and then the guard contradicts
 # itself about the same string.
 for known in "${KNOWN_UNCOVERED[@]:-}"; do
+  # `"${arr[@]:-}"` on an EMPTY array expands to one empty string, not to
+  # nothing. Without this guard the loop then tests `-f "$SPEC_DIR/"` — a
+  # directory, so not a file — and reports `KNOWN_UNCOVERED lists ''`. That
+  # fires exactly when this list finally reaches zero entries, which is the
+  # stated goal of shrinking it. The KNOWN_UNREPLAYED_SCENARIOS leg already
+  # guards this; this one did not.
+  [ -n "$known" ] || continue
   if [ ! -f "$SPEC_DIR/$known" ]; then
     echo "ERROR: KNOWN_UNCOVERED lists '$known', which is not in the canonical corpus." >&2
     missing=$((missing + 1))
