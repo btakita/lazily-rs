@@ -156,6 +156,11 @@ fn discovery() {
         exp.assert_key_with("discovery", |want| {
             assert_eq!(d.discovery(&ctx), want_map(want), "map for {step}");
         });
+        // The comparison above is already a whole-map equality in both
+        // directions, but the tracker cannot see inside the closure; the KEY SET
+        // is stated explicitly so the finish-time guard is satisfied
+        // structurally rather than by inspection (`#lzsubblockkeyset`).
+        exp.assert_key_set("discovery", d.discovery(&ctx).into_keys());
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
         inv.assert_key_at("discovery", !was, &format!("step {step}"));
@@ -195,6 +200,11 @@ fn service_registry() {
                 "projection for {step}"
             );
         });
+        // The comparison above is already a whole-map equality in both
+        // directions, but the tracker cannot see inside the closure; the KEY SET
+        // is stated explicitly so the finish-time guard is satisfied
+        // structurally rather than by inspection (`#lzsubblockkeyset`).
+        exp.assert_key_set("projection", reg.projection(&ctx).into_keys());
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
         inv.assert_key_at("projection", !was, &format!("step {step}"));

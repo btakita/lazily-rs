@@ -227,14 +227,15 @@ fn run_seqcrdt_fixture(name: &str) {
                 &format!("scenario {i}"),
             );
         });
-        expect.assert_key_if_present("get", |want| {
-            for (id, val) in want.as_object().expect("get") {
+        // DESCENT (`#lzsubblockkeyset`): the element ids are the child's keys.
+        if let Some(get) = expect.sub_if_present("get") {
+            for id in get.raw().as_object().expect("get").keys() {
                 let got = replicas["a"]
                     .get(&id.to_string())
                     .unwrap_or_else(|| panic!("scenario {i}: get({id}) missing"));
-                assert_eq!(got, *val, "scenario {i}: get({id}) mismatch");
+                get.assert_key_at(id.as_str(), got, &format!("scenario {i}.get"));
             }
-        });
+        }
         expect.assert_key_if_present("len", |want| {
             assert_eq!(
                 replicas[target].values().len() as u64,
@@ -253,25 +254,50 @@ fn run_seqcrdt_fixture(name: &str) {
                 );
             }
         });
-        expect.assert_key_if_present("order_on", |want| {
-            for (name, order) in want.as_object().expect("order_on") {
-                assert_order(
-                    &replicas[name],
-                    order.as_array().unwrap(),
-                    &format!("scenario {i} on `{name}`"),
-                );
+        // DESCENT (`#lzsubblockkeyset`): the replica names are the child's keys.
+        if let Some(order_on) = expect.sub_if_present("order_on") {
+            let names: Vec<String> = order_on
+                .raw()
+                .as_object()
+                .expect("order_on")
+                .keys()
+                .cloned()
+                .collect();
+            for name in &names {
+                order_on.assert_key_with(name.as_str(), |order| {
+                    assert_order(
+                        &replicas[name],
+                        order.as_array().unwrap(),
+                        &format!("scenario {i} on `{name}`"),
+                    );
+                });
             }
-        });
-        expect.assert_key_if_present("get_on", |want| {
-            for (name, gets) in want.as_object().expect("get_on") {
-                for (id, val) in gets.as_object().unwrap() {
+        }
+        // DESCENT twice: replica name, then element id.
+        if let Some(get_on) = expect.sub_if_present("get_on") {
+            let names: Vec<String> = get_on
+                .raw()
+                .as_object()
+                .expect("get_on")
+                .keys()
+                .cloned()
+                .collect();
+            for name in &names {
+                let gets = get_on.sub(name);
+                let ids: Vec<String> = gets.raw().as_object().unwrap().keys().cloned().collect();
+                for id in &ids {
                     let got = replicas[name]
                         .get(&id.to_string())
                         .unwrap_or_else(|| panic!("scenario {i}: get_on({name},{id}) missing"));
-                    assert_eq!(got, *val, "scenario {i}: get_on({name},{id}) mismatch");
+                    gets.assert_key_at(
+                        id.as_str(),
+                        got,
+                        &format!("scenario {i}: get_on({name},{id})"),
+                    );
                 }
+                gets.finish();
             }
-        });
+        }
         expect.assert_key_if_present("contains_all", |want| {
             for id in want.as_array().expect("contains_all") {
                 let s = id.as_str().unwrap();
@@ -281,17 +307,27 @@ fn run_seqcrdt_fixture(name: &str) {
                 );
             }
         });
-        expect.assert_key_if_present("not_contains_on", |want| {
-            for (name, ids) in want.as_object().expect("not_contains_on") {
-                for id in ids.as_array().unwrap() {
-                    let s = id.as_str().unwrap();
-                    assert!(
-                        !replicas[name].contains(&s.to_string()),
-                        "scenario {i}: `{name}` should not contain `{s}`"
-                    );
-                }
+        // DESCENT (`#lzsubblockkeyset`): the replica names are the child's keys.
+        if let Some(not_contains_on) = expect.sub_if_present("not_contains_on") {
+            let names: Vec<String> = not_contains_on
+                .raw()
+                .as_object()
+                .expect("not_contains_on")
+                .keys()
+                .cloned()
+                .collect();
+            for name in &names {
+                not_contains_on.assert_key_with(name.as_str(), |ids| {
+                    for id in ids.as_array().unwrap() {
+                        let s = id.as_str().unwrap();
+                        assert!(
+                            !replicas[name].contains(&s.to_string()),
+                            "scenario {i}: `{name}` should not contain `{s}`"
+                        );
+                    }
+                });
             }
-        });
+        }
     }
 }
 

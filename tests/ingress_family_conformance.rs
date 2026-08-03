@@ -453,12 +453,22 @@ fn assert_state<Model: IngressModel>(
     keys: &[String],
     where_: &str,
 ) {
-    // `scopes` is keyed by SCOPE NAME — data, not assertion names — so it is
-    // compared wholesale; each scope's RECORD is guarded, because those keys
-    // (`lifecycle`, `window`, `readiness`, ...) are assertion names.
-    expected.assert_key_with("scopes", |scopes| {
-        for (key, want) in scopes.as_object().expect("scopes") {
-            let want = expected.nested(format!("scopes.{key}"), want);
+    // `scopes` is keyed by SCOPE NAME — data, not assertion names — but it is an
+    // OBJECT value, so it is consumed by DESCENT (`#lzsubblockkeyset`): a scope
+    // the corpus adds fails as an unconsumed key. Each scope's RECORD is then
+    // guarded in turn, because those keys (`lifecycle`, `window`, `readiness`,
+    // ...) are assertion names.
+    {
+        let scopes = expected.sub("scopes");
+        let scope_keys: Vec<String> = scopes
+            .raw()
+            .as_object()
+            .expect("scopes")
+            .keys()
+            .cloned()
+            .collect();
+        for key in &scope_keys {
+            let want = scopes.sub(key);
             let view = model
                 .view(key)
                 .unwrap_or_else(|| panic!("{where_}: scope {key} absent"));
@@ -497,34 +507,47 @@ fn assert_state<Model: IngressModel>(
                     "{where_}: {key} readiness"
                 )
             });
+            // `authority` and `retry` are RECORD values, so both descend
+            // (`#lzsubblockkeyset`): the previous form read three named fields
+            // out of each object and a fourth added upstream would have been
+            // compared by nothing. A null value carries no sub-keys, so the
+            // child is inert and the absence itself is what gets asserted.
             let authority = model.authority(key);
-            want.assert_key_with("authority", |w| match w.as_object() {
+            let want_authority = want.sub("authority");
+            match want_authority.raw().as_object() {
                 None => assert_eq!(authority, None, "{where_}: {key} authority"),
-                Some(w) => assert_eq!(
-                    authority,
-                    Some(IngressAuthority {
-                        generation: w["generation"].as_u64().expect("generation"),
-                        delivered_through: w["delivered_through"].as_u64(),
-                        stamped_at: w["stamped_at"].as_u64().expect("stamped_at"),
-                    }),
-                    "{where_}: {key} authority"
-                ),
-            });
+                Some(_) => {
+                    let got =
+                        authority.unwrap_or_else(|| panic!("{where_}: {key} authority absent"));
+                    let at = format!("{where_}: {key} authority");
+                    want_authority.assert_key_at("generation", got.generation, &at);
+                    want_authority.assert_key_at(
+                        "delivered_through",
+                        serde_json::to_value(got.delivered_through).expect("watermark"),
+                        &at,
+                    );
+                    want_authority.assert_key_at("stamped_at", got.stamped_at, &at);
+                }
+            }
+            want_authority.finish();
+
             let retry = model.retry(key);
-            want.assert_key_with("retry", |w| match w.as_object() {
+            let want_retry = want.sub("retry");
+            match want_retry.raw().as_object() {
                 None => assert_eq!(retry, None, "{where_}: {key} retry"),
-                Some(w) => assert_eq!(
-                    retry,
-                    Some(IngressRetry {
-                        attempt: w["attempt"].as_u64().expect("attempt") as u32,
-                        backoff: w["backoff"].as_u64().expect("backoff"),
-                        resume_from: w["resume_from"].as_u64().expect("resume_from"),
-                    }),
-                    "{where_}: {key} retry"
-                ),
-            });
+                Some(_) => {
+                    let got = retry.unwrap_or_else(|| panic!("{where_}: {key} retry absent"));
+                    let at = format!("{where_}: {key} retry");
+                    want_retry.assert_key_at("attempt", got.attempt as u64, &at);
+                    want_retry.assert_key_at("backoff", got.backoff, &at);
+                    want_retry.assert_key_at("resume_from", got.resume_from, &at);
+                }
+            }
+            want_retry.finish();
+            want.finish();
         }
-    });
+        scopes.finish();
+    }
 
     let receipts = expected.sub("receipts");
     receipts.assert_key_at(
@@ -554,24 +577,34 @@ fn assert_invalidation(
 ) {
     let want = expected.sub("invalidates");
     const KINDS: [&str; 4] = ["value", "readiness", "authority", "retry"];
-    want.assert_key_with("scopes", |scopes| {
-        for (key, want_scope) in scopes.as_object().expect("invalidates.scopes") {
-            let want_scope = want.nested(format!("scopes.{key}"), want_scope);
-            let before_scope = before.scopes.get(key).expect("probed key");
-            let after_scope = after.scopes.get(key).expect("probed key");
-            for (slot, kind) in KINDS.iter().enumerate() {
-                let invalidated = before_scope[slot] && !after_scope[slot];
-                want_scope.assert_key_at(
-                    kind,
-                    invalidated,
-                    &format!(
-                        "{where_}: {key}.{kind} invalidation (was valid={}, now valid={})",
-                        before_scope[slot], after_scope[slot]
-                    ),
-                );
-            }
+    // DESCENT (`#lzsubblockkeyset`): a scope the corpus adds to the
+    // invalidation matrix must fail as an unconsumed key.
+    let scopes = want.sub("scopes");
+    let scope_keys: Vec<String> = scopes
+        .raw()
+        .as_object()
+        .expect("invalidates.scopes")
+        .keys()
+        .cloned()
+        .collect();
+    for key in &scope_keys {
+        let want_scope = scopes.sub(key);
+        let before_scope = before.scopes.get(key).expect("probed key");
+        let after_scope = after.scopes.get(key).expect("probed key");
+        for (slot, kind) in KINDS.iter().enumerate() {
+            let invalidated = before_scope[slot] && !after_scope[slot];
+            want_scope.assert_key_at(
+                kind,
+                invalidated,
+                &format!(
+                    "{where_}: {key}.{kind} invalidation (was valid={}, now valid={})",
+                    before_scope[slot], after_scope[slot]
+                ),
+            );
         }
-    });
+        want_scope.finish();
+    }
+    scopes.finish();
     const CHANNELS: [&str; 3] = ["accepted", "dropped", "error"];
     let want_receipts = want.sub("receipts");
     for (slot, channel) in CHANNELS.iter().enumerate() {

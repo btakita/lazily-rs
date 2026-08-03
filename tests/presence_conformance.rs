@@ -78,6 +78,11 @@ fn presence() {
         exp.assert_key_with("present", |want| {
             assert_eq!(cell.present(&ctx), want_map(want), "present after {op}")
         });
+        // The comparison above is already a whole-map equality in both
+        // directions, but the tracker cannot see inside the closure; the KEY SET
+        // is stated explicitly so the finish-time guard is satisfied
+        // structurally rather than by inspection (`#lzsubblockkeyset`).
+        exp.assert_key_set("present", cell.present(&ctx).keys().map(u64::to_string));
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
         inv.assert_key_at("present", !was, &format!("op {op}"));
@@ -115,6 +120,11 @@ fn awareness() {
         exp.assert_key_with("present", |want| {
             assert_eq!(cell.present(&ctx), want_map(want), "present after {op}")
         });
+        // The comparison above is already a whole-map equality in both
+        // directions, but the tracker cannot see inside the closure; the KEY SET
+        // is stated explicitly so the finish-time guard is satisfied
+        // structurally rather than by inspection (`#lzsubblockkeyset`).
+        exp.assert_key_set("present", cell.present(&ctx).keys().map(u64::to_string));
         let was = ctx.is_set(&observed);
         let _ = observed.get(&ctx);
         inv.assert_key_at("present", !was, &format!("op {op}"));

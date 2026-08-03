@@ -127,25 +127,29 @@ fn materialize_all(ctx: &Context, readers: &Readers) {
 /// **absent** from `invalidates` is not asserted — fixtures that focus on one
 /// reader kind (e.g. `popped_head_observation`) only declare the kind under
 /// test, so absence means "don't check", not "must be false".
-fn assert_invalidation(ctx: &Context, readers: &Readers, invalidates: &Value) {
+fn assert_invalidation(ctx: &Context, readers: &Readers, invalidates: &Expect) {
+    // DESCENT (`#lzsubblockkeyset`). The matrix is an OBJECT value, and the
+    // shape below — a fixed list of `check` calls the runner knows about — is
+    // exactly the defect: a reader kind the corpus adds would be read by nobody
+    // and compared by nothing, while every guard above reported clean. Routing
+    // each kind through the child tracker makes the omission an unconsumed key.
     let check = |name: &str, reader: &Reader| {
         // Only assert reader kinds the fixture explicitly declares.
-        let Some(node) = invalidates.get(name) else {
-            return;
-        };
-        let expected_inv = node.as_bool().unwrap_or(false);
-        let cached = ctx.is_set(reader);
-        if expected_inv {
-            assert!(
-                !cached,
-                "reader `{name}` should have been invalidated but stayed cached"
-            );
-        } else {
-            assert!(
-                cached,
-                "reader `{name}` should have stayed cached but was invalidated"
-            );
-        }
+        invalidates.assert_key_if_present(name, |node| {
+            let expected_inv = node.as_bool().unwrap_or(false);
+            let cached = ctx.is_set(reader);
+            if expected_inv {
+                assert!(
+                    !cached,
+                    "reader `{name}` should have been invalidated but stayed cached"
+                );
+            } else {
+                assert!(
+                    cached,
+                    "reader `{name}` should have stayed cached but was invalidated"
+                );
+            }
+        });
     };
 
     check("head", &readers.head);
@@ -286,9 +290,9 @@ fn run_fixture(ctx: &Context, name: &str, fixture: &Value) {
         }
 
         // Assert the per-reader-kind invalidation matrix.
-        expected.assert_key_if_present("invalidates", |want| {
-            assert_invalidation(ctx, &readers, want)
-        });
+        if let Some(invalidates) = expected.sub_if_present("invalidates") {
+            assert_invalidation(ctx, &readers, &invalidates);
+        }
     }
 }
 

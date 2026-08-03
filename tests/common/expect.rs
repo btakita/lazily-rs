@@ -82,6 +82,38 @@
 //! data keys would report a fixture's payload as an unconsumed assertion, which
 //! is noise, not a finding.
 //!
+//! # Object-valued keys must be checked by their KEY SET (`#lzsubblockkeyset`)
+//!
+//! Everything above is about the keys of a *block*. An assertion key whose VALUE
+//! is itself a JSON object has the same defect one level down: a runner that
+//! compares five named sub-fields and stops leaves a sixth, added upstream,
+//! compared by nothing. This is the null form **inside** an assertion key rather
+//! than beside one, and no rung above can see it — the parent key is read,
+//! asserted, and consumed, so every guard reports clean.
+//!
+//! Found by the `#lznullformblind` perturbation pass in lazily-zig: planting a
+//! key inside `arena_blob.json`'s `assertions.descriptor` left the suite green
+//! while every scalar sibling reddened.
+//!
+//! The cheap fix is a field count at each call site, and it is the wrong one —
+//! it holds only while every site remembers. So the TRACKER holds an
+//! object-valued key's key set the way it already holds the block's. Three
+//! entry points satisfy the obligation:
+//!
+//! | entry point | how the key set is checked |
+//! |---|---|
+//! | [`Expect::sub`] | the child tracker owns every key beneath, so an unrecognised sub-key is an unconsumed key |
+//! | [`Expect::assert_key_set`] | the fixture's key set compared, both directions, against the set the run produced |
+//! | [`Expect::assert_key`] / [`Expect::assert_key_at`] | whole-`Value` equality subsumes key-set equality — a planted key changes the object |
+//!
+//! and [`Expect::check`] FAILS at drop for any object-valued key consumed
+//! through [`Expect::assert_key_with`], [`Expect::assert_key_if_present`] or a
+//! bare [`Expect::get`] without one of the three. That is the whole point: a
+//! call site that reaches for the opaque entry point on an object value gets a
+//! red suite instead of a silent hole. The excuse and prose channels stay
+//! available for a key that genuinely carries no key-set obligation, and both
+//! already require a recorded reason.
+//!
 //! # Exceptions
 //!
 //! [`Expect::excuse_key`] marks a key satisfied without asserting it. It is for a
@@ -432,6 +464,10 @@ pub struct Expect<'a> {
     declared: BTreeSet<String>,
     claims: RefCell<Vec<Claim>>,
     descended: RefCell<BTreeSet<String>>,
+    /// Keys whose object VALUE had its key set checked (`#lzsubblockkeyset`) —
+    /// by whole-`Value` equality or by [`Expect::assert_key_set`]. Descent is
+    /// tracked separately in `descended`, and satisfies the same obligation.
+    key_set_checked: RefCell<BTreeSet<String>>,
     armed: Cell<bool>,
 }
 
@@ -474,6 +510,7 @@ impl<'a> Expect<'a> {
             declared,
             claims: RefCell::new(Vec::new()),
             descended: RefCell::new(BTreeSet::new()),
+            key_set_checked: RefCell::new(BTreeSet::new()),
             armed: Cell::new(true),
         }
     }
@@ -514,6 +551,11 @@ impl<'a> Expect<'a> {
     /// message when the same key is asserted from several places.
     pub fn assert_key_at(&self, key: &str, actual: impl Into<Value>, where_: &str) {
         let want = self.mark_asserted(key);
+        // Whole-`Value` equality subsumes key-set equality: a key planted inside
+        // an object value changes the object, so this comparison already sees it
+        // (`#lzsubblockkeyset`). Recorded so the finish-time guard below can
+        // tell it apart from the opaque `assert_key_with` path, which cannot.
+        self.key_set_checked.borrow_mut().insert(key.to_owned());
         let got: Value = actual.into();
         if &got != want {
             let at = if where_.is_empty() {
@@ -558,6 +600,51 @@ impl<'a> Expect<'a> {
         Some(self.assert_key_with(key, check))
     }
 
+    /// Consume the object-valued key `key` by comparing its KEY SET against the
+    /// set the run actually produced (`#lzsubblockkeyset`).
+    ///
+    /// For an object whose keys are a VOCABULARY rather than a record — the
+    /// outcome tokens a replay loop really dispatched on, the backends a decoder
+    /// really accepted — where the values are glosses nothing can compare. Set
+    /// equality runs in BOTH directions: a fixture token nothing replayed and a
+    /// replayed token the fixture omits are both failures, and the second is the
+    /// one a per-token loop over `v.as_object()` cannot see.
+    ///
+    /// The alternative for an object whose sub-keys are themselves assertion
+    /// NAMES is [`Expect::sub`], which moves the obligation down instead of
+    /// discharging it here.
+    pub fn assert_key_set<I, S>(&self, key: &str, produced: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let want = self.mark_asserted(key);
+        self.key_set_checked.borrow_mut().insert(key.to_owned());
+        let declared: BTreeSet<String> = want
+            .as_object()
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: `{}.{}` was consumed with assert_key_set but its fixture value \
+                     is not a JSON object (#lzsubblockkeyset)",
+                    self.fixture, self.label, key
+                )
+            })
+            .keys()
+            .cloned()
+            .collect();
+        let produced: BTreeSet<String> = produced.into_iter().map(Into::into).collect();
+        if declared != produced {
+            let unreplayed: Vec<&String> = declared.difference(&produced).collect();
+            let undeclared: Vec<&String> = produced.difference(&declared).collect();
+            panic!(
+                "{}: `{}.{}` key set mismatch (#lzsubblockkeyset). The fixture declares \
+                 {declared:?}; this run produced {produced:?}. Declared but never produced: \
+                 {unreplayed:?}. Produced but not declared: {undeclared:?}.",
+                self.fixture, self.label, key
+            );
+        }
+    }
+
     /// Record `key` as read and guard the nested object under it as well.
     ///
     /// The parent key is satisfied structurally: the returned child owns the drop
@@ -571,6 +658,17 @@ impl<'a> Expect<'a> {
             format!("{}.{}", self.label, key),
             child,
         )
+    }
+
+    /// [`Expect::sub`], but only when the block actually carries `key`.
+    ///
+    /// The optional-key counterpart of `sub`, for the same reason
+    /// [`Expect::assert_key_if_present`] exists: an absent key carries no
+    /// obligation, and descending into `Value::Null` would report an empty child
+    /// as satisfied while marking the parent consumed.
+    pub fn sub_if_present(&self, key: &str) -> Option<Expect<'a>> {
+        self.value.get(key)?;
+        Some(self.sub(key))
     }
 
     /// Guard an object nested inside `self`'s subtree that `self` already
@@ -700,6 +798,35 @@ impl<'a> Expect<'a> {
             .collect()
     }
 
+    /// Object-valued keys this run consumed WITHOUT checking their key set
+    /// (`#lzsubblockkeyset`) — the null form one level down.
+    ///
+    /// A key qualifies when the fixture's value for it is a JSON object, the run
+    /// touched it, and it reached none of `sub` / `assert_key_set` /
+    /// `assert_key`. Excused and discharged keys are out: both already record a
+    /// reason at the call site.
+    pub fn object_keys_without_key_set_check(&self) -> Vec<String> {
+        let Some(obj) = self.value.as_object() else {
+            return Vec::new();
+        };
+        let descended = self.descended.borrow();
+        let checked = self.key_set_checked.borrow();
+        let excused = self.excused.borrow();
+        let discharged = self.discharged.borrow();
+        obj.iter()
+            .filter(|(k, v)| {
+                v.is_object()
+                    && self.touched(k)
+                    && !descended.contains(k.as_str())
+                    && !checked.contains(k.as_str())
+                    && !excused.contains_key(k.as_str())
+                    && !discharged.contains(k.as_str())
+                    && !self.annotation_exempt(k)
+            })
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
     /// Keys carrying an excuse that the same run also asserted.
     pub fn stale_excuses(&self) -> Vec<String> {
         let asserted = self.asserted.borrow();
@@ -809,6 +936,20 @@ impl<'a> Expect<'a> {
                  genuinely does not exist here, record it with \
                  Expect::excuse_key and say why.",
                 self.fixture, missed, self.label
+            );
+        }
+        let unchecked = self.object_keys_without_key_set_check();
+        if !unchecked.is_empty() {
+            panic!(
+                "{}: object-valued key(s) {:?} in `{}` were consumed WITHOUT a key-set \
+                 check (#lzsubblockkeyset). The value is a JSON object, so a field added \
+                 to it upstream would be compared by nothing — the null form one level \
+                 down, inside an assertion key rather than beside one. Descend with \
+                 Expect::sub (the child then owns every sub-key), compare the vocabulary \
+                 with Expect::assert_key_set, or compare the whole value with \
+                 Expect::assert_key. A per-call-site field count is NOT a fix — it holds \
+                 only while every site remembers.",
+                self.fixture, unchecked, self.label
             );
         }
     }

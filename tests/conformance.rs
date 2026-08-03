@@ -614,11 +614,26 @@ fn conformance_arena_blob_descriptor_and_header() {
         "header length is part of the cross-language byte contract",
     );
     assert_u64(&a, "payload_len", fixture.input.payload.len() as u64);
-    a.assert_key_with("descriptor", |want| {
-        let want_descriptor: ArenaDescriptor =
-            serde_json::from_value(want.clone()).expect("assertions.descriptor");
-        assert_eq!(*expected, want_descriptor, "assertions vs expected agree");
-    });
+    // `descriptor` is the block's one OBJECT-valued key, so it is consumed by
+    // DESCENT (`#lzsubblockkeyset`): the child tracker owns every sub-key, and a
+    // field planted in the corpus fails as an unconsumed key. The previous form
+    // deserialized the whole object into `ArenaDescriptor` inside one
+    // `assert_key_with`; that reddened on a planted key only because the struct
+    // carries `#[serde(deny_unknown_fields)]` — an accident of a serde attribute
+    // on a struct this test happens to own, not a property of the tracker, and
+    // nothing would have reported its removal.
+    //
+    // Each sub-key is compared against the descriptor the ARENA produced, not
+    // against `expected.descriptor`; `expected` is itself asserted against `desc`
+    // above, so the fixture's two spellings still have to agree, transitively and
+    // through a run-derived value rather than fixture-versus-fixture.
+    let d = a.sub("descriptor");
+    d.assert_key("offset", desc.offset);
+    d.assert_key("len", desc.len);
+    d.assert_key("generation", desc.generation);
+    d.assert_key("epoch", desc.epoch);
+    d.assert_key("checksum", desc.checksum);
+    d.finish();
 
     // 40-byte LZSH header byte-identical across rs / py / zig.
     let bytes = arena.bytes();

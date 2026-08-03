@@ -564,32 +564,38 @@ async fn run_steps_fixture<M: MapModel>(name: &str) {
         });
 
         // -- handle stability (atomic move keeps node identity) ----------
-        expected.assert_key_if_present("handle_stable", |stable| {
-            for (key, want) in stable.as_object().expect("handle_stable") {
-                // A named skip here would be a read-then-discard
-                // (`#lzconsumednotasserted`): the corpus only ever claims
-                // stability, so `false` is a fixture this runner cannot check
-                // rather than a silent pass.
-                assert!(
-                    want.as_bool() == Some(true),
-                    "{flavor} step {i}: handle_stable{{{key}}}: only `true` has a \
-                     defined meaning here (got {want})"
-                );
-                let before = handles_before
-                    .get(key)
-                    .unwrap_or_else(|| panic!("no handle captured for `{key}` before op"));
-                let after = model.handle(key);
-                assert!(
-                    after.is_some(),
-                    "{flavor} step {i}: handle_stable{{{key}}} violated - handle missing after op"
-                );
-                assert_eq!(
-                    &after, before,
-                    "{flavor} step {i}: handle_stable{{{key}}} violated - node identity changed \
-                     across an atomic move (remove + re-mint instead of reorder)"
-                );
+        // DESCENT (`#lzsubblockkeyset`): `handle_stable` is an object value, so
+        // the child tracker owns every entry and a key planted in the corpus
+        // fails as an unconsumed key rather than being compared by nothing.
+        if let Some(stable) = expected.sub_if_present("handle_stable") {
+            for key in stable.raw().as_object().expect("handle_stable").keys() {
+                stable.assert_key_with(key.as_str(), |want| {
+                    // A named skip here would be a read-then-discard
+                    // (`#lzconsumednotasserted`): the corpus only ever claims
+                    // stability, so `false` is a fixture this runner cannot check
+                    // rather than a silent pass.
+                    assert!(
+                        want.as_bool() == Some(true),
+                        "{flavor} step {i}: handle_stable{{{key}}}: only `true` has a \
+                         defined meaning here (got {want})"
+                    );
+                    let before = handles_before
+                        .get(key)
+                        .unwrap_or_else(|| panic!("no handle captured for `{key}` before op"));
+                    let after = model.handle(key);
+                    assert!(
+                        after.is_some(),
+                        "{flavor} step {i}: handle_stable{{{key}}} violated - handle missing \
+                         after op"
+                    );
+                    assert_eq!(
+                        &after, before,
+                        "{flavor} step {i}: handle_stable{{{key}}} violated - node identity \
+                         changed across an atomic move (remove + re-mint instead of reorder)"
+                    );
+                });
             }
-        });
+        }
 
         // -- resulting state ---------------------------------------------
         expected.assert_key_if_present("order", |order| {
@@ -611,17 +617,17 @@ async fn run_steps_fixture<M: MapModel>(name: &str) {
             let got: HashSet<String> = model.keys().into_iter().collect();
             assert_eq!(got, want, "{flavor} step {i}: membership mismatch");
         });
-        expected.assert_key_if_present("values", |values| {
-            for (key, val) in values.as_object().expect("values") {
-                let want = val
-                    .as_i64()
-                    .unwrap_or_else(|| panic!("non-integer value for {key}"));
+        // DESCENT (`#lzsubblockkeyset`), same reason: each entry is compared
+        // inside the child tracker, so an entry the fixture adds is an
+        // unconsumed key rather than an uncompared one.
+        if let Some(values) = expected.sub_if_present("values") {
+            for key in values.raw().as_object().expect("values").keys() {
                 let got = model
                     .value(key)
                     .unwrap_or_else(|| panic!("{flavor} step {i}: missing key {key} after op"));
-                assert_eq!(got, want, "{flavor} step {i}: value mismatch for {key}");
+                values.assert_key_at(key.as_str(), got, &format!("{flavor} step {i}.values"));
             }
-        });
+        }
     }
 }
 

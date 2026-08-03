@@ -16,6 +16,18 @@ use super::model::{
     count_merge, dependencies_of, dependents_of, dispose, log_snapshot, merges_seen,
 };
 
+/// The node ids a descended per-node assertion block declares.
+///
+/// Collected up front so the child tracker can be borrowed inside the loop
+/// (`#lzsubblockkeyset`).
+fn node_ids(block: &Expect) -> Vec<String> {
+    block
+        .raw()
+        .as_object()
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
 /// A fixture assertion the implementation does not currently satisfy.
 #[derive(Debug)]
 pub struct Divergence {
@@ -669,37 +681,46 @@ pub fn replay<'a, M: GraphModel>(
         // Each sub-key is optional per fixture, so the comparison is bound to the
         // key's presence — `fin["k"].as_object().into_iter().flatten()` marked the
         // key consumed even when it iterated nothing (`#lzconsumednotasserted`).
-        fin.assert_key_if_present("dependents_of", |want| {
-            for (id, v) in want.as_object().into_iter().flatten() {
+        // DESCENT (`#lzsubblockkeyset`): each of these is an OBJECT keyed by node
+        // id, so the child tracker owns every id and a node the corpus adds fails
+        // as an unconsumed key rather than being compared by nothing.
+        if let Some(want) = fin.sub_if_present("dependents_of") {
+            for id in node_ids(&want) {
                 let got = degree!(id.as_str(), dependents_of);
-                check!(
-                    format!("final.dependents_of.{id}"),
-                    got,
-                    v.as_u64().unwrap() as usize
-                );
+                want.assert_key_with(id.as_str(), |v| {
+                    check!(
+                        format!("final.dependents_of.{id}"),
+                        got,
+                        v.as_u64().unwrap() as usize
+                    );
+                });
                 observation.degrees.insert(id.clone(), got);
             }
-        });
-        fin.assert_key_if_present("readable", |want| {
-            for (id, v) in want.as_object().into_iter().flatten() {
+        }
+        if let Some(want) = fin.sub_if_present("readable") {
+            for id in node_ids(&want) {
                 let alive = match nodes.get(id.as_str()) {
                     None => false,
                     Some(Ref::Effect(h)) => model.is_effect_active(*h),
                     Some(_) => read_id!(id.as_str()).is_ok(),
                 };
-                check!(format!("final.readable.{id}"), alive, v.as_bool().unwrap());
+                want.assert_key_with(id.as_str(), |v| {
+                    check!(format!("final.readable.{id}"), alive, v.as_bool().unwrap());
+                });
                 observation.readable.insert(id.clone(), alive);
             }
-        });
-        fin.assert_key_if_present("read", |want| {
-            for (id, v) in want.as_object().into_iter().flatten() {
+        }
+        if let Some(want) = fin.sub_if_present("read") {
+            for id in node_ids(&want) {
                 let got = read_id!(id.as_str());
-                check!(format!("final.read.{id}"), got, Ok(v.as_i64().unwrap()));
+                want.assert_key_with(id.as_str(), |v| {
+                    check!(format!("final.read.{id}"), got, Ok(v.as_i64().unwrap()));
+                });
                 observation
                     .reads
                     .insert(id.clone(), got.unwrap_or_default());
             }
-        });
+        }
 
         let publish = tail.sub("after_publish");
         if let Some(pop) = publish.raw().get("op") {
@@ -725,28 +746,34 @@ pub fn replay<'a, M: GraphModel>(
                     strs(want)
                 );
             });
-            publish.assert_key_if_present("read", |want| {
-                for (rid, v) in want.as_object().into_iter().flatten() {
+            // DESCENT (`#lzsubblockkeyset`), as for `final_state` above.
+            if let Some(want) = publish.sub_if_present("read") {
+                for rid in node_ids(&want) {
                     let got = read_id!(rid.as_str());
-                    check!(
-                        format!("after_publish.read.{rid}"),
-                        got,
-                        Ok(v.as_i64().unwrap())
-                    );
+                    want.assert_key_with(rid.as_str(), |v| {
+                        check!(
+                            format!("after_publish.read.{rid}"),
+                            got,
+                            Ok(v.as_i64().unwrap())
+                        );
+                    });
                     observation
                         .after_publish_reads
                         .insert(rid.clone(), got.unwrap_or_default());
                 }
-            });
-            publish.assert_key_if_present("dependents_of", |want| {
-                for (id, v) in want.as_object().into_iter().flatten() {
-                    check!(
-                        format!("after_publish.dependents_of.{id}"),
-                        degree!(id.as_str(), dependents_of),
-                        v.as_u64().unwrap() as usize
-                    );
+            }
+            if let Some(want) = publish.sub_if_present("dependents_of") {
+                for id in node_ids(&want) {
+                    let got = degree!(id.as_str(), dependents_of);
+                    want.assert_key_with(id.as_str(), |v| {
+                        check!(
+                            format!("after_publish.dependents_of.{id}"),
+                            got,
+                            v.as_u64().unwrap() as usize
+                        );
+                    });
                 }
-            });
+            }
         }
     }
 

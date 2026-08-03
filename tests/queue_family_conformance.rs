@@ -436,8 +436,10 @@ mod thread_safe_flavor {
                 &step["expected"],
             );
 
-            // `invalidates` BEFORE any read — reading revalidates.
-            expected.assert_key_if_present("invalidates", |inv| {
+            // `invalidates` BEFORE any read — reading revalidates. DESCENT
+            // (`#lzsubblockkeyset`): a reader kind the corpus adds must fail as
+            // an unconsumed key, not vanish past a fixed list of five.
+            if let Some(inv) = expected.sub_if_present("invalidates") {
                 for (key, node_valid) in [
                     ("head", ctx.is_set(&r.head)),
                     ("len", ctx.is_set(&r.len)),
@@ -445,15 +447,16 @@ mod thread_safe_flavor {
                     ("is_full", ctx.is_set(&r.is_full)),
                     ("closed", ctx.is_set(&r.closed)),
                 ] {
-                    if let Some(want) = inv.get(key).and_then(|v| v.as_bool()) {
+                    inv.assert_key_if_present(key, |want| {
                         assert_eq!(
-                            !node_valid, want,
+                            !node_valid,
+                            want.as_bool().expect("invalidates flag"),
                             "{name} step {i}: invalidates.{key} — thread-safe flavor \
                              disagrees with the canonical fixture"
                         );
-                    }
+                    });
                 }
-            });
+            }
 
             if let Some(want) = step.get("returns").and_then(|v| v.as_str()) {
                 let got = got_returns.as_deref().unwrap_or("");
@@ -726,22 +729,35 @@ mod async_flavor {
 
             // `invalidates` BEFORE any read — reading revalidates. `closed` is a
             // source rather than a derive, so it is asserted by value below.
-            expected.assert_key_if_present("invalidates", |inv| {
+            // DESCENT (`#lzsubblockkeyset`), as above.
+            if let Some(inv) = expected.sub_if_present("invalidates") {
                 for (key, node_valid) in [
                     ("head", ctx.is_set(&r.head)),
                     ("len", ctx.is_set(&r.len)),
                     ("is_empty", ctx.is_set(&r.is_empty)),
                     ("is_full", ctx.is_set(&r.is_full)),
                 ] {
-                    if let Some(want) = inv.get(key).and_then(|v| v.as_bool()) {
+                    inv.assert_key_if_present(key, |want| {
                         assert_eq!(
-                            !node_valid, want,
+                            !node_valid,
+                            want.as_bool().expect("invalidates flag"),
                             "{name} step {i}: invalidates.{key} — async flavor \
                              disagrees with the canonical fixture"
                         );
-                    }
+                    });
                 }
-            });
+                // `closed` is a source rather than a derive in the async
+                // flavor, so it is asserted by VALUE below rather than by
+                // cache validity; the key is excused here so the omission is
+                // written down instead of silently skipped.
+                if inv.raw().get("closed").is_some() {
+                    inv.excuse_key(
+                        "closed",
+                        "async flavor models `closed` as a source, not a derived reader; \
+                         asserted by value below",
+                    );
+                }
+            }
 
             if let Some(want) = step.get("returns").and_then(|v| v.as_str()) {
                 let got = got_returns.as_deref().unwrap_or("");
@@ -1008,17 +1024,20 @@ mod topic_flavors {
             );
 
             // `invalidates` BEFORE any read — a read revalidates the node.
-            expected.assert_key_if_present("invalidates", |inv| {
-                for (id, want) in inv.as_object().expect("invalidates object") {
-                    let want = want.as_bool().expect("invalidates flag");
-                    assert_eq!(
-                        !topic.is_reader_valid(id),
-                        want,
-                        "{flavor} {name} step {i}: invalidates.{id} disagrees with \
-                         the canonical fixture"
-                    );
+            // DESCENT (`#lzsubblockkeyset`): the subscriber ids are the child's
+            // keys, so each comparison is made inside the tracker.
+            if let Some(inv) = expected.sub_if_present("invalidates") {
+                for id in inv.raw().as_object().expect("invalidates object").keys() {
+                    inv.assert_key_with(id.as_str(), |want| {
+                        assert_eq!(
+                            !topic.is_reader_valid(id),
+                            want.as_bool().expect("invalidates flag"),
+                            "{flavor} {name} step {i}: invalidates.{id} disagrees with \
+                             the canonical fixture"
+                        );
+                    });
                 }
-            });
+            }
             assert!(
                 step.get("invalidates").is_none(),
                 "{name} step {i}: `invalidates` at STEP level would be silently \
@@ -1052,33 +1071,36 @@ mod topic_flavors {
                     "{flavor} {name} step {i}: retained elements"
                 );
             });
-            expected.assert_key_if_present("subscriptions", |subs| {
-                let subs = subs.as_object().expect("subscriptions object");
-                for (id, want) in subs {
+            // DESCENT twice over (`#lzsubblockkeyset`): `subscriptions` is keyed
+            // by subscriber id, and each subscriber's value is itself a RECORD
+            // whose keys are assertion names, so a field added to either level
+            // fails as an unconsumed key instead of being compared by nothing.
+            if let Some(subs) = expected.sub_if_present("subscriptions") {
+                let ids: Vec<String> = subs
+                    .raw()
+                    .as_object()
+                    .expect("subscriptions object")
+                    .keys()
+                    .cloned()
+                    .collect();
+                for id in &ids {
                     let got = topic.subscription(id).unwrap_or_else(|| {
                         panic!("{flavor} {name} step {i}: no subscription {id}")
                     });
-                    assert_eq!(
-                        got.cursor,
-                        want["cursor"].as_u64().expect("cursor"),
-                        "{flavor} {name} step {i}: {id}.cursor"
-                    );
-                    assert_eq!(
-                        got.connected,
-                        want["connected"].as_bool().expect("connected"),
-                        "{flavor} {name} step {i}: {id}.connected"
-                    );
-                    assert_eq!(
-                        got.durability,
-                        durability_of(&want["durability"]),
-                        "{flavor} {name} step {i}: {id}.durability"
-                    );
+                    let want = subs.sub(id);
+                    let at = format!("{flavor} {name} step {i}: {id}");
+                    want.assert_key_at("cursor", got.cursor, &at);
+                    want.assert_key_at("connected", got.connected, &at);
+                    want.assert_key_with("durability", |w| {
+                        assert_eq!(got.durability, durability_of(w), "{at}.durability");
+                    });
+                    want.finish();
                 }
                 // A subscription the fixture dropped must really be gone —
                 // otherwise an ephemeral disconnect that forgot to remove the
                 // record would still pass every positive assertion above.
                 for id in &known {
-                    if !subs.contains_key(id) {
+                    if !ids.contains(id) {
                         assert!(
                             topic.subscription(id).is_none(),
                             "{flavor} {name} step {i}: subscription {id} survived a \
@@ -1086,16 +1108,27 @@ mod topic_flavors {
                         );
                     }
                 }
-            });
-            expected.assert_key_if_present("reads", |reads| {
-                for (id, want) in reads.as_object().expect("reads object") {
-                    assert_eq!(
-                        topic.read_stream(id),
-                        strings(want),
-                        "{flavor} {name} step {i}: {id} read stream"
-                    );
+            }
+            // DESCENT (`#lzsubblockkeyset`): the subscriber ids are the child's
+            // keys, so each stream comparison happens inside the tracker.
+            if let Some(reads) = expected.sub_if_present("reads") {
+                let ids: Vec<String> = reads
+                    .raw()
+                    .as_object()
+                    .expect("reads object")
+                    .keys()
+                    .cloned()
+                    .collect();
+                for id in &ids {
+                    reads.assert_key_with(id.as_str(), |want| {
+                        assert_eq!(
+                            topic.read_stream(id),
+                            strings(want),
+                            "{flavor} {name} step {i}: {id} read stream"
+                        );
+                    });
                 }
-            });
+            }
         }
         steps.len()
     }
@@ -1610,18 +1643,22 @@ mod work_queue_flavors {
 
             // Invalidation BEFORE the value reads below, which revalidate.
             let validity = queue.reader_validity();
-            expected.assert_key_with("invalidates", |invalidates| {
-                for (kind, valid) in READER_KINDS.iter().zip(validity) {
-                    let want = invalidates[*kind]
-                        .as_bool()
-                        .unwrap_or_else(|| panic!("{name} step {i}: no invalidates.{kind}"));
+            // DESCENT (`#lzsubblockkeyset`): `READER_KINDS` is the runner's own
+            // list, so a kind the corpus adds outside it was compared by
+            // nothing; the child tracker now reports it as unconsumed.
+            let invalidates = expected.sub("invalidates");
+            for (kind, valid) in READER_KINDS.iter().zip(validity) {
+                invalidates.assert_key_with(kind, |want| {
                     assert_eq!(
-                        !valid, want,
+                        !valid,
+                        want.as_bool()
+                            .unwrap_or_else(|| panic!("{name} step {i}: no invalidates.{kind}")),
                         "{flavor} {name} step {i}: invalidates.{kind} disagrees with the \
                          canonical fixture"
                     );
-                }
-            });
+                });
+            }
+            invalidates.finish();
 
             let pending = queue.pending();
             expected.assert_key_with("pending", |want_pending| {
@@ -1677,29 +1714,17 @@ mod work_queue_flavors {
                 }
             });
 
+            // DESCENT (`#lzsubblockkeyset`): a reader kind the corpus adds to
+            // the `reads` record must fail as an unconsumed key rather than be
+            // read by nobody.
             let (pending_len, is_empty, in_flight_len, dead_letter_len) = queue.reads();
-            expected.assert_key_with("reads", |want_reads| {
-                assert_eq!(
-                    pending_len,
-                    as_u64(&want_reads["pending_len"], "pending_len"),
-                    "{flavor} {name} step {i}: reads.pending_len"
-                );
-                assert_eq!(
-                    is_empty,
-                    want_reads["is_empty"].as_bool().expect("is_empty"),
-                    "{flavor} {name} step {i}: reads.is_empty"
-                );
-                assert_eq!(
-                    in_flight_len,
-                    as_u64(&want_reads["in_flight_len"], "in_flight_len"),
-                    "{flavor} {name} step {i}: reads.in_flight_len"
-                );
-                assert_eq!(
-                    dead_letter_len,
-                    as_u64(&want_reads["dead_letter_len"], "dead_letter_len"),
-                    "{flavor} {name} step {i}: reads.dead_letter_len"
-                );
-            });
+            let reads = expected.sub("reads");
+            let at = format!("{flavor} {name} step {i}: reads");
+            reads.assert_key_at("pending_len", pending_len, &at);
+            reads.assert_key_at("is_empty", is_empty, &at);
+            reads.assert_key_at("in_flight_len", in_flight_len, &at);
+            reads.assert_key_at("dead_letter_len", dead_letter_len, &at);
+            reads.finish();
         }
         steps.len()
     }

@@ -189,6 +189,133 @@ fn an_excuse_without_a_reason_is_rejected() {
 }
 
 // ---------------------------------------------------------------------------
+// object-valued keys must be checked by their KEY SET (`#lzsubblockkeyset`)
+// ---------------------------------------------------------------------------
+//
+// The null form one level DOWN: a key whose value is a JSON object, compared
+// field by field and never by its key set, so a field added upstream is
+// compared by nothing while every rung above reports clean.
+
+/// The defect itself. `assert_key_with` hands the object out and the tracker
+/// cannot see what the closure compared — five named sub-fields or all six.
+#[test]
+#[should_panic(expected = "WITHOUT a key-set check")]
+fn an_object_valued_key_consumed_opaquely_panics() {
+    let v = json!({ "descriptor": { "offset": 0, "len": 31 } });
+    let e = Expect::new("arena_blob.json", "assertions", &v);
+    e.assert_key_with("descriptor", |want| {
+        assert_eq!(want["offset"], json!(0));
+        assert_eq!(want["len"], json!(31));
+    });
+}
+
+#[test]
+#[should_panic(expected = "\"descriptor\"")]
+fn the_key_set_panic_names_the_object_valued_key() {
+    let v = json!({ "value": 1, "descriptor": { "offset": 0 } });
+    let e = Expect::new("arena_blob.json", "assertions", &v);
+    e.assert_key("value", 1u64);
+    e.assert_key_with("descriptor", |want| assert_eq!(want["offset"], json!(0)));
+}
+
+/// `assert_key_if_present` is the same opaque path with a presence gate.
+#[test]
+#[should_panic(expected = "WITHOUT a key-set check")]
+fn an_optional_object_valued_key_consumed_opaquely_panics() {
+    let v = json!({ "descriptor": { "offset": 0 } });
+    let e = Expect::new("arena_blob.json", "assertions", &v);
+    e.assert_key_if_present("descriptor", |want| assert_eq!(want["offset"], json!(0)));
+}
+
+/// Design point 1: descent moves the obligation down, so the child's own drop
+/// check owns every sub-key.
+#[test]
+fn descending_into_an_object_valued_key_satisfies_it() {
+    let v = json!({ "descriptor": { "offset": 0, "len": 31 } });
+    let e = Expect::new("arena_blob.json", "assertions", &v);
+    let d = e.sub("descriptor");
+    d.assert_key("offset", 0u64);
+    d.assert_key("len", 31u64);
+}
+
+/// …and a planted sub-key then fails as an ordinary unconsumed key. This is the
+/// perturbation the zig pass found and the whole reason for the rung.
+#[test]
+#[should_panic(expected = "assertions.descriptor")]
+fn a_planted_sub_key_fails_under_descent() {
+    let v = json!({ "descriptor": { "offset": 0, "len": 31, "planted": 1 } });
+    let e = Expect::new("arena_blob.json", "assertions", &v);
+    let d = e.sub("descriptor");
+    d.assert_key("offset", 0u64);
+    d.assert_key("len", 31u64);
+}
+
+/// Design point 2: the key set compared against what the run produced.
+#[test]
+fn assert_key_set_satisfies_an_object_valued_key() {
+    let v = json!({ "outcomes": { "exact": "…", "exact_or_reject": "…" } });
+    let e = Expect::new("nodeid_exact_range.json", "assertions", &v);
+    e.assert_key_set("outcomes", ["exact", "exact_or_reject"]);
+}
+
+#[test]
+#[should_panic(expected = "Declared but never produced: [\"exact_or_reject\"]")]
+fn assert_key_set_fails_on_a_declared_token_nothing_replayed() {
+    let v = json!({ "outcomes": { "exact": "…", "exact_or_reject": "…" } });
+    let e = Expect::new("nodeid_exact_range.json", "assertions", &v);
+    e.assert_key_set("outcomes", ["exact"]);
+}
+
+/// The direction a per-token loop over `v.as_object()` cannot see.
+#[test]
+#[should_panic(expected = "Produced but not declared: [\"rounded\"]")]
+fn assert_key_set_fails_on_a_produced_token_the_fixture_omits() {
+    let v = json!({ "outcomes": { "exact": "…" } });
+    let e = Expect::new("nodeid_exact_range.json", "assertions", &v);
+    e.assert_key_set("outcomes", ["exact", "rounded"]);
+}
+
+/// A planted key reddens `assert_key_set` from the declared side.
+#[test]
+#[should_panic(expected = "key set mismatch")]
+fn a_planted_key_reddens_the_key_set_comparison() {
+    let v = json!({ "outcomes": { "exact": "…", "planted": "gloss" } });
+    let e = Expect::new("nodeid_exact_range.json", "assertions", &v);
+    e.assert_key_set("outcomes", ["exact"]);
+}
+
+/// Whole-`Value` equality subsumes key-set equality, so it satisfies the
+/// obligation — and a planted key reddens it on its own terms.
+#[test]
+fn whole_value_equality_satisfies_an_object_valued_key() {
+    let v = json!({ "descriptor": { "offset": 0, "len": 31 } });
+    let e = Expect::new("arena_blob.json", "assertions", &v);
+    e.assert_key("descriptor", json!({ "offset": 0, "len": 31 }));
+}
+
+/// The excuse channel stays available — it already records a reason.
+#[test]
+fn an_excused_object_valued_key_is_exempt() {
+    let v = json!({ "descriptor": { "offset": 0 } });
+    let e = Expect::new("arena_blob.json", "assertions", &v);
+    e.excuse_key(
+        "descriptor",
+        "asserted against the arena in the host fixture",
+    );
+}
+
+/// The guard is scoped to OBJECT values. An array vocabulary is already guarded
+/// by set difference under `#lzblobbackendstrict` and must not be swept in.
+#[test]
+fn an_array_valued_key_is_untouched_by_the_key_set_guard() {
+    let v = json!({ "backends": ["shm", "arrow"] });
+    let e = Expect::new("f.json", "assertions", &v);
+    e.assert_key_with("backends", |want| {
+        assert_eq!(want, &json!(["shm", "arrow"]));
+    });
+}
+
+// ---------------------------------------------------------------------------
 // prose keys (`#lzprosekeyconvention`)
 // ---------------------------------------------------------------------------
 //

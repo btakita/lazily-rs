@@ -150,17 +150,18 @@ fn assert_state(ctx: &Context, map: &SourceMap<String, V>, expected: &Expect) {
         let got: HashSet<String> = map.keys(ctx).into_iter().collect();
         assert_eq!(got, want, "membership mismatch");
     });
-    expected.assert_key_if_present("values", |values| {
-        for (key, val) in values.as_object().expect("values") {
-            let want = val
-                .as_i64()
-                .unwrap_or_else(|| panic!("non-integer value for {key}"));
+    // `values` is an OBJECT-valued key, so it is consumed by DESCENT
+    // (`#lzsubblockkeyset`) rather than by a closure the tracker cannot see into:
+    // the child owns every entry, and each comparison happens inside the tracker
+    // against the fixture's own value.
+    if let Some(values) = expected.sub_if_present("values") {
+        for key in values.raw().as_object().expect("values").keys() {
             let got = map
                 .get(ctx, key)
                 .unwrap_or_else(|| panic!("missing key {key} after op"));
-            assert_eq!(got, want, "value mismatch for {key}");
+            values.assert_key_at(key, got, "values");
         }
-    });
+    }
 }
 
 /// Verify the `invalidates` reader-class independence contract: among survivors,
@@ -171,13 +172,21 @@ fn assert_invalidation(
     value_readers: &HashMap<String, lazily::Computed<Option<V>>>,
     membership_reader: &lazily::Computed<usize>,
     order_reader: &lazily::Computed<Vec<String>>,
-    invalidates: &Value,
+    invalidates: &Expect,
     survivors: &HashSet<String>,
 ) {
+    // Each reader class is asserted through the CHILD tracker, so a reader class
+    // added to the corpus fails as an unconsumed key rather than being read off
+    // the object by a `.get` that returns `None` and defaults to `false`
+    // (`#lzsubblockkeyset`).
     let value_inv: HashSet<String> = invalidates
-        .get("value")
-        .and_then(|v| v.as_array())
-        .map(|a| a.iter().map(|v| v.as_str().unwrap().to_string()).collect())
+        .assert_key_if_present("value", |v| {
+            v.as_array()
+                .expect("invalidates.value")
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect()
+        })
         .unwrap_or_default();
 
     for key in survivors {
@@ -199,8 +208,9 @@ fn assert_invalidation(
     }
 
     let mem_inv = invalidates
-        .get("membership")
-        .and_then(|v| v.as_bool())
+        .assert_key_if_present("membership", |v| {
+            v.as_bool().expect("invalidates.membership")
+        })
         .unwrap_or(false);
     let mem_cached = ctx.is_set(membership_reader);
     if mem_inv {
@@ -216,8 +226,7 @@ fn assert_invalidation(
     }
 
     let ord_inv = invalidates
-        .get("order")
-        .and_then(|v| v.as_bool())
+        .assert_key_if_present("order", |v| v.as_bool().expect("invalidates.order"))
         .unwrap_or(false);
     let ord_cached = ctx.is_set(order_reader);
     if ord_inv {
@@ -238,39 +247,45 @@ fn assert_handle_stable(
     expected: &Expect,
     handle_before: &HashMap<String, Option<Source<V>>>,
 ) {
-    expected.assert_key_if_present("handle_stable", |hs| {
-        assert_handle_stable_inner(map, hs.as_object().expect("handle_stable"), handle_before)
-    });
+    // Descent (`#lzsubblockkeyset`): the child owns every entry of the map, so a
+    // key planted in the corpus fails as an unconsumed key.
+    if let Some(hs) = expected.sub_if_present("handle_stable") {
+        assert_handle_stable_inner(map, &hs, handle_before);
+    }
 }
 
 fn assert_handle_stable_inner(
     map: &SourceMap<String, V>,
-    hs: &serde_json::Map<String, Value>,
+    hs: &Expect,
     handle_before: &HashMap<String, Option<Source<V>>>,
 ) {
-    for (key, want) in hs {
-        // A named skip here would be a read-then-discard: the entry marked the
-        // key consumed and then asserted nothing (`#lzconsumednotasserted`). The
-        // corpus only ever claims stability, so `false` is a fixture the runner
-        // does not know how to check rather than a silent pass.
-        assert!(
-            want.as_bool() == Some(true),
-            "handle_stable{{{key}}}: only `true` has a defined meaning here \
-             (got {want}); a `false` claim needs a runner that can assert it"
-        );
-        let before = handle_before
-            .get(key)
-            .unwrap_or_else(|| panic!("no handle captured for `{key}` before op"));
-        let after = map.handle(key);
-        assert_eq!(
-            after, *before,
-            "handle_stable{{{key}}} violated: cell handle (node identity) changed across op"
-        );
-        // A stable handle is observable too: it still reads a value (the cell lives on).
-        assert!(
-            after.is_some(),
-            "handle_stable{{{key}}} violated: handle missing after op"
-        );
+    for key in hs.raw().as_object().expect("handle_stable").keys() {
+        hs.assert_key_with(key.as_str(), |want| {
+            // A named skip here would be a read-then-discard: the entry marked
+            // the key consumed and then asserted nothing
+            // (`#lzconsumednotasserted`). The corpus only ever claims stability,
+            // so `false` is a fixture the runner does not know how to check
+            // rather than a silent pass.
+            assert!(
+                want.as_bool() == Some(true),
+                "handle_stable{{{key}}}: only `true` has a defined meaning here \
+                 (got {want}); a `false` claim needs a runner that can assert it"
+            );
+            let before = handle_before
+                .get(key)
+                .unwrap_or_else(|| panic!("no handle captured for `{key}` before op"));
+            let after = map.handle(key);
+            assert_eq!(
+                after, *before,
+                "handle_stable{{{key}}} violated: cell handle (node identity) changed across op"
+            );
+            // A stable handle is observable too: it still reads a value (the
+            // cell lives on).
+            assert!(
+                after.is_some(),
+                "handle_stable{{{key}}} violated: handle missing after op"
+            );
+        });
     }
 }
 
@@ -332,20 +347,20 @@ fn run_steps_fixture(name: &str) {
 
         // `invalidates` lives under `expected`, not on the step. Reading it off
         // the step silently skipped the whole reader-class independence contract.
-        expected.assert_key_with("invalidates", |invalidates| {
-            assert!(
-                invalidates.is_object(),
-                "step {i}: expected.invalidates missing from fixture {name}"
-            );
-            assert_invalidation(
-                &ctx,
-                &value_readers,
-                &membership_reader,
-                &order_reader,
-                invalidates,
-                &survivors,
-            );
-        });
+        let invalidates = expected.sub("invalidates");
+        assert!(
+            invalidates.raw().is_object(),
+            "step {i}: expected.invalidates missing from fixture {name}"
+        );
+        assert_invalidation(
+            &ctx,
+            &value_readers,
+            &membership_reader,
+            &order_reader,
+            &invalidates,
+            &survivors,
+        );
+        invalidates.finish();
         assert_handle_stable(&map, &expected, &handle_before);
         assert_state(&ctx, &map, &expected);
     }
@@ -1117,23 +1132,24 @@ fn run_textcrdt_fixture(name: &str) {
                 );
             }
         });
-        expect.assert_key_if_present("text_on", |text_on| {
-            for (name, val) in text_on.as_object().expect("text_on") {
-                let want = val.as_str().unwrap_or_else(|| {
-                    panic!("scenario {i}: text_on `{name}` value must be a string")
-                });
+        // Both of these are OBJECT-valued keys, so they are consumed by DESCENT
+        // (`#lzsubblockkeyset`): the child tracker owns every replica name, and
+        // a replica added to the corpus fails as an unconsumed key instead of
+        // being compared by nothing.
+        if let Some(text_on) = expect.sub_if_present("text_on") {
+            for name in text_on.raw().as_object().expect("text_on").keys() {
                 let got = replicas
                     .get(name)
                     .unwrap_or_else(|| panic!("scenario {i}: text_on names missing `{name}`"))
                     .text();
-                assert_eq!(got, want, "scenario {i}: text_on `{name}` mismatch");
+                text_on.assert_key_at(name.as_str(), got, &format!("scenario {i}.text_on"));
             }
-        });
-        expect.assert_key_if_present("version_vector_on", |vv_on| {
-            for (name, val) in vv_on.as_object().expect("version_vector_on") {
-                let want = val.as_object().unwrap_or_else(|| {
-                    panic!("scenario {i}: version_vector_on `{name}` must be an object")
-                });
+        }
+        if let Some(vv_on) = expect.sub_if_present("version_vector_on") {
+            for name in vv_on.raw().as_object().expect("version_vector_on").keys() {
+                // BTreeMap<u64,u64> serializes to {"<peer>": <counter>}; the
+                // whole object is compared, so a peer the fixture omits and a
+                // peer it invents both fail.
                 let got = serde_json::to_value(
                     replicas
                         .get(name)
@@ -1143,14 +1159,13 @@ fn run_textcrdt_fixture(name: &str) {
                         .version_vector(),
                 )
                 .unwrap_or_else(|e| panic!("scenario {i}: vv serialize `{name}`: {e}"));
-                let got_obj = got.as_object().unwrap();
-                // BTreeMap<u64,u64> serializes to {"<peer>": <counter>}; compare as JSON.
-                assert_eq!(
-                    got_obj, want,
-                    "scenario {i}: version_vector_on `{name}` mismatch"
+                vv_on.assert_key_at(
+                    name.as_str(),
+                    got,
+                    &format!("scenario {i}.version_vector_on"),
                 );
             }
-        });
+        }
         expect.assert_key_if_present("a_starts_with", |want| {
             let prefix = want.as_str().expect("a_starts_with");
             assert!(

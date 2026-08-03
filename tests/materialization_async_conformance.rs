@@ -167,16 +167,20 @@ async fn eventual_transparency_async() {
     // Eventual transparency: drive each slot; resolved value = canonical, and the
     // eager and lazy maps agree. The awaits keep this out of a closure, so the
     // key is marked through `assert_key_with` around the borrow of the block.
-    let observe = expected.assert_key_with("observe", |want| want.as_object().unwrap().clone());
-    for (k, want) in &observe {
-        let want = want.as_i64().unwrap();
+    // DESCENT (`#lzsubblockkeyset`): the observed keys are the child's keys, so
+    // a key the corpus adds fails as an unconsumed key. Descent rather than a
+    // closure is also what lets the `await`s stay in the loop body.
+    let observe = expected.sub("observe");
+    let keys: Vec<String> = observe.raw().as_object().unwrap().keys().cloned().collect();
+    for k in &keys {
         let ve = ctx_e.get_async(&eager.handle(k).unwrap()).await;
         let vl = ctx_l
             .get_async(&lazy.get_or_insert_handle(&ctx_l, k.clone(), lookup.clone()))
             .await;
-        assert_eq!(ve, want, "eager async observe {k}");
-        assert_eq!(vl, want, "lazy async observe {k}");
+        observe.assert_key_at(k.as_str(), ve, &format!("eager async observe {k}"));
+        observe.assert_key_at(k.as_str(), vl, &format!("lazy async observe {k}"));
     }
+    observe.finish();
 }
 
 /// The lazy present set after the fixture read sequence is exactly the read keys

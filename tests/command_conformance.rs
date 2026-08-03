@@ -67,13 +67,31 @@ fn expect_of<'a>(name: &str, label: &str, block: &'a Value) -> Expect<'a> {
     Expect::new(format!("{FIXTURE_DIR}/{name}"), label.to_owned(), block)
 }
 
+/// The field names of a serialized projection image.
+///
+/// `serde_json::from_value` into `CommandProjectionImage` silently ignores a key
+/// the struct does not declare, so the typed comparison below cannot see a field
+/// the corpus adds. The KEY SET is therefore asserted separately, against the
+/// image this run really produced (`#lzsubblockkeyset`).
+fn image_field_names(image: &CommandProjectionImage) -> Vec<String> {
+    serde_json::to_value(image)
+        .expect("serialize projection image")
+        .as_object()
+        .expect("a projection image is a JSON object")
+        .keys()
+        .cloned()
+        .collect()
+}
+
 /// Assert the reducer image equals the fixture's `expect.projection`.
 fn assert_projection(projection: &CommandProjection, expect: &Expect) {
+    let image = projection.to_image();
     expect.assert_key_with("projection", |want| {
         let want: CommandProjectionImage =
             serde_json::from_value(want.clone()).expect("decode expect.projection");
-        assert_eq!(projection.to_image(), want, "projection image mismatch");
+        assert_eq!(image, want, "projection image mismatch");
     });
+    expect.assert_key_set("projection", image_field_names(&image));
 }
 
 #[test]
@@ -210,10 +228,12 @@ fn terminal_conflict_fails_closed() {
     );
 
     // The applied outcome is preserved (no winner selection).
+    let image = p.to_image();
     exp.assert_key_with("projection_before_conflict", |want| {
         let before: CommandProjectionImage = serde_json::from_value(want.clone()).unwrap();
-        assert_eq!(p.to_image(), before);
+        assert_eq!(image, before);
     });
+    exp.assert_key_set("projection_before_conflict", image_field_names(&image));
 }
 
 #[test]

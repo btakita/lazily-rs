@@ -119,15 +119,25 @@ fn family_sync_materialize_on_ingest_conformance() {
         );
 
         // Value adoption / LWW convergence.
-        expect.assert_key_with("target_values", |want| {
-            for (key, want) in want.as_object().expect("target_values") {
+        // DESCENT (`#lzsubblockkeyset`): the child tracker owns every entry, so
+        // a key the corpus adds fails as an unconsumed key rather than being
+        // compared by nothing.
+        let target_values = expect.sub("target_values");
+        for key in target_values
+            .raw()
+            .as_object()
+            .expect("target_values")
+            .keys()
+        {
+            target_values.assert_key_with(key.as_str(), |want| {
                 assert_eq!(
                     target.family_value_lww::<bool>(namespace, key),
                     Some(want.as_bool().unwrap()),
                     "[{name}] value for {key}"
                 );
-            }
-        });
+            });
+        }
+        target_values.finish();
 
         // Derived aggregate transparency: count of `true` entries converges.
         let count_true = target

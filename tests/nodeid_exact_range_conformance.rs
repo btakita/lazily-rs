@@ -205,18 +205,12 @@ fn nodeid_exact_range_is_replayed() {
     // directions, against the outcomes the loop really dispatched on: every
     // declared token was exercised by some scenario, and no scenario carried a
     // token the block does not declare.
-    a.assert_key_with("outcomes", |v| {
-        let vocabulary: BTreeSet<String> = v
-            .as_object()
-            .expect("outcomes maps each outcome token to its gloss")
-            .keys()
-            .cloned()
-            .collect();
-        assert_eq!(
-            vocabulary, outcomes_replayed,
-            "the outcome vocabulary this runner really dispatched on"
-        );
-    });
+    //
+    // It goes through the tracker's KEY-SET entry point rather than a hand-rolled
+    // set comparison inside `assert_key_with` (`#lzsubblockkeyset`): the guard
+    // that fires at `finish()` for an object-valued key consumed opaquely can see
+    // `assert_key_set`, and cannot see a set comparison a closure happens to make.
+    a.assert_key_set("outcomes", outcomes_replayed.iter().cloned());
     // The three declared paragraphs, each naming the executable keys that carry
     // its obligation.
     a.prose_key("clause", &["node_id_decimal", "outcome"]);

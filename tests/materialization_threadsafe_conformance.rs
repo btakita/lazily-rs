@@ -136,8 +136,10 @@ fn check_val_fixture(name: &str) -> Value {
     });
     assert_eq!(lazy.present_count(), 0);
 
-    expected.assert_key_with("observe", |observe| {
-        for (k, want) in observe.as_object().unwrap() {
+    // DESCENT (`#lzsubblockkeyset`): the observed keys are the child's keys.
+    let observe = expected.sub("observe");
+    for k in observe.raw().as_object().unwrap().keys() {
+        observe.assert_key_with(k.as_str(), |want| {
             let want = want.as_i64().unwrap();
             assert_eq!(eager.observe(&ctx, k).unwrap(), want, "eager observe {k}");
             assert_eq!(
@@ -145,8 +147,9 @@ fn check_val_fixture(name: &str) -> Value {
                 want,
                 "lazy observe {k}"
             );
-        }
-    });
+        });
+    }
+    observe.finish();
 
     // The read sequence, asserted here so `lazy_present_after_reads` and
     // `present_after_each_read` land under the same guard.

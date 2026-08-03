@@ -345,6 +345,9 @@ fn resync_gap_converge_fixture() {
     exp.assert_key_with("converged_nodes", |want| {
         assert_eq!(converged[0], want_state(want))
     });
+    // Whole-map equality in both directions already; the KEY SET is stated so
+    // the finish-time guard is satisfied structurally (`#lzsubblockkeyset`).
+    exp.assert_key_set("converged_nodes", converged[0].keys().map(u64::to_string));
     // `equals_no_drop_receiver`: the dropped-suffix receiver ends where a
     // receiver that lost nothing ends — the point of the resync.
     exp.assert_key(
@@ -403,6 +406,10 @@ fn idempotent_redelivery_fixture() {
         exp.assert_key_with("state_after", |want| {
             assert_eq!(state, want_state(want), "{name}: state_after")
         });
+        // Whole-map equality in both directions already, but the tracker cannot
+        // see inside the closure; the KEY SET is stated so the finish-time guard
+        // is satisfied structurally (`#lzsubblockkeyset`).
+        exp.assert_key_set("state_after", state.keys().map(u64::to_string));
         exp.assert_key_at(
             "net_effect_unchanged",
             state == before,

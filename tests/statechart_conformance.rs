@@ -47,14 +47,19 @@ fn assert_active(ctx: &Context, chart: &StateChart, expected: &Value, msg: &str)
 }
 
 fn assert_matches(ctx: &Context, chart: &StateChart, step: &Expect) {
-    // `matches` keys are state ids — data, not assertion names — so the map is
-    // compared wholesale. Optional per step, hence bound to the key's presence.
-    step.assert_key_if_present("matches", |want| {
-        for (id, expected) in want.as_object().expect("matches object") {
-            let want = expected.as_bool().expect("matches value is bool");
-            assert_eq!(chart.matches(ctx, id), want, "matches({id}) mismatch");
+    // `matches` keys are state ids — data, not assertion names — but the map is
+    // an OBJECT value, so it is consumed by DESCENT (`#lzsubblockkeyset`): a
+    // state id the corpus adds fails as an unconsumed key instead of being
+    // compared by nothing. Optional per step, hence bound to the key's presence.
+    if let Some(matches) = step.sub_if_present("matches") {
+        for id in matches.raw().as_object().expect("matches object").keys() {
+            matches.assert_key_at(
+                id.as_str(),
+                chart.matches(ctx, id),
+                &format!("matches({id})"),
+            );
         }
-    });
+    }
 }
 
 /// A statechart fixture has no separate `expected` block — the step object *is*

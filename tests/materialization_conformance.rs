@@ -157,8 +157,11 @@ fn check_val_fixture(name: &str) -> Value {
 
     // observe_canonical / eager_lazy_observationally_equivalent
     let lookup = lookup_fn(entries.clone());
-    expected.assert_key_with("observe", |observe| {
-        for (k, want) in observe.as_object().expect("expected.observe") {
+    // DESCENT (`#lzsubblockkeyset`): the observed keys are the child's keys, so
+    // a key the corpus adds fails as an unconsumed key.
+    let observe = expected.sub("observe");
+    for k in observe.raw().as_object().expect("expected.observe").keys() {
+        observe.assert_key_with(k.as_str(), |want| {
             let want = want.as_i64().expect("observe int");
             assert_eq!(eager.get(&ctx, k).unwrap(), want, "eager observe {k}");
             assert_eq!(
@@ -166,8 +169,9 @@ fn check_val_fixture(name: &str) -> Value {
                 want,
                 "lazy observe {k}"
             );
-        }
-    });
+        });
+    }
+    observe.finish();
 
     // The read sequence, asserted here so `lazy_present_after_reads` and
     // `present_after_each_read` are consumed by the same guard as the rest.
@@ -419,8 +423,10 @@ fn entry_kind_orthogonal_to_mode() {
     });
 
     // Observational transparency across kinds.
-    expected.assert_key_with("observe", |observe| {
-        for (k, want) in observe.as_object().unwrap() {
+    // DESCENT (`#lzsubblockkeyset`), as above.
+    let observe = expected.sub("observe");
+    for k in observe.raw().as_object().unwrap().keys() {
+        observe.assert_key_with(k.as_str(), |want| {
             let want = want.as_i64().unwrap();
             if cell_keys.contains(k) {
                 assert_eq!(eager_cells.get(&ctx, k), Some(want));
@@ -432,6 +438,7 @@ fn entry_kind_orthogonal_to_mode() {
                     want
                 );
             }
-        }
-    });
+        });
+    }
+    observe.finish();
 }

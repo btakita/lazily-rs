@@ -81,18 +81,20 @@ fn membership_lifecycle() {
             format!("steps[{i}].expected"),
             &step["expected"],
         );
-        // Per-peer state. `states` keys are peer ids — data, not assertion
-        // names — so the map is compared wholesale.
-        exp.assert_key_with("states", |want| {
-            for (peer, want) in want.as_object().unwrap() {
-                let id: u64 = peer.parse().unwrap();
-                assert_eq!(
-                    m.state(&id).map(state_name),
-                    Some(want.as_str().unwrap()),
-                    "state of peer {id} after {op}"
-                );
-            }
-        });
+        // Per-peer state. The keys are peer ids — data, not assertion names —
+        // but the map is still an OBJECT value, so it is consumed by DESCENT
+        // (`#lzsubblockkeyset`): a peer the corpus adds fails as an unconsumed
+        // key instead of being compared by nothing.
+        let states = exp.sub("states");
+        for peer in states.raw().as_object().unwrap().keys() {
+            let id: u64 = peer.parse().unwrap();
+            states.assert_key_at(
+                peer.as_str(),
+                m.state(&id).map(state_name).unwrap_or("<absent>"),
+                &format!("state of peer {id} after {op}"),
+            );
+        }
+        states.finish();
         // Alive set.
         exp.assert_key_with("alive_set", |want| {
             let want_set: BTreeSet<u64> = want

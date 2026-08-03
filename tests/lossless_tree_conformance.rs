@@ -223,15 +223,17 @@ fn assert_expect(world: &World, expect: &Expect, scenario: &str) {
             "{scenario}: render on `a`"
         );
     });
-    expect.assert_key_if_present("render_on", |want| {
-        for (name, text) in want.as_object().expect("render_on") {
-            assert_eq!(
+    // DESCENT (`#lzsubblockkeyset`): the replica names are the child's keys, so
+    // a replica the corpus adds fails as an unconsumed key.
+    if let Some(render_on) = expect.sub_if_present("render_on") {
+        for name in render_on.raw().as_object().expect("render_on").keys() {
+            render_on.assert_key_at(
+                name.as_str(),
                 world.replicas[name].render(),
-                text.as_str().unwrap(),
-                "{scenario}: render on `{name}`"
+                &format!("{scenario}.render_on"),
             );
         }
-    });
+    }
     expect.assert_key_if_present("live_nodes", |want| {
         assert_eq!(
             world.replicas["a"].live_node_count() as u64,
