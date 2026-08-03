@@ -225,25 +225,42 @@ this repo.
   not optional, because an unopened canonical fixture fails
   `conformance-coverage` and a feature flag is not a carve-out
 - `tests/blob_backend_discriminator_conformance.rs` — the blob-backend
-  discriminator's two forms (`#lzblobbackendstrict`), over
-  `lazily-spec/conformance/codec/blob_backend_discriminator.json`. An OMITTED
-  `backend` MUST decode as `shm` — that absence is the forward-compat channel,
-  and the only one, because `#[serde(default)]` means a pre-field descriptor
-  never reaches the parse. A PRESENT value outside `{shm, arrow, in_process}`
-  MUST be rejected NAMING the token: every string that does reach
-  `BlobBackendKind::from_str` names a backend this build lacks, so normalizing it
-  to `Shm` routes a foreign descriptor into the shm arena — the misroute
-  `resolve_wrong_backend` forbids — trading a guarantee discharged structurally
-  by routing for one discharged probabilistically by a 64-bit checksum. Five of
-  nine bindings normalized, each with a written forward-compat rationale. Both
-  halves are checked: `error_names_token` separates "refused" from "refused for
-  the stated reason", and each accept scenario RE-ENCODES under its own codec and
-  inspects field PRESENCE, because rejecting `rdma` and then emitting
-  `backend: "shm"` is a conforming decoder with a broken encoder. lazily-rs
-  satisfied the encoder half from the field's introduction in v0.25.0 —
-  `skip_serializing_if = "BlobBackendKind::is_default"` has been on the field
-  since the day it landed. Five mutation probes, each red on its own assertion.
-  Needs `ipc,ipc-msgpack` (`make test-blob-backend-discriminator-conformance`)
+  discriminator's wire forms (`#lzblobbackendstrict`), over
+  `lazily-spec/conformance/codec/blob_backend_discriminator.json` (fixture v2:
+  seven forms × two codecs = **14 scenarios**). An OMITTED or NULL `backend`
+  MUST decode as `shm` — absence is the forward-compat channel, and the only
+  one. A PRESENT value outside `{shm, arrow, in_process}` MUST be rejected
+  NAMING the token: every string that does reach `BlobBackendKind::from_str`
+  names a backend this build lacks, so normalizing it to `Shm` routes a foreign
+  descriptor into the shm arena — the misroute `resolve_wrong_backend` forbids —
+  trading a guarantee discharged structurally by routing for one discharged
+  probabilistically by a 64-bit checksum. Five of nine bindings normalized, each
+  with a written forward-compat rationale. Both halves are checked:
+  `error_names_token` separates "refused" from "refused for the stated reason",
+  and each accept scenario RE-ENCODES under its own codec and inspects field
+  PRESENCE, because rejecting `rdma` and then emitting `backend: "shm"` is a
+  conforming decoder with a broken encoder. lazily-rs satisfied the encoder half
+  from the field's introduction in v0.25.0 — `skip_serializing_if =
+  "BlobBackendKind::is_default"` has been on the field since the day it landed.
+  Of v2's four new shapes, three already held (`in_process` since the enum's
+  third variant landed; the non-string refusal, which is an ordinary
+  `serde_json`/`rmp_serde` type error; and the epoch split, once asserted
+  separately). The **null form did not**, and that was a real library defect —
+  `#[serde(default)]` supplies the default when the KEY is missing, so a present
+  null still reached the enum's `Deserialize` and failed as a type error in both
+  codecs. Fixed with a field-level `deserialize_backend_null_as_absent`, which
+  branches on `is_human_readable` because a non-self-describing codec writes no
+  option tag for this field. Two assertions here are unreachable from a scenario
+  count: `backends_decoded` is a SET DIFFERENCE against `assertions.backends`
+  (the guard that catches a binding implementing a smaller enum than the clause
+  declares), and `frame_epoch`/`blob_epoch` are compared against the Delta and
+  the descriptor respectively (v1 carried 9 in both, so one `expect.epoch` could
+  not tell the two readings apart). The refusal is carried as the codec's own
+  error TYPE, not a string, and the decode runs inside `catch_unwind`, because
+  `rejection_is_decode_error` is about the family a caller already guards a
+  decode with — a panic refuses the frame past every handler. Nine mutation
+  probes, each red on its own assertion. Needs `ipc,ipc-msgpack`
+  (`make test-blob-backend-discriminator-conformance`)
 - `tests/collections_family_conformance.rs` — the ordering/independence contract replayed against **all three execution models** (`SourceMap`, `ThreadSafeSourceMap`, `AsyncSourceMap`) via a `MapModel` trait whose only async-coloured method is `settle`. `collections_conformance.rs` covers the single-threaded flavor only, which is how the thread-safe/async ordering gap stayed invisible while `coverage.json` read green
 - `tests/collections_conformance.rs` — keyed cell collections compute fixtures (lazily-spec/conformance/collections); value/membership/order independence, atomic move, LIS reconciliation, memoized semantic tree, manufactured text identity, character CRDT convergence
 - `tests/materialization_conformance.rs` — `ComputedMap` materialization (`#reactivemap`) compute fixtures (lazily-spec/conformance/materialization/`*.json`); observational transparency eager (pre-mint) vs lazy (`get_or_insert_with`), deferral-not-deallocation present-set monotonicity, entry-kind orthogonal to strategy (input cells always materialized / derived slots deferred under lazy)

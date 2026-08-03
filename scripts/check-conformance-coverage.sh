@@ -397,7 +397,7 @@ if problems:
 # The rung above walks the scenarios of OPENED fixtures. Zero opened fixtures
 # means zero scenarios, which means zero unreplayed scenarios, which reports OK
 # having compared nothing. Assert the magnitude before claiming green.
-MIN_SCENARIOS = int(os.environ.get("MIN_SCENARIOS", "75"))
+MIN_SCENARIOS = int(os.environ.get("MIN_SCENARIOS", "132"))
 if total == 0:
     sys.stderr.write(
         "ERROR: ZERO scenarios were found across the opened fixtures.\n"

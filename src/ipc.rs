@@ -129,22 +129,102 @@ impl serde::Serialize for BlobBackendKind {
     }
 }
 
+/// The `backend` discriminator's visitor, parameterised by whether an explicit
+/// null (JSON `null`, msgpack nil) counts as the ABSENT form.
+///
+/// `NULL_IS_ABSENT = false` is the enum's own `Deserialize`: standing alone, a
+/// `BlobBackendKind` is a required value and a null is a type error.
+/// `NULL_IS_ABSENT = true` is the [`ShmBlobRef::backend`] FIELD, where absence
+/// is meaningful and a null is one of its two spellings — see
+/// [`deserialize_backend_null_as_absent`]. The leniency belongs to the optional
+/// field, not to the enum, which is the same split
+/// `Option<NodeKey>`/`#lzkeynullstrict` makes.
+///
+/// Both variants route the string case through the same
+/// [`FromStr`](std::str::FromStr) parse, so a present-but-unknown token is
+/// rejected NAMING the token in either mode.
+struct BackendVisitor<const NULL_IS_ABSENT: bool>;
+
+impl<'de, const NULL_IS_ABSENT: bool> serde::de::Visitor<'de> for BackendVisitor<NULL_IS_ABSENT> {
+    type Value = BlobBackendKind;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a blob backend string (\"shm\" | \"arrow\" | \"in_process\")")?;
+        if NULL_IS_ABSENT {
+            f.write_str(" or null")?;
+        }
+        Ok(())
+    }
+
+    fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+        // A present-but-unknown discriminator fails the decode naming the
+        // offending value; an ABSENT field is what stays lenient, via
+        // `#[serde(default)]` on `ShmBlobRef::backend`.
+        v.parse().map_err(serde::de::Error::custom)
+    }
+
+    /// JSON `null` / msgpack nil (`0xc0`), reached through `deserialize_option`.
+    fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+        if NULL_IS_ABSENT {
+            Ok(BlobBackendKind::Shm)
+        } else {
+            Err(E::invalid_type(serde::de::Unexpected::Unit, &self))
+        }
+    }
+
+    /// A present value under `deserialize_option`. It is re-read as a STRING by
+    /// the strict visitor, so the token rules — reject an unknown token naming
+    /// it, reject a non-string as a type error — are the same whether or not the
+    /// null slot is lenient.
+    fn visit_some<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        d.deserialize_str(BackendVisitor::<false>)
+    }
+
+    fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+        self.visit_none()
+    }
+}
+
 impl<'de> serde::Deserialize<'de> for BlobBackendKind {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct V;
-        impl<'de> serde::de::Visitor<'de> for V {
-            type Value = BlobBackendKind;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a blob backend string (\"shm\" | \"arrow\" | \"in_process\")")
-            }
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                // A present-but-unknown discriminator fails the decode naming the
-                // offending value; an ABSENT field is what stays lenient, via
-                // `#[serde(default)]` on `ShmBlobRef::backend`.
-                v.parse().map_err(serde::de::Error::custom)
-            }
-        }
-        deserializer.deserialize_str(V)
+        deserializer.deserialize_str(BackendVisitor::<false>)
+    }
+}
+
+/// Field deserializer for [`ShmBlobRef::backend`]: an explicit null is the
+/// ABSENT form and decodes as [`BlobBackendKind::Shm`] (`#lzblobbackendstrict`,
+/// following § NodeKey / `#lzkeynullstrict`).
+///
+/// `#[serde(default)]` alone does NOT make a non-`Option` field null-tolerant —
+/// it supplies the default when the KEY is missing, and a present null still
+/// reaches the field's own `Deserialize`, which is a type error for an enum.
+/// The two forms are the same fact on the wire, though: a serde-style peer that
+/// omitted `skip_serializing_if` on its optional field writes `null` exactly
+/// where a conforming encoder writes nothing, so refusing it would be stricter
+/// than this implementation is on frames this implementation's own shape
+/// produces.
+///
+/// The strictness the clause is actually about is untouched: a present value
+/// outside `{shm, arrow, in_process}` is still rejected, naming the token, and a
+/// present value that is not a string at all is still rejected as a type error
+/// through the codec's own decode-error family. Only the null slot moves.
+///
+/// Reading the null needs `deserialize_option`, not `deserialize_str`:
+/// `serde_json` answers `deserialize_str` on a null by constructing the
+/// `invalid_type` error itself, without ever calling the visitor, so a
+/// `visit_unit` override never runs. `deserialize_option` is also the reason
+/// this branches on `is_human_readable` — the crate reads that flag as
+/// SELF-DESCRIBING (`#lzmsgpackparity`), and a non-self-describing codec writes
+/// no option tag for this field, so asking it for one would misalign the frame.
+/// Postcard therefore keeps the strict `deserialize_str` path unchanged.
+fn deserialize_backend_null_as_absent<'de, D>(deserializer: D) -> Result<BlobBackendKind, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    if deserializer.is_human_readable() {
+        deserializer.deserialize_option(BackendVisitor::<true>)
+    } else {
+        deserializer.deserialize_str(BackendVisitor::<false>)
     }
 }
 
@@ -153,9 +233,9 @@ impl<'de> serde::Deserialize<'de> for BlobBackendKind {
 ///
 /// The `backend` field is optional and defaults to [`BlobBackendKind::Shm`]:
 /// it is omitted on the wire (self-describing codecs) when `Shm` so legacy
-/// descriptors validate unchanged. The arena header itself is backend-agnostic
-/// and does not store `backend` — the discriminator is wire-level routing
-/// metadata only.
+/// descriptors validate unchanged, and an explicit null on the way IN is read as
+/// that same absence. The arena header itself is backend-agnostic and does not
+/// store `backend` — the discriminator is wire-level routing metadata only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ShmBlobRef {
     /// Offset of the blob header from the beginning of the shared arena.
@@ -171,7 +251,15 @@ pub struct ShmBlobRef {
     /// Which pluggable backend resolves this descriptor. Optional; defaults to
     /// [`BlobBackendKind::Shm`] and is omitted on the wire when `Shm` for
     /// backward compatibility.
-    #[serde(default, skip_serializing_if = "BlobBackendKind::is_default")]
+    ///
+    /// Absence has two spellings and both mean `Shm`: no map entry at all
+    /// (`serde(default)`), or an explicit null
+    /// ([`deserialize_backend_null_as_absent`]).
+    #[serde(
+        default,
+        deserialize_with = "deserialize_backend_null_as_absent",
+        skip_serializing_if = "BlobBackendKind::is_default"
+    )]
     pub backend: BlobBackendKind,
 }
 
