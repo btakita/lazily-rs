@@ -257,9 +257,19 @@ this repo.
   real defect — `encode_msgpack` used rmp-serde's default `is_human_readable()`
   of `false`, which this crate reads as "positional", so msgpack wrote
   `key: null` where § NodeKey requires it omitted. `IpcMessage::encode_msgpack`/
-  `decode_msgpack` now opt in with `.with_human_readable()`. Needs
-  `ipc,ipc-msgpack` (`make test-codec-roundtrip-conformance`); the feature is
-  not optional, because an unopened canonical fixture fails
+  `decode_msgpack` now opt in with `.with_human_readable()`. The fixture-level
+  block is evaluated AFTER the replay, because `scenario_count` compared against
+  `fixture["scenarios"].len()` is the fixture against itself — green over a
+  runner that decodes nothing, the exact vacuity `anti_vacuity` exists to name
+  (`#lznullformblind`) — and `opaque_node_state_tag` is read off the
+  round-tripped node's state rather than written as the literal `"Opaque"`.
+  `codec`, `self_describing`, `byte_canonical`, `required_of_binding` and `role`
+  stay fixture-versus-literal DELIBERATELY and a self-comparison sweep should
+  leave them: they are corpus declarations a binding pins by agreement, not
+  facts a run produces — `byte_canonical` states what two conforming bindings
+  may do to each other's bytes, which no single run has a comparable value for.
+  Needs `ipc,ipc-msgpack` (`make test-codec-roundtrip-conformance`); the feature
+  is not optional, because an unopened canonical fixture fails
   `conformance-coverage` and a feature flag is not a carve-out
 - `tests/blob_backend_discriminator_conformance.rs` — the blob-backend
   discriminator's wire forms (`#lzblobbackendstrict`), over
@@ -298,6 +308,45 @@ this repo.
   decode with — a panic refuses the frame past every handler. Nine mutation
   probes, each red on its own assertion. Needs `ipc,ipc-msgpack`
   (`make test-blob-backend-discriminator-conformance`)
+- `tests/nodekey_null_leniency_conformance.rs` — `NodeKey` null-leniency on
+  decode (`#lzkeynullstrict`), over
+  `lazily-spec/conformance/codec/nodekey_null_leniency.json` (two optional-key
+  sites × three key forms × two codecs = 12 scenarios). Omit-when-absent binds
+  the ENCODER; a decoder MUST read both an omitted `key` and an explicit
+  `key: null` as absent, so every scenario also RE-ENCODES the decoded message
+  under its own codec and inspects the produced frame for the field, which is
+  the half no decode assertion reaches. The runner carries a **raw-wire
+  control** (`#lznullformblind`): every key in this fixture's `expect` blocks is
+  byte-identical across the `omitted` and `null` families — `decoded_key` is
+  null for both by design, because reading an explicit null as absent IS the
+  leniency — so post-decode the four `null` scenarios are the four `omitted`
+  ones wearing a different id, `#[serde(default)]` collapses them on contact,
+  and four scenarios prove nothing while staying invisible to the manifest rung,
+  the scenario-replay rung and both assertion-key rungs at once (an unreplayed
+  distinction contributes no unconsumed and no unasserted key). Five of nine
+  bindings were blind. `wire_key_form` classifies the `key` slot out of the
+  `wire_json` TEXT and the `wire_msgpack_hex` BYTES before any decode; because
+  that classification runs on the very crates the decode under test runs on and
+  so cannot see a defect it shares with them, `raw_key_form` witnesses the same
+  slot a second time with NO decoder at all — a text scan for the member name in
+  json, and the msgpack `fixstr` field-name header plus the one type-tag byte
+  after it (nil = `0xc0`) in msgpack — and the two witnesses are held to each
+  other and to the scenario's declared `key_form`, failing closed on an
+  unrecognised form rather than defaulting into the lenient branch. The
+  fixture-level vocabularies (`codecs`, `fields`, `key_forms`) are asserted as
+  SETS against what the replay really dispatched on, and `scenario_count`
+  against the scenarios really reached. Proof of the blindness: a corpus whose
+  four `null` scenarios carry the `omitted` wires is fully green under the
+  pre-control runner and red under this one. Needs `ipc,ipc-msgpack`
+- `tests/nodeid_exact_range_conformance.rs` — the `NodeId` exact-representation
+  bound (`#lzspecdecoderbound`), over
+  `lazily-spec/conformance/codec/nodeid_exact_range.json`. A decoder that cannot
+  represent a received identifier exactly MUST reject the frame rather than
+  round it; lazily-rs is `u64`-wide, so it asserts the `exact` branch for every
+  scenario including `u64::MAX`, and the expectation is compared as a decimal
+  STRING because the fixture is itself JSON. `codecs`, `outcomes` and
+  `scenario_count` are asserted against what the replay dispatched on
+  (`#lznullformblind`). Needs `ipc,ipc-msgpack`
 - `tests/collections_family_conformance.rs` — the ordering/independence contract replayed against **all three execution models** (`SourceMap`, `ThreadSafeSourceMap`, `AsyncSourceMap`) via a `MapModel` trait whose only async-coloured method is `settle`. `collections_conformance.rs` covers the single-threaded flavor only, which is how the thread-safe/async ordering gap stayed invisible while `coverage.json` read green
 - `tests/collections_conformance.rs` — keyed cell collections compute fixtures (lazily-spec/conformance/collections); value/membership/order independence, atomic move, LIS reconciliation, memoized semantic tree, manufactured text identity, character CRDT convergence
 - `tests/materialization_conformance.rs` — `ComputedMap` materialization (`#reactivemap`) compute fixtures (lazily-spec/conformance/materialization/`*.json`); observational transparency eager (pre-mint) vs lazy (`get_or_insert_with`), deferral-not-deallocation present-set monotonicity, entry-kind orthogonal to strategy (input cells always materialized / derived slots deferred under lazy)

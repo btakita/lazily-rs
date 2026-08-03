@@ -265,112 +265,6 @@ fn blob_backend_discriminator_is_replayed() {
     // below is never reached.
     let _prose = common::ProseLedger::open(&path);
 
-    let a = Expect::new(path.clone(), "assertions", &fixture["assertions"]);
-    a.assert_key("required_of_binding", "MUST");
-    a.assert_key_with("codecs", |v| {
-        assert_eq!(v, &serde_json::json!(["json", "msgpack"]), "codecs");
-    });
-    // Held for the set difference after the loop — the assertion a scenario
-    // count cannot reach.
-    let declared_backends = a.assert_key_with("backends", |v| {
-        assert_eq!(
-            v,
-            &serde_json::json!(["shm", "arrow", "in_process"]),
-            "backends"
-        );
-        string_set(v, "backends")
-    });
-    let declared_forms = a.assert_key_with("backend_forms", |v| {
-        assert_eq!(
-            v,
-            &serde_json::json!([
-                "omitted",
-                "shm",
-                "arrow",
-                "in_process",
-                "null",
-                "non_string",
-                "rdma"
-            ]),
-            "backend_forms"
-        );
-        string_set(v, "backend_forms")
-    });
-    let declared_rejection_kinds = a.assert_key_with("rejection_kinds", |v| {
-        assert_eq!(
-            v,
-            &serde_json::json!(["unknown_token", "non_string"]),
-            "rejection_kinds"
-        );
-        string_set(v, "rejection_kinds")
-    });
-    a.assert_key_with("outcomes", |v| {
-        assert_eq!(v, &serde_json::json!(["accept", "reject"]), "outcomes");
-    });
-    a.assert_key(
-        "scenario_count",
-        fixture["scenarios"].as_array().expect("scenarios").len() as u64,
-    );
-    // The nine paragraphs the corpus declares in `assertions.prose`
-    // (`#lzprosekeyconvention`). Each names the executable keys this run really
-    // asserts and that genuinely carry the obligation — the free-text reasons
-    // that used to sit here ("explains why the wire is text/hex") named nothing
-    // and were checkable by nothing.
-    a.prose_key(
-        "clause",
-        &["decoded_backend", "rejected", "rejection_kind", "backends"],
-    );
-    // PROXY. `wire_encoding` is a claim about how the CORPUS carries its bytes;
-    // no assertion a run makes can observe it. The honest proxy is the codec and
-    // form vocabulary plus the two decode outcomes — together they prove the
-    // absent-versus-present-short-string distinction survived into the runner,
-    // which is the distinction the paragraph exists to protect.
-    a.prose_key(
-        "wire_encoding",
-        &["codecs", "backend_forms", "decoded_backend", "rejected"],
-    );
-    a.prose_key(
-        "reject_obligation",
-        &["error_names_token", "rejection_kind"],
-    );
-    a.prose_key(
-        "backend_form_vocabulary",
-        &["backends", "backend_forms", "decoded_backend"],
-    );
-    a.prose_key(
-        "null_form",
-        &["decoded_backend", "reencoded_backend_field_present"],
-    );
-    a.prose_key(
-        "non_string_form",
-        &["rejected", "rejection_kind", "rejection_is_decode_error"],
-    );
-    a.prose_key("epoch_disambiguation", &["frame_epoch", "blob_epoch"]);
-    // The four controls, in order: (1) and (2) are `decoded_backend`, (3) is
-    // `reencoded_backend_field_present`, (4) is the `backends` set difference.
-    a.prose_key(
-        "anti_vacuity",
-        &[
-            "decoded_backend",
-            "reencoded_backend_field_present",
-            "backends",
-            "scenario_count",
-        ],
-    );
-    // PROXY. `theorem` names a Lean theorem in lazily-formal; a run can only
-    // prove its consequence. `resolve_wrong_backend`'s operative consequence
-    // here is that a kind is never normalized: an unknown one is `rejected`, and
-    // a known one arrives as itself in `decoded_backend`.
-    a.prose_key("theorem", &["decoded_backend", "rejected"]);
-    // NOT prose — the corpus does not list it, and a script path is a value, not
-    // a paragraph. There is nothing in this binding that regenerates the fixture.
-    a.excuse_key(
-        "generator",
-        "the corpus-side script that regenerates the fixture; lazily-rs replays the \
-         fixture and never regenerates it, so there is nothing here to compare it against",
-    );
-    a.finish();
-
     // Anti-vacuity counters, one per way this runner could report green having
     // proved less than the clause. `accepted`/`rejected` split the corpus, so a
     // decoder that refused everything (or accepted everything) fails here even
@@ -392,6 +286,8 @@ fn blob_backend_discriminator_is_replayed() {
     let mut backends_decoded: BTreeSet<String> = BTreeSet::new();
     let mut forms_seen: BTreeSet<String> = BTreeSet::new();
     let mut rejection_kinds_seen: BTreeSet<String> = BTreeSet::new();
+    let mut codecs_replayed: BTreeSet<String> = BTreeSet::new();
+    let mut outcomes_replayed: BTreeSet<String> = BTreeSet::new();
 
     for scenario in fixture["scenarios"].as_array().expect("scenarios") {
         let id = scenario["id"].as_str().expect("id").to_owned();
@@ -401,6 +297,8 @@ fn blob_backend_discriminator_is_replayed() {
         let outcome = scenario["outcome"].as_str().expect("outcome");
         let backend_form = scenario["backend_form"].as_str().expect("backend_form");
         forms_seen.insert(backend_form.to_owned());
+        codecs_replayed.insert(scenario["codec"].as_str().expect("codec").to_owned());
+        outcomes_replayed.insert(outcome.to_owned());
         assert_eq!(
             scenario["variant"].as_str().expect("variant"),
             "Delta",
@@ -541,15 +439,36 @@ fn blob_backend_discriminator_is_replayed() {
 
                 exp.assert_key("rejected", true);
 
+                // Which refusal this is, read off the RAW WIRE's `backend` slot
+                // rather than off the scenario's own `backend_form` label
+                // (`#lznullformblind`). Comparing the fixture's `rejection_kind`
+                // against a `match` on the fixture's own label is the closure
+                // tautology: both operands come out of the same scenario, so no
+                // input can fail it. The slot's wire TYPE is the real
+                // discriminator — a present string is a token this build does
+                // not know, a present non-string has no token to name at all —
+                // and it is a read of the bytes, which the scenario cannot lie
+                // about.
+                let observed_kind = match slot
+                    .as_ref()
+                    .unwrap_or_else(|| {
+                        panic!("{id}: a reject scenario's frame must still parse schema-lessly")
+                    })
+                    .get("backend")
+                {
+                    Some(Value::String(_)) => "unknown_token",
+                    Some(Value::Null) | None => panic!(
+                        "{id}: an absent or nil `backend` is the ACCEPT path; a reject \
+                         scenario must carry a present value"
+                    ),
+                    Some(_) => "non_string",
+                };
                 let kind = exp.assert_key_with("rejection_kind", |v| {
                     let kind = v.as_str().expect("rejection_kind is a string").to_owned();
                     assert_eq!(
-                        kind,
-                        match backend_form {
-                            "non_string" => "non_string",
-                            _ => "unknown_token",
-                        },
-                        "{id}: the fixture's rejection kind and its wire form must agree"
+                        kind, observed_kind,
+                        "{id}: the declared rejection kind and the type the wire's `backend` \
+                         slot really carries must agree"
                     );
                     kind
                 });
@@ -597,27 +516,127 @@ fn blob_backend_discriminator_is_replayed() {
         exp.finish();
     }
 
-    // The v2 assertion a scenario count cannot reach (`assertions.
-    // backend_form_vocabulary`). v1 declared three backends and carried
-    // scenarios for two, so a binding knowing only `{shm, arrow}` rejected
-    // `in_process` — conformingly, by the letter of the clause — and passed all
-    // eight scenarios while implementing a smaller enum than the clause
-    // declares. Reading the discriminator and knowing the vocabulary are
+    // The fixture-level block is evaluated AFTER the replay, so every vocabulary
+    // is compared against what the run PRODUCED rather than against a literal or
+    // against the fixture's own structure (`#lznullformblind`). `backends`,
+    // `backend_forms` and `rejection_kinds` were already checked as set
+    // differences below the loop; folding those comparisons INTO the assertion
+    // keys is what makes the keys themselves load-bearing, so a discharge naming
+    // them names something falsifiable.
+    //
+    // `backends` in particular is the v2 assertion a scenario count cannot reach
+    // (`assertions.backend_form_vocabulary`). v1 declared three backends and
+    // carried scenarios for two, so a binding knowing only `{shm, arrow}`
+    // rejected `in_process` — conformingly, by the letter of the clause — and
+    // passed all eight scenarios while implementing a smaller enum than the
+    // clause declares. Reading the discriminator and knowing the vocabulary are
     // different facts, and this is a SET DIFFERENCE, not a count.
-    assert_eq!(
-        backends_decoded, declared_backends,
-        "every backend in `assertions.backends` must appear as the `decoded_backend` of \
-         some accept scenario, and no other backend may; declared {declared_backends:?}, \
-         decoded {backends_decoded:?}"
+    let a = Expect::new(path.clone(), "assertions", &fixture["assertions"]);
+    a.assert_key("required_of_binding", "MUST");
+    a.assert_key_with("codecs", |v| {
+        assert_eq!(
+            string_set(v, "codecs"),
+            codecs_replayed,
+            "codecs: declared vs the codecs this run really decoded through"
+        );
+    });
+    a.assert_key_with("backends", |v| {
+        assert_eq!(
+            string_set(v, "backends"),
+            backends_decoded,
+            "every backend in `assertions.backends` must appear as the `decoded_backend` \
+             of some accept scenario, and no other backend may"
+        );
+    });
+    a.assert_key_with("backend_forms", |v| {
+        assert_eq!(
+            string_set(v, "backend_forms"),
+            forms_seen,
+            "every declared wire form must be exercised, and no undeclared one may appear"
+        );
+    });
+    a.assert_key_with("rejection_kinds", |v| {
+        assert_eq!(
+            string_set(v, "rejection_kinds"),
+            rejection_kinds_seen,
+            "both declared rejection kinds must actually be reached"
+        );
+    });
+    a.assert_key_with("outcomes", |v| {
+        assert_eq!(
+            string_set(v, "outcomes"),
+            outcomes_replayed,
+            "outcomes: declared vs the branches this run really dispatched into"
+        );
+    });
+    // Against the scenarios this run REACHED, not `fixture["scenarios"].len()` —
+    // the fixture compared to itself is green over a runner that decodes
+    // nothing, the exact vacuity `anti_vacuity` exists to name.
+    a.assert_key("scenario_count", replayed as u64);
+    // The nine paragraphs the corpus declares in `assertions.prose`
+    // (`#lzprosekeyconvention`). Each names the executable keys this run really
+    // asserts and that genuinely carry the obligation — the free-text reasons
+    // that used to sit here ("explains why the wire is text/hex") named nothing
+    // and were checkable by nothing.
+    a.prose_key(
+        "clause",
+        &["decoded_backend", "rejected", "rejection_kind", "backends"],
     );
-    assert_eq!(
-        forms_seen, declared_forms,
-        "every declared wire form must be exercised, and no undeclared one may appear"
+    // PROXY. `wire_encoding` is a claim about how the CORPUS carries its bytes;
+    // no assertion a run makes can observe it. The honest proxy is the codec and
+    // form vocabulary plus the two decode outcomes — together they prove the
+    // absent-versus-present-short-string distinction survived into the runner,
+    // which is the distinction the paragraph exists to protect. Both vocabulary
+    // keys are now satisfied only by what the replay dispatched on, and
+    // `backend_form` is itself held against the raw wire inside the loop, so the
+    // proxy rests on a read of the bytes rather than on the fixture's own list.
+    a.prose_key(
+        "wire_encoding",
+        &["codecs", "backend_forms", "decoded_backend", "rejected"],
     );
-    assert_eq!(
-        rejection_kinds_seen, declared_rejection_kinds,
-        "both declared rejection kinds must actually be reached"
+    a.prose_key(
+        "reject_obligation",
+        &["error_names_token", "rejection_kind"],
     );
+    a.prose_key(
+        "backend_form_vocabulary",
+        &["backends", "backend_forms", "decoded_backend"],
+    );
+    a.prose_key(
+        "null_form",
+        &["decoded_backend", "reencoded_backend_field_present"],
+    );
+    a.prose_key(
+        "non_string_form",
+        &["rejected", "rejection_kind", "rejection_is_decode_error"],
+    );
+    a.prose_key("epoch_disambiguation", &["frame_epoch", "blob_epoch"]);
+    // The four controls, in order: (1) and (2) are `decoded_backend`, (3) is
+    // `reencoded_backend_field_present`, (4) is the `backends` set difference.
+    // `scenario_count` now counts the scenarios the run reached, so it is a
+    // control rather than a restatement of the file's own length.
+    a.prose_key(
+        "anti_vacuity",
+        &[
+            "decoded_backend",
+            "reencoded_backend_field_present",
+            "backends",
+            "scenario_count",
+        ],
+    );
+    // PROXY. `theorem` names a Lean theorem in lazily-formal; a run can only
+    // prove its consequence. `resolve_wrong_backend`'s operative consequence
+    // here is that a kind is never normalized: an unknown one is `rejected`, and
+    // a known one arrives as itself in `decoded_backend`.
+    a.prose_key("theorem", &["decoded_backend", "rejected"]);
+    // NOT prose — the corpus does not list it, and a script path is a value, not
+    // a paragraph. There is nothing in this binding that regenerates the fixture.
+    a.excuse_key(
+        "generator",
+        "the corpus-side script that regenerates the fixture; lazily-rs replays the \
+         fixture and never regenerates it, so there is nothing here to compare it against",
+    );
+    a.finish();
 
     assert_eq!(
         replayed, 14,

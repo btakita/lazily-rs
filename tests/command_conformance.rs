@@ -234,6 +234,9 @@ fn cancel_preempts_nonterminal_scenarios() {
             &scenario["expect"],
         );
         let mut p = CommandProjection::new();
+        // The indices whose image this run really held fixed across the fold —
+        // what the key is compared against below.
+        let mut held_fixed: Vec<usize> = Vec::new();
         for (i, frame) in scenario["frames"].as_array().unwrap().iter().enumerate() {
             // `ignored_frame_indices`: a late cancel against an already-terminal
             // command must leave the projection exactly as it was. The reducer
@@ -252,18 +255,24 @@ fn cancel_preempts_nonterminal_scenarios() {
                     before,
                     "scenario {name} frame {i}: must be ignored"
                 );
+                held_fixed.push(i);
             }
         }
-        // The whole declared set is asserted above, frame by frame; record it
-        // here so the guard sees the key reach a comparison.
+        // Compared against the indices the fold really reached and really held
+        // fixed (`#lznullformblind`). The bounds check this replaces compared
+        // the fixture to its own `frames` array — green over a runner that never
+        // folded a frame, and blind to a declared index the loop skipped.
         exp.assert_key_if_present("ignored_frame_indices", |want| {
-            for v in want.as_array().expect("ignored_frame_indices") {
-                let idx = v.as_u64().expect("frame index") as usize;
-                assert!(
-                    idx < scenario["frames"].as_array().unwrap().len(),
-                    "scenario {name}: ignored_frame_indices names frame {idx}, out of range"
-                );
-            }
+            let want: Vec<usize> = want
+                .as_array()
+                .expect("ignored_frame_indices")
+                .iter()
+                .map(|v| v.as_u64().expect("frame index") as usize)
+                .collect();
+            assert_eq!(
+                held_fixed, want,
+                "scenario {name}: the frames whose projection image this run held fixed"
+            );
         });
         assert_projection(&p, &exp);
         assert_eq!(

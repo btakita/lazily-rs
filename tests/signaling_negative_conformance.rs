@@ -15,6 +15,16 @@ struct FrameCase {
     label: String,
     direction: String,
     wire: Value,
+    /// The frame's message variant. Carried by every positive frame and read by
+    /// NOTHING until `#lznullformblind` — serde drops an undeclared field
+    /// silently, so an unread label on a plain struct is invisible to every
+    /// rung: the assertion-key guard only covers blocks a runner bound, and this
+    /// one was never in a block at all. It is held to the DECODED frame below,
+    /// not to the input wire, so a label naming one variant over a frame the
+    /// codec reads as another reddens. `Option` because the `rejects` cases
+    /// share this struct and carry no variant.
+    #[serde(default)]
+    variant: Option<String>,
     /// Language-agnostic claims about the DECODED frame. Read by nothing until
     /// `#lzassertunknownkeys`: the runner round-tripped the wire and never
     /// checked a single one, so `server_stamped_from` / `roster_excludes_self`
@@ -73,6 +83,7 @@ fn signaling_frames_replay_positive_and_negative_cases() {
     let fixture: FramesFixture =
         serde_json::from_str(&raw).expect("parse signaling frames fixture");
 
+    let mut variants_replayed = 0usize;
     for case in fixture.frames {
         let actual = decode(&case.direction, &case.wire)
             .unwrap_or_else(|error| panic!("{} should decode: {error}", case.label));
@@ -81,8 +92,26 @@ fn signaling_frames_replay_positive_and_negative_cases() {
             "{} should round-trip exactly",
             case.label
         );
+        // The label held to the DECODE (`#lznullformblind`). Every positive
+        // frame declares its variant and nothing checked it; the discriminator
+        // the codec really produced is the round-tripped frame's `type`.
+        let variant = case
+            .variant
+            .as_deref()
+            .unwrap_or_else(|| panic!("{}: a positive frame must declare a variant", case.label));
+        assert_eq!(
+            actual["type"].as_str(),
+            Some(variant),
+            "{}: the frame's `variant` label and the decoded discriminator disagree",
+            case.label
+        );
+        variants_replayed += 1;
         assert_frame_assertions(&case, &actual);
     }
+    assert_eq!(
+        variants_replayed, 17,
+        "every positive frame must reach the variant check"
+    );
 
     for case in fixture.rejects {
         assert!(

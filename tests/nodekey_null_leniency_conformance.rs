@@ -22,12 +22,30 @@
 //! under the scenario's OWN codec, because omit-when-absent is a per-encoder
 //! decision (the `#lzmsgpackparity` defect was exactly a msgpack encoder writing
 //! `key: null` while json omitted it).
+//!
+//! It also carries a RAW-WIRE control (`#lznullformblind`). Every key in this
+//! fixture's `expect` blocks is byte-identical across the `omitted` and `null`
+//! families — `decoded_key` is null for both by design, because reading an
+//! explicit null as absent IS the leniency — so post-decode the four `null`
+//! scenarios are the four `omitted` ones wearing a different id, and this
+//! decoder's `#[serde(default)]` collapses them on contact. Four scenarios
+//! proving nothing, invisible to the manifest rung, the scenario-replay rung and
+//! both assertion-key rungs at once, since an unreplayed distinction contributes
+//! no unconsumed and no unasserted key. `wire_key_form` classifies the `key`
+//! slot out of the `wire_json` TEXT and the `wire_msgpack_hex` BYTES before any
+//! decode runs, `raw_key_form` witnesses the same slot a second time WITHOUT any
+//! decoder — a text scan and a msgpack type-tag read — because the schema-less
+//! classification runs on the very crates the decode under test runs on and
+//! cannot see a defect it shares with them, and the fixture-level vocabularies
+//! are asserted against what the run really replayed rather than against
+//! literals or the fixture's own lists.
 
 mod common;
 
 use common::{Expect, ScenarioIdSource};
 use lazily::{Delta, DeltaOp, IpcMessage, Snapshot};
 use serde_json::Value;
+use std::collections::BTreeSet;
 
 const SPEC_DIR: &str = "../lazily-spec/conformance/codec";
 const VENDORED_DIR: &str = "tests/conformance/codec";
@@ -64,6 +82,165 @@ fn decode(scenario: &Value) -> IpcMessage {
     }
 }
 
+/// The map carrying the `key` slot inside a SCHEMA-LESS frame tree, dispatching
+/// on which optional-key site the scenario exercises.
+///
+/// Shared by the RAW-WIRE control and the RE-ENCODED inspection, so both read
+/// the same slot out of the same shape. Fails closed on an unknown field
+/// (`#lzscenariobodyskip`): a fixture naming a site this runner does not
+/// navigate must redden rather than silently classify nothing.
+fn key_site(scenario: &Value, frame: &Value, whence: &str) -> Value {
+    let site = match scenario["field"].as_str().expect("field") {
+        "snapshot" => &frame["Snapshot"]["nodes"][0],
+        "node_add" => &frame["Delta"]["ops"][0]["NodeAdd"],
+        other => panic!("unknown field {other}"),
+    };
+    assert!(
+        site.is_object(),
+        "{whence}: the `key` site is not a map: {site}"
+    );
+    site.clone()
+}
+
+/// Classify the `key` slot out of the RAW wire — the `wire_json` TEXT and the
+/// `wire_msgpack_hex` BYTES — BEFORE any decode runs.
+///
+/// This control is the whole reason `wire_encoding` is dischargeable here, and
+/// lazily-rs was one of the four bindings still blind without it. Every key in
+/// this fixture's `expect` blocks is byte-identical for the `omitted` and `null`
+/// families — `decoded_key` is null for both BY DESIGN, because reading an
+/// explicit null as absent is the leniency under test — so the four `null`
+/// scenarios are the four `omitted` ones wearing a different id as far as any
+/// post-decode assertion can tell, and `#[serde(default)]` collapses them on
+/// contact. Four scenarios proving nothing, invisible to the manifest rung, the
+/// scenario-replay rung and both assertion-key rungs at once, because an
+/// unreplayed distinction contributes no unconsumed and no unasserted key.
+///
+/// Only a read of the raw slot sees the difference: in json an absent map entry
+/// versus a literal `null`, in msgpack an absent entry versus the one-byte nil
+/// `0xc0`. `rmp_serde` into `serde_json::Value` preserves both — `deserialize_any`
+/// visits nil as `Value::Null` and never invents the entry — so the three-way
+/// split survives into the runner in each codec. The sibling blob-backend runner
+/// already applies exactly this control to `backend`; the references are
+/// lazily-go's `nodeKeyWireForm` and lazily-cpp's `wire_key_form`.
+///
+/// Fails closed: every branch is explicit and there is no defaulting arm, so an
+/// unknown codec or an unclassifiable slot panics instead of being read as one
+/// of the three forms.
+fn wire_key_form(scenario: &Value, id: &str) -> &'static str {
+    let frame: Value = match scenario["codec"].as_str().expect("codec") {
+        "json" => {
+            let text = scenario["wire_json"].as_str().expect("wire_json is text");
+            serde_json::from_str(text)
+                .unwrap_or_else(|e| panic!("{id}: wire_json is not JSON: {e}"))
+        }
+        "msgpack" => {
+            let bytes = decode_hex(scenario["wire_msgpack_hex"].as_str().expect("hex"));
+            rmp_serde::from_slice(&bytes)
+                .unwrap_or_else(|e| panic!("{id}: wire_msgpack_hex is not msgpack: {e}"))
+        }
+        other => panic!("{id}: unknown codec {other}"),
+    };
+    let site = key_site(scenario, &frame, "the scenario's own wire");
+    let map = site.as_object().expect("key site is a map");
+    match map.get("key") {
+        // No entry at all — the form a conforming encoder emits.
+        None => "omitted",
+        // The entry is there and holds json `null` / msgpack nil (`0xc0`).
+        Some(Value::Null) => "null",
+        // A real key. Anything else present is `present` by construction, and
+        // the equality against the scenario's declared `key_form` below is what
+        // refuses a form this vocabulary does not name.
+        Some(_) => "present",
+    }
+}
+
+/// MessagePack's `nil` tag — the one byte that spells an explicit `key: null`
+/// on a msgpack wire, as against the field simply not being written.
+const MSGPACK_NIL: u8 = 0xc0;
+
+/// MessagePack's `fixstr` header for a three-byte string, followed by `key`:
+/// the on-wire spelling of the field NAME. Four bytes, matched literally.
+const MSGPACK_KEY_FIELD: [u8; 4] = [0xa3, b'k', b'e', b'y'];
+
+/// SECOND WITNESS for the `key` slot, taken WITHOUT going through any decoder.
+///
+/// [`wire_key_form`] classifies through `serde_json` / `rmp_serde` — the same
+/// two crates the typed decode under test runs on. That makes it a control with
+/// a blind spot of its own: a defect in either crate's schema-less path corrupts
+/// the control and the thing being controlled together, and the control cannot
+/// see it. A control is only as trustworthy as the code path it avoids, so this
+/// witness avoids the whole of it.
+///
+/// json is scanned as TEXT: find the field name, step over the colon, and look
+/// at whether the value literally begins `null`. msgpack is scanned as BYTES:
+/// find the `fixstr` header for the field name and read the one byte that
+/// follows it — `MSGPACK_NIL` is the explicit nil, any other type tag is a real
+/// value, and the field name never appearing at all is the omitted form.
+///
+/// Both halves require the field name to occur AT MOST ONCE, so a frame in which
+/// the scan could be ambiguous fails closed instead of classifying the wrong
+/// slot. The caller holds this witness and the schema-less one to each other.
+fn raw_key_form(scenario: &Value, id: &str) -> &'static str {
+    match scenario["codec"].as_str().expect("codec") {
+        "json" => {
+            let text = scenario["wire_json"].as_str().expect("wire_json is text");
+            let hits = text.match_indices("\"key\"").count();
+            assert!(
+                hits <= 1,
+                "{id}: `\"key\"` occurs {hits} times in the raw json; this witness \
+                 classifies one slot and fails closed rather than guessing which"
+            );
+            match text.find("\"key\"") {
+                None => "omitted",
+                Some(at) => {
+                    let after = text[at + "\"key\"".len()..].trim_start();
+                    let value = after
+                        .strip_prefix(':')
+                        .unwrap_or_else(|| {
+                            panic!("{id}: raw json `\"key\"` is not a member name: {after}")
+                        })
+                        .trim_start();
+                    if value.starts_with("null") {
+                        "null"
+                    } else {
+                        "present"
+                    }
+                }
+            }
+        }
+        "msgpack" => {
+            let bytes = decode_hex(scenario["wire_msgpack_hex"].as_str().expect("hex"));
+            let hits: Vec<usize> = bytes
+                .windows(MSGPACK_KEY_FIELD.len())
+                .enumerate()
+                .filter(|(_, window)| *window == MSGPACK_KEY_FIELD)
+                .map(|(at, _)| at)
+                .collect();
+            assert!(
+                hits.len() <= 1,
+                "{id}: the `key` field name occurs {} times in the raw msgpack; this \
+                 witness classifies one slot and fails closed rather than guessing which",
+                hits.len()
+            );
+            match hits.first() {
+                None => "omitted",
+                Some(&at) => {
+                    let tag = *bytes.get(at + MSGPACK_KEY_FIELD.len()).unwrap_or_else(|| {
+                        panic!("{id}: the raw msgpack ends immediately after the `key` field name")
+                    });
+                    if tag == MSGPACK_NIL {
+                        "null"
+                    } else {
+                        "present"
+                    }
+                }
+            }
+        }
+        other => panic!("{id}: unknown codec {other}"),
+    }
+}
+
 /// Re-encode under the scenario's own codec and read the result back
 /// SCHEMA-LESSLY, so what is inspected is the field set the encoder actually
 /// produced rather than a typed view that cannot distinguish absent from null.
@@ -76,11 +253,33 @@ fn reencoded_node(scenario: &Value, message: &IpcMessage) -> Value {
         }
         other => panic!("unknown codec {other}"),
     };
-    match scenario["field"].as_str().expect("field") {
-        "snapshot" => generic["Snapshot"]["nodes"][0].clone(),
-        "node_add" => generic["Delta"]["ops"][0]["NodeAdd"].clone(),
-        other => panic!("unknown field {other}"),
+    key_site(scenario, &generic, "the re-encoded frame")
+}
+
+/// The external tag the decoded frame really carries, for holding the
+/// scenario's `variant` label to the decode.
+fn variant_name(message: &IpcMessage) -> &'static str {
+    match message {
+        IpcMessage::Snapshot(_) => "Snapshot",
+        IpcMessage::Delta(_) => "Delta",
+        IpcMessage::CrdtSync(_) => "CrdtSync",
+        IpcMessage::ResyncRequest(_) => "ResyncRequest",
+        IpcMessage::OutboxAck(_) => "OutboxAck",
+        IpcMessage::DeltaSinceRequest(_) => "DeltaSinceRequest",
     }
+}
+
+/// The declared vocabulary of an `assertions` list, as a SET.
+fn string_set(v: &Value, what: &str) -> BTreeSet<String> {
+    v.as_array()
+        .unwrap_or_else(|| panic!("{what} is an array"))
+        .iter()
+        .map(|x| {
+            x.as_str()
+                .unwrap_or_else(|| panic!("{what} holds strings"))
+                .to_owned()
+        })
+        .collect()
 }
 
 fn decoded_key(scenario: &Value, message: &IpcMessage) -> Option<String> {
@@ -111,63 +310,76 @@ fn nodekey_null_leniency_is_replayed() {
     // Fixture-scoped prose ledger (`#lzprosekeyconvention`).
     let _prose = common::ProseLedger::open(&path);
 
-    let a = Expect::new(path.clone(), "assertions", &fixture["assertions"]);
-    a.assert_key("required_of_binding", "MUST");
-    a.assert_key_with("codecs", |v| {
-        assert_eq!(v, &serde_json::json!(["json", "msgpack"]), "codecs");
-    });
-    a.assert_key_with("fields", |v| {
-        assert_eq!(v, &serde_json::json!(["snapshot", "node_add"]), "fields");
-    });
-    a.assert_key_with("key_forms", |v| {
-        assert_eq!(
-            v,
-            &serde_json::json!(["omitted", "null", "present"]),
-            "key_forms"
-        );
-    });
-    a.assert_key(
-        "scenario_count",
-        fixture["scenarios"].as_array().expect("scenarios").len() as u64,
-    );
-    // The four declared paragraphs (`#lzprosekeyconvention`). The clause is the
-    // encoder/decoder split, so it takes both halves; the re-encode obligation
-    // is exactly the encoder half, which no decode assertion can reach.
-    a.prose_key("clause", &["decoded_key", "reencoded_key_field_present"]);
-    // PROXY. `wire_encoding` is a claim about how the CORPUS carries its bytes,
-    // which no assertion a run makes can observe. The proxy is the codec and key
-    // form vocabulary plus `decoded_key`, asserted against a decode of the raw
-    // `wire_json` text / `wire_msgpack_hex` bytes rather than a pre-parsed
-    // object — together they prove the absent-versus-explicit-nil distinction
-    // survived into the runner.
-    a.prose_key("wire_encoding", &["codecs", "key_forms", "decoded_key"]);
-    a.prose_key("reencode_obligation", &["reencoded_key_field_present"]);
-    // The controls are the `omitted` and `present` forms of `key_forms`, seen
-    // through `decoded_key` across the full `scenario_count`.
-    a.prose_key(
-        "anti_vacuity",
-        &["decoded_key", "key_forms", "scenario_count"],
-    );
-    a.excuse_key(
-        "generator",
-        "the corpus-side script that regenerates the fixture; lazily-rs replays the \
-         fixture and never regenerates it, so there is nothing here to compare it against",
-    );
-    a.finish();
-
     // Anti-vacuity, both directions. `decoded_key: null` is what a runner that
     // never decodes would report, and `reencoded_key_field_present: false` is
     // what a runner that never encodes would report — so the counters below pin
     // the two `present` forms per codec, which only a real decode can produce.
+    //
+    // The three vocabularies are collected here and asserted AFTER the loop,
+    // against what the replay really dispatched on (`#lznullformblind`).
+    // Compared against a hand-written literal — or against the fixture's own
+    // list — they were green over a runner that decodes nothing, which is the
+    // exact vacuity `anti_vacuity` exists to name, so naming them in a discharge
+    // discharged nothing. `forms_replayed` in particular is read off the RAW
+    // WIRE rather than off the fixture's `key_form` labels.
     let mut replayed = 0usize;
     let mut keys_decoded = 0usize;
+    let mut codecs_replayed: BTreeSet<String> = BTreeSet::new();
+    let mut fields_replayed: BTreeSet<String> = BTreeSet::new();
+    let mut forms_replayed: BTreeSet<String> = BTreeSet::new();
 
     for scenario in fixture["scenarios"].as_array().expect("scenarios") {
         let id = scenario["id"].as_str().expect("id").to_owned();
         common::record_scenario(&path, &id, ScenarioIdSource::Id);
         replayed += 1;
 
+        codecs_replayed.insert(scenario["codec"].as_str().expect("codec").to_owned());
+        fields_replayed.insert(scenario["field"].as_str().expect("field").to_owned());
+
+        // THE RAW-WIRE CONTROL. Read the `key` slot out of the scenario's own
+        // bytes before the decoder touches them, and hold the scenario's
+        // declared `key_form` to it. Not a selector: a scenario tagged `null`
+        // whose frame omits the entry, a corpus that lost the distinction in
+        // carriage, or a runner that re-serialized a pre-parsed object before
+        // looking, all redden HERE and nowhere else — every downstream `expect`
+        // key is identical across the two families.
+        let on_wire = wire_key_form(scenario, &id);
+        // The second witness, taken without any decoder at all. The two must
+        // agree: the schema-less classification runs on the same crates as the
+        // decode under test, so on its own it cannot see a defect shared with
+        // what it is controlling.
+        let raw = raw_key_form(scenario, &id);
+        assert_eq!(
+            on_wire, raw,
+            "{id}: the schema-less witness and the decoder-free byte/text witness \
+             disagree about the `key` slot"
+        );
+        let declared = scenario["key_form"].as_str().expect("key_form");
+        assert!(
+            matches!(declared, "omitted" | "null" | "present"),
+            "{id}: scenario declares the unknown key form `{declared}`; this runner \
+             classifies exactly `omitted` / `null` / `present` and fails closed rather \
+             than defaulting an unrecognised one into the lenient branch"
+        );
+        assert_eq!(
+            declared, on_wire,
+            "{id}: the scenario's label and its own bytes disagree about the `key` slot"
+        );
+        forms_replayed.insert(on_wire.to_owned());
+
         let message = decode(scenario);
+        // The scenario's `variant` label, held against the variant the decode
+        // really produced (`#lznullformblind`). It was read by NOTHING: this
+        // runner has no tracker over the scenario's own top-level keys, so an
+        // unread label there is invisible to every rung — the unconsumed-key
+        // guard only covers blocks a runner already bound. A label that names
+        // one variant over a frame that decodes as another is a fixture defect
+        // no `expect` key can see, since `field` would still navigate.
+        assert_eq!(
+            scenario["variant"].as_str().expect("variant"),
+            variant_name(&message),
+            "{id}: the scenario's `variant` label and the decoded frame disagree"
+        );
         let key = decoded_key(scenario, &message);
         if key.is_some() {
             keys_decoded += 1;
@@ -208,6 +420,82 @@ fn nodekey_null_leniency_is_replayed() {
         exp.finish();
     }
 
+    // The fixture-level block is evaluated AFTER the replay, so every vocabulary
+    // is compared against what the run PRODUCED (`#lznullformblind`) — and
+    // BEFORE the runner-side coverage gates below, which is the other half of
+    // the ordering. A correct assertion placed behind an earlier `assert_eq!`
+    // that fires first is unreachable: with the gates first, a divergence
+    // between the fixture's `scenario_count` and the scenarios really replayed
+    // could only ever surface as the gate's message, and the assertion key —
+    // the thing the corpus can read — would never be reached at all.
+    let a = Expect::new(path.clone(), "assertions", &fixture["assertions"]);
+    a.assert_key("required_of_binding", "MUST");
+    a.assert_key_with("codecs", |v| {
+        assert_eq!(
+            string_set(v, "codecs"),
+            codecs_replayed,
+            "codecs: declared vs the codecs this run really decoded through"
+        );
+    });
+    a.assert_key_with("fields", |v| {
+        assert_eq!(
+            string_set(v, "fields"),
+            fields_replayed,
+            "fields: declared vs the optional-key sites this run really navigated"
+        );
+    });
+    // Both directions, against the RAW WIRE rather than a list of literals:
+    // every declared form was carried by a scenario whose own bytes this runner
+    // classified before decoding, and no scenario carried a form the block does
+    // not declare. A literal here is green over a runner that never opens a
+    // frame, and it cannot see `null` collapsing into `omitted`.
+    a.assert_key_with("key_forms", |v| {
+        assert_eq!(
+            string_set(v, "key_forms"),
+            forms_replayed,
+            "key_forms: declared vs the forms read off the scenarios' own bytes"
+        );
+    });
+    // Against the scenarios this run REACHED, not against
+    // `fixture["scenarios"].len()` — the fixture compared to itself is green
+    // over a runner that decodes nothing.
+    a.assert_key("scenario_count", replayed as u64);
+    // The four declared paragraphs (`#lzprosekeyconvention`). The clause is the
+    // encoder/decoder split, so it takes both halves; the re-encode obligation
+    // is exactly the encoder half, which no decode assertion can reach.
+    // `key_forms` now carries the clause's premise as well — it is what proves
+    // the two forms were DISTINCT going in, and `decoded_key` is what proves
+    // they arrive the same.
+    a.prose_key(
+        "clause",
+        &["key_forms", "decoded_key", "reencoded_key_field_present"],
+    );
+    // PROXY. `wire_encoding` is a claim about how the CORPUS carries its bytes —
+    // raw text and lowercase hex rather than a pre-parsed object — which no
+    // assertion a run makes can observe directly. The honest proxy is the
+    // raw-wire control: `key_forms` is now satisfied only by the three shapes
+    // this runner read out of the raw frames themselves, so had the carriage
+    // collapsed an absent entry into an explicit nil (or the runner collapsed
+    // them before looking), the three-way split could not survive into the run
+    // at all, in either codec. `codecs` pins that both carriages were exercised.
+    a.prose_key("wire_encoding", &["key_forms", "codecs", "decoded_key"]);
+    a.prose_key("reencode_obligation", &["reencoded_key_field_present"]);
+    // The controls are the `omitted` and `present` forms of `key_forms`, counted
+    // off the raw wire rather than off the fixture's labels, seen through
+    // `decoded_key` across the full `scenario_count`.
+    a.prose_key(
+        "anti_vacuity",
+        &["decoded_key", "key_forms", "scenario_count"],
+    );
+    a.excuse_key(
+        "generator",
+        "the corpus-side script that regenerates the fixture; lazily-rs replays the \
+         fixture and never regenerates it, so there is nothing here to compare it against",
+    );
+    a.finish();
+
+    // Runner-side coverage gates LAST, so they can only ever add a failure the
+    // assertion keys above did not already name.
     assert_eq!(replayed, 12, "two fields x three key forms x two codecs");
     assert_eq!(
         keys_decoded, 4,

@@ -55,9 +55,32 @@ fn load(name: &str) -> (String, Value) {
 /// distinct senses of "canonical" protocol.md keeps apart (`role` vs
 /// `byte_canonical`). Read by nothing until now — an unread block is exactly
 /// the drift `#lzassertunknownkeys` exists to catch.
-fn assert_fixture_block(path: &str, fixture: &Value, codec: &str, byte_canonical: bool) {
+///
+/// Called AFTER the replay, because `scenario_count` is asserted against the
+/// scenarios the run really round-tripped (`replayed`). It used to be compared
+/// against `fixture["scenarios"].len()` — the fixture against itself, green over
+/// a runner that decodes nothing, which is the exact vacuity the family's
+/// `anti_vacuity` paragraphs exist to name (`#lznullformblind`).
+fn assert_fixture_block(
+    path: &str,
+    fixture: &Value,
+    codec: &str,
+    byte_canonical: bool,
+    replayed: u64,
+) {
     assert_eq!(fixture["codec"], codec, "{path}: fixture codec field");
     let a = Expect::new(path.to_owned(), "assertions", &fixture["assertions"]);
+    // THE LIMIT OF THE RULE (`#lznullformblind`). `codec`, `self_describing`,
+    // `byte_canonical`, `required_of_binding` and `role` below stay
+    // fixture-versus-literal DELIBERATELY, and a sweep for self-comparisons
+    // should leave them. They are corpus DECLARATIONS a binding pins by
+    // agreement, not facts a run produces: `byte_canonical` states what two
+    // conforming bindings may do to each other's bytes, `required_of_binding`
+    // states the clause's normative level, and `role` states the codec's place
+    // in the protocol. No single run can produce a value comparable to any of
+    // them, so forcing them "run-derived" would manufacture a check rather than
+    // ground one. `scenario_count` is different in kind — the run really does
+    // produce a count — which is why it moved.
     a.assert_key("codec", codec);
     a.assert_key("self_describing", true);
     a.assert_key("byte_canonical", byte_canonical);
@@ -74,10 +97,7 @@ fn assert_fixture_block(path: &str, fixture: &Value, codec: &str, byte_canonical
             other => panic!("{path}: unknown codec `{other}` in fixture block"),
         },
     );
-    a.assert_key(
-        "scenario_count",
-        fixture["scenarios"].as_array().expect("scenarios").len() as u64,
-    );
+    a.assert_key("scenario_count", replayed);
     // `note` is declared prose by the corpus (`#lzprosekeyconvention`), so it is
     // DISCHARGED by naming the executable keys that carry its obligation rather
     // than excused with a sentence. The json paragraph's claim is that `role`
@@ -111,6 +131,15 @@ fn variant_name(message: &IpcMessage) -> &'static str {
         IpcMessage::ResyncRequest(_) => "ResyncRequest",
         IpcMessage::OutboxAck(_) => "OutboxAck",
         IpcMessage::DeltaSinceRequest(_) => "DeltaSinceRequest",
+    }
+}
+
+/// The corpus's discriminator for a node's state, read off the DECODED value.
+fn node_state_tag(state: &NodeState) -> &'static str {
+    match state {
+        NodeState::Payload(_) => "Payload",
+        NodeState::Opaque => "Opaque",
+        NodeState::SharedBlob(_) => "SharedBlob",
     }
 }
 
@@ -150,8 +179,12 @@ fn assert_snapshot(exp: &Expect<'_>, snap: &Snapshot) {
         .expect("fixture pins an Opaque node");
     exp.assert_key("opaque_node_id", opaque.node.0);
     // The externally-tagged UNIT variant is the shape most likely to decay into
-    // `{"Opaque": null}` under a re-encode, so name it rather than infer it.
-    exp.assert_key("opaque_node_state_tag", "Opaque");
+    // `{"Opaque": null}` under a re-encode, so the tag is named rather than
+    // inferred — but READ OFF the round-tripped node's state, not written as the
+    // literal `"Opaque"` (`#lznullformblind`). The literal compared the fixture
+    // to a constant and would have held over a runner that never round-tripped
+    // anything; this holds only if the unit variant survived the trip.
+    exp.assert_key("opaque_node_state_tag", node_state_tag(&opaque.state));
     exp.assert_key(
         "first_edge",
         vec![snap.edges[0].dependent.0, snap.edges[0].dependency.0],
@@ -236,7 +269,6 @@ fn assert_values(exp: &Expect<'_>, message: &IpcMessage) {
 fn json_frames_round_trip() {
     let (path, fixture) = load("frame_roundtrip_json.json");
     let _prose = common::ProseLedger::open(&path);
-    assert_fixture_block(&path, &fixture, "json", true);
 
     let mut replayed = 0;
     for (_, id, scenario) in common::scenarios(&path, &fixture) {
@@ -263,6 +295,10 @@ fn json_frames_round_trip() {
         exp.finish();
         replayed += 1;
     }
+    // The fixture-level block BEFORE the runner-side coverage gate: an
+    // assertion placed behind an earlier `assert_eq!` that fires first is
+    // unreachable (`#lznullformblind`).
+    assert_fixture_block(&path, &fixture, "json", true, replayed);
     assert_eq!(replayed, 3, "one scenario per IpcMessage variant");
     common::expect::verify_prose(&path);
 }
@@ -290,7 +326,6 @@ fn sorted_field_names(map: &Value) -> Vec<String> {
 fn msgpack_frames_round_trip() {
     let (path, fixture) = load("frame_roundtrip_msgpack.json");
     let _prose = common::ProseLedger::open(&path);
-    assert_fixture_block(&path, &fixture, "msgpack", false);
 
     let mut replayed = 0;
     for (_, id, scenario) in common::scenarios(&path, &fixture) {
@@ -357,6 +392,10 @@ fn msgpack_frames_round_trip() {
         exp.finish();
         replayed += 1;
     }
+    // The fixture-level block BEFORE the runner-side coverage gate: an
+    // assertion placed behind an earlier `assert_eq!` that fires first is
+    // unreachable (`#lznullformblind`).
+    assert_fixture_block(&path, &fixture, "msgpack", false, replayed);
     assert_eq!(replayed, 3, "one scenario per IpcMessage variant");
     common::expect::verify_prose(&path);
 }
