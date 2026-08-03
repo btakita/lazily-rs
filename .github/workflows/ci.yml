@@ -20,10 +20,17 @@ jobs:
     # Four guards stand over the conformance corpus, and they do NOT all execute
     # the same way:
     #
+    #   0. assertion-block BIND ledger   scripts/check-conformance-coverage.sh
     #   1. fixture manifest / coverage   scripts/check-conformance-coverage.sh
     #   2. unconsumed assertion key      tests/common/expect.rs, panics on drop
     #   3. unasserted assertion key      tests/common/expect.rs, panics on drop
     #   4. scenario replay ledger        scripts/check-conformance-coverage.sh
+    #
+    # Rung 0 sits BELOW rungs 2 and 3 (#lznullformblind): both of those are
+    # scoped to blocks a runner already BOUND to the tracker, so a block NO
+    # runner binds reports nothing at all -- its keys are not unread, nothing
+    # reads them. Its ledger is a third runtime evidence file on exactly the
+    # same terms as the two below.
     #
     # Rungs 2 and 3 live INSIDE the test binaries, so any `cargo test` step
     # enforces them for the runners it happens to compile. Rungs 1 and 4 are a
@@ -42,6 +49,7 @@ jobs:
     env:
       LAZILY_CONFORMANCE_MANIFEST: ${{ github.workspace }}/build/conformance-fixtures-loaded.txt
       LAZILY_CONFORMANCE_SCENARIOS: ${{ github.workspace }}/build/conformance-scenarios-replayed.txt
+      LAZILY_CONFORMANCE_BLOCKS: ${{ github.workspace }}/build/conformance-assertion-blocks.txt
 
     steps:
       - name: Checkout
@@ -78,6 +86,8 @@ jobs:
           : > "$LAZILY_CONFORMANCE_MANIFEST"
           mkdir -p "$(dirname "$LAZILY_CONFORMANCE_SCENARIOS")"
           : > "$LAZILY_CONFORMANCE_SCENARIOS"
+          mkdir -p "$(dirname "$LAZILY_CONFORMANCE_BLOCKS")"
+          : > "$LAZILY_CONFORMANCE_BLOCKS"
 
       - name: Test default features
         run: cargo +stable test --locked
@@ -336,6 +346,7 @@ jobs:
           test -d ../lazily-spec/conformance || { echo "::error::../lazily-spec/conformance missing — check-conformance-coverage.sh would SKIP and exit 0"; exit 1; }
           test -s "$LAZILY_CONFORMANCE_MANIFEST" || { echo "::error::fixture manifest $LAZILY_CONFORMANCE_MANIFEST is absent or empty — the recorder never attached, so coverage cannot be computed"; exit 1; }
           test -s "$LAZILY_CONFORMANCE_SCENARIOS" || { echo "::error::scenario ledger $LAZILY_CONFORMANCE_SCENARIOS is absent or empty — the recorder never attached, so scenario coverage cannot be computed"; exit 1; }
+          test -s "$LAZILY_CONFORMANCE_BLOCKS" || { echo "::error::assertion-block ledger $LAZILY_CONFORMANCE_BLOCKS is absent or empty — the recorder never attached, so the bind rung cannot be computed"; exit 1; }
           ./scripts/check-conformance-coverage.sh
 
       # The gate that keeps every step above honest. It compares `make check`'s
