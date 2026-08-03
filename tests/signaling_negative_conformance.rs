@@ -6,6 +6,7 @@ use common::Expect;
 use lazily::{ClientMessage, ServerMessage};
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 const FRAMES_PATH: &str = "../lazily-spec/conformance/signaling/frames.json";
 const SESSION_PATH: &str = "../lazily-spec/conformance/signaling/anti_spoof_session.json";
@@ -41,6 +42,10 @@ struct FramesFixture {
 
 #[derive(Deserialize)]
 struct SessionInput {
+    /// Which connection sent the frame. The server's whole anti-spoof job is to
+    /// stamp `from` off THIS, never off anything the client wrote.
+    #[serde(default)]
+    conn: Option<String>,
     recv: Value,
 }
 
@@ -50,11 +55,26 @@ struct SessionReject {
     input: SessionInput,
 }
 
+/// One frame the session emits, and the connection it goes to.
+#[derive(Deserialize)]
+struct SessionEmit {
+    frame: Value,
+}
+
+#[derive(Deserialize)]
+struct SessionStep {
+    input: SessionInput,
+    #[serde(default)]
+    expect: Vec<SessionEmit>,
+}
+
 #[derive(Deserialize)]
 struct SessionFixture {
+    #[serde(default)]
+    steps: Vec<SessionStep>,
     rejects: Vec<SessionReject>,
-    /// Session-level claims. See `anti_spoof_fixture_rejects_client_supplied_from`
-    /// for why this Rust runner cannot consume them.
+    /// Session-level claims, asserted over the transcript's own emitted frames
+    /// decoded through the shipped codec (`#lznullformblind`).
     #[serde(default)]
     assertions: Value,
 }
@@ -222,25 +242,101 @@ fn anti_spoof_fixture_rejects_client_supplied_from() {
     let fixture: SessionFixture =
         serde_json::from_str(&raw).expect("parse signaling anti-spoof fixture");
 
-    // `assertions` here are claims about a SERVER SESSION replayed over `steps`
-    // (roster construction, server-side `from` stamping, roster ordering). The
-    // signalling *server* is not part of the Rust crate — `lazily` ships the
-    // client codec only, and the session model lives in `signaling/` (TypeScript),
-    // whose `signaling/test/protocol.test.ts` replays these same steps. This Rust
-    // runner exercises the codec's reject behaviour, so the capability the keys
-    // describe genuinely does not exist here (`#lzassertunknownkeys`).
-    let exp = Expect::new(SESSION_PATH, "assertions", &fixture.assertions);
-    for key in [
-        "forwarded_from_is_server_registered",
-        "roster_excludes_self",
-        "roster_sorted_ascending",
-    ] {
-        exp.excuse_key(
-            key,
-            "server-session claim; the Rust crate ships the signalling CLIENT codec only \
-             (the session model + its replay live in signaling/, TypeScript)",
-        );
+    // These three were EXCUSED as "server-session claims the Rust crate cannot
+    // reach", on the grounds that `lazily` ships the signalling client codec only
+    // and the session model lives in `signaling/` (TypeScript). A corpus
+    // perturbation pass showed what that cost (`#lznullformblind`): flipping any
+    // of the three to `false` in a scratch copy of the corpus left this suite
+    // GREEN, so the anti-spoof invariant the fixture exists for was one corpus
+    // edit away from being switched off with nothing noticing. lazily-go found
+    // the identical three keys from the other direction.
+    //
+    // Running the SERVER is indeed out of reach here. Asserting the claims is
+    // not: the transcript's own emitted frames are ordinary signalling frames,
+    // and this crate ships the decoder for them. Each claim below is checked
+    // over those frames decoded through `ServerMessage` — the shipped codec, not
+    // a re-read of the fixture — so it is grounded in the library rather than
+    // fabricated. What stays out of scope is whether a server WOULD emit this
+    // transcript; `signaling/test/protocol.test.ts` covers that.
+    //
+    // `conn -> peer` is the server-side registry: the peer id bound to a
+    // connection when it joined. `forwarded_from_is_server_registered` is
+    // exactly the claim that a forwarded frame's `from` equals the registry
+    // entry for the connection that SENT it, never anything the sender wrote.
+    let mut registry: BTreeMap<String, u64> = BTreeMap::new();
+    let mut rosters_checked = 0usize;
+    let mut forwarded_checked = 0usize;
+    let mut roster_excludes_self = true;
+    let mut roster_sorted = true;
+    let mut from_is_registered = true;
+
+    for (i, step) in fixture.steps.iter().enumerate() {
+        let conn = step
+            .input
+            .conn
+            .clone()
+            .unwrap_or_else(|| panic!("step {i}: a session step names the sending connection"));
+        // The inbound frame goes through the CLIENT codec, which is what binds
+        // the registry to a decode rather than to the fixture's text.
+        let recv = decode("client", &step.input.recv)
+            .unwrap_or_else(|e| panic!("step {i}: session input should decode: {e}"));
+        if recv["type"] == "join" {
+            registry.insert(
+                conn.clone(),
+                recv["peer"].as_u64().expect("a join names its peer"),
+            );
+        }
+
+        for emit in &step.expect {
+            let frame = decode("server", &emit.frame)
+                .unwrap_or_else(|e| panic!("step {i}: emitted frame should decode: {e}"));
+            match frame["type"].as_str() {
+                Some("welcome") => {
+                    let self_peer = frame["peer"].as_u64().expect("welcome names its peer");
+                    let peers: Vec<u64> = frame["peers"]
+                        .as_array()
+                        .expect("welcome carries a roster")
+                        .iter()
+                        .map(|p| p.as_u64().expect("roster holds peer ids"))
+                        .collect();
+                    roster_excludes_self &= !peers.contains(&self_peer);
+                    roster_sorted &= peers.windows(2).all(|w| w[0] < w[1]);
+                    rosters_checked += 1;
+                }
+                // A forwarded frame is one carrying `from`. The server stamps it;
+                // the sender never supplies it (the `rejects` half below is the
+                // frame that tries).
+                _ if frame.get("from").is_some_and(|v| !v.is_null()) => {
+                    let stamped = frame["from"].as_u64().expect("`from` is a peer id");
+                    from_is_registered &= registry.get(&conn) == Some(&stamped);
+                    // ...and it is the REGISTRY's value, not an echo of whatever
+                    // the input happened to carry.
+                    from_is_registered &= step.input.recv.get("from").is_none();
+                    forwarded_checked += 1;
+                }
+                _ => {}
+            }
+        }
     }
+
+    // "Exercised at least once" (`#lzvacuousrun`). A transcript-wide invariant
+    // only fires where a frame of the right shape appears, so a match arm that
+    // stopped recognising `welcome` — or a forwarded variant — would silence the
+    // rule while every assertion below still read `true`.
+    assert!(
+        rosters_checked >= 2,
+        "the roster rules were never asked: {rosters_checked} welcome frames reached the check"
+    );
+    assert!(
+        forwarded_checked >= 3,
+        "the anti-spoof rule this fixture exists for was never asked: \
+         {forwarded_checked} forwarded frames reached the check"
+    );
+
+    let exp = Expect::new(SESSION_PATH, "assertions", &fixture.assertions);
+    exp.assert_key("roster_excludes_self", roster_excludes_self);
+    exp.assert_key("roster_sorted_ascending", roster_sorted);
+    exp.assert_key("forwarded_from_is_server_registered", from_is_registered);
 
     for case in fixture.rejects {
         assert!(

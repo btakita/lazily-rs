@@ -110,14 +110,105 @@ fn seen() -> &'static Mutex<HashSet<String>> {
     SEEN.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-/// `std::fs::read_to_string` plus a record of any conformance fixture it opens.
+/// `std::fs::read_to_string` plus a record of any conformance fixture it opens
+/// and an inventory of every `assertions` block that fixture carries.
 pub fn spec_read_to_string<P: AsRef<Path>>(path: P) -> io::Result<String> {
     let path = path.as_ref();
     let result = std::fs::read_to_string(path);
-    if result.is_ok() {
+    if let Ok(text) = &result {
         record_conformance_read(path);
+        if let Some(id) = conformance_id(path) {
+            record_declared_blocks(&id, text);
+        }
     }
     result
+}
+
+// ---------------------------------------------------------------------------
+// Rung 0: the assertion-block BIND ledger (`#lznullformblind`)
+// ---------------------------------------------------------------------------
+//
+// Every rung above this one is scoped to blocks a runner already BOUND. The
+// unconsumed-key guard fires on a key nothing read; the unasserted-key guard
+// fires on a key read and discarded; the prose ledger fires on a discharge that
+// names nothing. None of them can fire for a block no runner ever handed to the
+// tracker, because there is no tracker — its keys are not unread, nothing reads
+// them, and the fixture reports exactly nothing. lazily-dart found two such
+// blocks carrying eight silent keys, one of them a load-bearing anti-spoof
+// invariant.
+//
+// So the loader inventories every `assertions` block at READ time and `Expect`
+// books one as BOUND at construction. The two sides are matched by the block's
+// CONTENT, never by its `where` label: runners spell those labels inconsistently
+// (`assertions`, `frames[warn].assertions`, `scenarios[3].expect`) and a
+// label-keyed ledger would silently miss the mismatches instead of reporting
+// them. `scripts/check-conformance-coverage.sh` fails on any inventoried block
+// with no bind.
+
+/// Ledger of declared-versus-bound `assertions` blocks. Same contract as the
+/// manifest: ABSOLUTE path, appended by every test binary, truncated once.
+const BLOCK_LEDGER_ENV: &str = "LAZILY_CONFORMANCE_BLOCKS";
+
+/// FNV-1a over a block's canonical JSON. A content key, so a block is booked by
+/// what it SAYS rather than by what a runner chose to call it.
+fn block_digest(value: &serde_json::Value) -> String {
+    let text = serde_json::to_string(value).unwrap_or_default();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn append_block_record(line: &str) {
+    let Ok(out) = std::env::var(BLOCK_LEDGER_ENV) else {
+        return;
+    };
+    if out.is_empty() {
+        return;
+    }
+    // Bookkeeping never fails a suite; an unwritable ledger surfaces downstream
+    // as missing evidence, which is the outcome the guard wants.
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&out) {
+        let _ = f.write_all(format!("{line}\n").as_bytes());
+    }
+}
+
+/// Inventory every `assertions` block in a freshly read fixture: the top-level
+/// one plus any carried per-frame or per-scenario.
+fn record_declared_blocks(id: &str, text: &str) {
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(text) else {
+        return;
+    };
+    let declare = |where_: String, block: &serde_json::Value| {
+        append_block_record(&format!(
+            "declared\t{id}\t{}\t{where_}",
+            block_digest(block)
+        ));
+    };
+    if let Some(block) = doc.get("assertions").filter(|v| v.is_object()) {
+        declare("assertions".to_owned(), block);
+    }
+    for container in ["frames", "scenarios", "rejects"] {
+        let Some(items) = doc.get(container).and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for (i, item) in items.iter().enumerate() {
+            if let Some(block) = item.get("assertions").filter(|v| v.is_object()) {
+                declare(format!("{container}[{i}].assertions"), block);
+            }
+        }
+    }
+}
+
+/// Book an `assertions` block as BOUND. Called by `Expect::new`, so every block
+/// a runner hands to the tracker is booked whatever it calls it.
+pub fn record_block_bind(value: &serde_json::Value) {
+    if !value.is_object() {
+        return;
+    }
+    append_block_record(&format!("bound\t{}", block_digest(value)));
 }
 
 /// Resolve `path` to absolute and, when it lives in the canonical corpus, append

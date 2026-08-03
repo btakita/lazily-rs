@@ -418,3 +418,108 @@ print(
     % (replayed, total, len(excuses))
 )
 PY
+
+# ---- RUNG 0: assertion-block BIND ledger (#lznullformblind) ----
+#
+# Every rung above is scoped to blocks a runner already BOUND to the tracker.
+# The unconsumed-key guard fires on a key nothing read; the unasserted-key guard
+# fires on a key read and discarded; the prose ledger fires on a discharge naming
+# nothing. NONE of them can fire for a block no runner ever bound, because there
+# is no tracker: its keys are not unread, nothing reads them, and the fixture
+# reports exactly nothing. lazily-dart found two such blocks carrying eight
+# silent keys, one of them the anti-spoof invariant its fixture exists for.
+#
+# So the loader inventories every `assertions` block at READ time and
+# `Expect::new` books one as BOUND. The two sides are matched by the block's
+# CONTENT digest, never by its `where` label — runners spell those labels
+# inconsistently, and a label-keyed ledger would silently miss the mismatch
+# rather than report it.
+#
+# An unbindable block belongs HERE, as a documented excuse the guard reads every
+# run, not as a runner fabricated to manufacture coverage.
+# Format: "fixture|where|reason".
+KNOWN_UNBOUND_BLOCKS=(
+)
+
+BLOCK_LEDGER="${LAZILY_CONFORMANCE_BLOCKS:-build/conformance-assertion-blocks.txt}"
+
+BLOCK_EXCUSES="$(printf '%s\n' "${KNOWN_UNBOUND_BLOCKS[@]:-}")" \
+python3 - "$BLOCK_LEDGER" <<'PY'
+import os
+import sys
+
+ledger_path = sys.argv[1]
+if not os.path.isfile(ledger_path) or os.path.getsize(ledger_path) == 0:
+    sys.stderr.write(
+        "FAIL: no assertion-block ledger at %s.\n"
+        "      Run the suite with LAZILY_CONFORMANCE_BLOCKS set to an ABSOLUTE\n"
+        "      path so the recorder attaches (`make check` does this). An absent\n"
+        "      ledger is missing evidence, not evidence of absence.\n" % ledger_path
+    )
+    sys.exit(1)
+
+declared = {}   # digest -> set of "fixture|where"
+bound = set()   # digest
+for line in open(ledger_path):
+    parts = line.rstrip("\n").split("\t")
+    if parts[0] == "declared" and len(parts) == 4:
+        declared.setdefault(parts[2], set()).add("%s|%s" % (parts[1], parts[3]))
+    elif parts[0] == "bound" and len(parts) == 2:
+        bound.add(parts[1])
+
+excuses = {}
+for raw in os.environ.get("BLOCK_EXCUSES", "").splitlines():
+    raw = raw.strip()
+    if not raw:
+        continue
+    parts = raw.split("|", 2)
+    if len(parts) != 3 or not parts[2].strip():
+        sys.stderr.write(
+            "ERROR: KNOWN_UNBOUND_BLOCKS entry %r must be 'fixture|where|reason'.\n"
+            "       An excuse with no reason is an unexplained gap wearing a green badge.\n"
+            % raw
+        )
+        sys.exit(1)
+    excuses["%s|%s" % (parts[0], parts[1])] = parts[2]
+
+unbound = []
+for digest, sites in sorted(declared.items()):
+    if digest in bound:
+        continue
+    for site in sorted(sites):
+        if site in excuses:
+            continue
+        unbound.append(site)
+
+if unbound:
+    sys.stderr.write(
+        "FAIL: %d assertion block(s) were carried by an OPENED fixture and bound by\n"
+        "      no runner. Every other guard is scoped to blocks a runner bound, so\n"
+        "      these report nothing at all rather than reporting a gap:\n" % len(unbound)
+    )
+    for site in unbound:
+        sys.stderr.write("        %s\n" % site)
+    sys.stderr.write(
+        "      Bind each with `Expect::new(..., \"assertions\", &block)` and assert its\n"
+        "      keys, or add it to KNOWN_UNBOUND_BLOCKS with a reason so the gap is\n"
+        "      visible every run instead of invisible.\n"
+    )
+    sys.exit(1)
+
+# Positive-evidence floor (#lzvacuousrun): zero declared blocks means zero
+# unbound blocks, which reports OK having compared nothing.
+MIN_BLOCKS = int(os.environ.get("MIN_BLOCKS", "20"))
+if len(declared) < MIN_BLOCKS:
+    sys.stderr.write(
+        "ERROR: only %d distinct assertion blocks were inventoried, expected >= %d.\n"
+        "       The loader-side inventory detached, or fixtures stopped being read.\n"
+        "       Do not lower MIN_BLOCKS to fix this.\n" % (len(declared), MIN_BLOCKS)
+    )
+    sys.exit(1)
+
+print(
+    "assertion-block bind OK: %d distinct blocks inventoried from OPENED fixtures, "
+    "every one BOUND by a runner (%d excused; matched by content digest, not by label)"
+    % (len(declared), len(excuses))
+)
+PY

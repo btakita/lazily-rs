@@ -24,6 +24,16 @@ export LAZILY_CONFORMANCE_MANIFEST = $(CONFORMANCE_MANIFEST)
 CONFORMANCE_SCENARIOS ?= $(CURDIR)/build/conformance-scenarios-replayed.txt
 export LAZILY_CONFORMANCE_SCENARIOS = $(CONFORMANCE_SCENARIOS)
 
+# Assertion-block bind ledger (#lznullformblind), RUNG 0 — below every guard
+# above it. The unconsumed/unasserted/prose rungs are all scoped to blocks a
+# runner already bound, so a block NO runner binds reports nothing: its keys are
+# not unread, nothing reads them. The loader inventories every `assertions`
+# block at read time and `Expect::new` books one as bound, matched by CONTENT
+# rather than by the `where` label runners spell inconsistently. Same contract as
+# the two ledgers above — ABSOLUTE, exported, appended, truncated once.
+CONFORMANCE_BLOCKS ?= $(CURDIR)/build/conformance-assertion-blocks.txt
+export LAZILY_CONFORMANCE_BLOCKS = $(CONFORMANCE_BLOCKS)
+
 .PHONY: \
 	conformance-coverage \
 	ci-reach \
@@ -446,6 +456,8 @@ conformance-manifest-reset:
 >@: > $(CONFORMANCE_MANIFEST)
 >@mkdir -p $(dir $(CONFORMANCE_SCENARIOS))
 >@: > $(CONFORMANCE_SCENARIOS)
+>@mkdir -p $(dir $(CONFORMANCE_BLOCKS))
+>@: > $(CONFORMANCE_BLOCKS)
 
 # Conformance-coverage guard (#portconformancecoverage). RUNTIME
 # (#lazilyupgradeconformance): fails when a canonical fixture was not OPENED by

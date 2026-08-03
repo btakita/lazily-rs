@@ -164,7 +164,29 @@ this repo.
   excuse list `KNOWN_UNREPLAYED_SCENARIOS` ("fixture|id|reason") sits beside
   `KNOWN_UNCOVERED` so there is one place to read what this binding does not
   prove; it is currently EMPTY — every scenario of every opened fixture is
-  replayed
+  replayed.
+  The same file carries **RUNG 0**, the assertion-block BIND ledger
+  (`#lznullformblind`), which sits BELOW every guard above it. Each of those is
+  scoped to blocks a runner already BOUND to the tracker: the unconsumed-key
+  guard fires on a key nothing read, the unasserted-key guard on a key read and
+  discarded, the prose ledger on a discharge naming nothing. None of them can
+  fire for a block **no runner ever bound**, because there is no tracker — its
+  keys are not unread, nothing reads them, and the fixture reports exactly
+  nothing. lazily-dart found two such blocks carrying eight silent keys, one of
+  them the anti-spoof invariant its fixture exists for. So `spec_read_to_string`
+  inventories every `assertions` block at READ time (top-level plus per-frame
+  and per-scenario) and `Expect::new` books one as BOUND, the two sides matched
+  by the block's **CONTENT digest, never by its `where` label** — runners spell
+  those labels inconsistently and a label-keyed ledger would silently miss the
+  mismatch rather than report it. `$LAZILY_CONFORMANCE_BLOCKS` carries the
+  ledger on the manifest's terms, and `check-conformance-coverage.sh` fails on
+  any inventoried block with no bind, carries a `KNOWN_UNBOUND_BLOCKS` excuse
+  list (currently EMPTY, reason REQUIRED) so an unbindable block is visible
+  every run rather than invisible, and enforces a `MIN_BLOCKS` floor because
+  zero declared blocks means zero unbound blocks reported OK over nothing.
+  30/30 blocks bound. Validated in four directions: a declared block with no
+  bind FAILS naming it, the floor FAILS when raised above the real count, an
+  absent ledger FAILS as missing evidence, and the real ledger passes
 - `tests/common/expect.rs` — the assertion-key guard
   (`#lzassertunknownkeys`, `#lzconsumednotasserted`), the two rungs below the
   manifest. Rung 2: having OPENED a fixture, did the runner CONSUME the keys it
@@ -268,6 +290,43 @@ this repo.
   leave them: they are corpus declarations a binding pins by agreement, not
   facts a run produces — `byte_canonical` states what two conforming bindings
   may do to each other's bytes, which no single run has a comparable value for.
+  Three bindings built run-derived versions of these and reverted them.
+
+### Auditing this suite for vacuous assertions (`#lznullformblind`)
+
+Two passes, and the STATIC one is the weaker of the two.
+
+**Corpus perturbation** is the pass that cannot be fooled by how the source
+looks: flip every key of every top-level `assertions` block, ONE AT A TIME, in a
+SCRATCH COPY of the corpus, and check whether the suite reddens. A key that
+stays green when its value changes is not load-bearing however carefully it is
+read, typed and referenced — go found three keys gated by their own declared
+value, so flipping one to `false` silently retired the rule. Never edit
+`lazily-spec` in place: a probe there reddens every other binding concurrently.
+Point precompiled test binaries at a scratch sibling instead (`X/lazily-spec`
+beside an empty `X/lazily-rs` used only as the process CWD), because every
+runner resolves `../lazily-spec/conformance/...` from the crate root. Expected
+result: **everything reddens except the keys the corpus declares
+`assertions.prose`**, plus `description`/`note`/`reason`/`generator`; anything
+else staying green is a finding. Current state: 107 keys, 86 red, 21 green and
+all 21 are prose or by-design-uncompared.
+
+**A static detector is guilty until validated.** Three bindings in a row shipped
+an audit tool that reported CLEAN over defects it already knew were present.
+Run any such pass against `git show HEAD:` / an archive of pre-fix sources FIRST
+and confirm it flags the instances you already know about — a detector that
+reports zero is indistinguishable from a detector that is broken. The known
+traps, all of which have bitten: per-line matching that misses a wrapped
+declaration; taint that does not survive rebinding through a loader
+(`let (path, fixture) = load(name)`) or through mutation (`set.insert(x)`);
+**comment text parsed as identifiers**, so the better-commented a vacuous
+assertion is the more certainly it escapes; over-tainting through library calls;
+and helper functions laundering taint. State the blind spots rather than
+claiming a clean sweep.
+
+Finally, mutation probes need **negative controls that deliberately survive**.
+A probe that reddens shows the assertion fires; only reinstating the pre-fix
+shape and watching it stay green shows the probe was aimed at the real defect.
   Needs `ipc,ipc-msgpack` (`make test-codec-roundtrip-conformance`); the feature
   is not optional, because an unopened canonical fixture fails
   `conformance-coverage` and a feature flag is not a carve-out
