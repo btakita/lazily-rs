@@ -136,18 +136,21 @@ impl Refusal {
 /// a refusal arrives: a panic refuses the frame too, and refuses it past every
 /// handler a caller wrapped the decode in. Unwinding here turns that into a
 /// named test failure rather than an aborted binary.
-fn decode(scenario: &Value, id: &str) -> Result<IpcMessage, Refusal> {
+fn decode(scenario: &Value, id: &str, exp: &Expect) -> Result<IpcMessage, Refusal> {
     let codec = scenario["codec"].as_str().expect("codec");
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match codec {
         "json" => {
             let text = scenario["wire_json"].as_str().expect("wire_json is text");
+            exp.assert_key("wire_input_fnv1a64", common::fnv1a64_hex(text.as_bytes()));
             serde_json::from_str(text).map_err(Refusal::Json)
         }
         "msgpack" => {
             let hex = scenario["wire_msgpack_hex"]
                 .as_str()
                 .expect("wire_msgpack_hex is text");
-            IpcMessage::decode_msgpack(&decode_hex(hex)).map_err(Refusal::Msgpack)
+            let bytes = decode_hex(hex);
+            exp.assert_key("wire_input_fnv1a64", common::fnv1a64_hex(&bytes));
+            IpcMessage::decode_msgpack(&bytes).map_err(Refusal::Msgpack)
         }
         other => panic!("unknown codec {other}"),
     }));
@@ -346,12 +349,12 @@ fn blob_backend_discriminator_is_replayed() {
             }
         }
 
-        let result = decode(scenario, &id);
         let exp = Expect::new(
             path.clone(),
             format!("scenarios[{id}].expect"),
             &scenario["expect"],
         );
+        let result = decode(scenario, &id, &exp);
 
         match outcome {
             "accept" => {
@@ -582,18 +585,7 @@ fn blob_backend_discriminator_is_replayed() {
         "clause",
         &["decoded_backend", "rejected", "rejection_kind", "backends"],
     );
-    // PROXY. `wire_encoding` is a claim about how the CORPUS carries its bytes;
-    // no assertion a run makes can observe it. The honest proxy is the codec and
-    // form vocabulary plus the two decode outcomes — together they prove the
-    // absent-versus-present-short-string distinction survived into the runner,
-    // which is the distinction the paragraph exists to protect. Both vocabulary
-    // keys are now satisfied only by what the replay dispatched on, and
-    // `backend_form` is itself held against the raw wire inside the loop, so the
-    // proxy rests on a read of the bytes rather than on the fixture's own list.
-    a.prose_key(
-        "wire_encoding",
-        &["codecs", "backend_forms", "decoded_backend", "rejected"],
-    );
+    a.prose_key("wire_encoding", &["wire_input_fnv1a64"]);
     a.prose_key(
         "reject_obligation",
         &["error_names_token", "rejection_kind"],

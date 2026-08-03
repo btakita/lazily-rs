@@ -149,16 +149,21 @@ pub fn spec_read_to_string<P: AsRef<Path>>(path: P) -> io::Result<String> {
 /// manifest: ABSOLUTE path, appended by every test binary, truncated once.
 const BLOCK_LEDGER_ENV: &str = "LAZILY_CONFORMANCE_BLOCKS";
 
-/// FNV-1a over a block's canonical JSON. A content key, so a block is booked by
-/// what it SAYS rather than by what a runner chose to call it.
-fn block_digest(value: &serde_json::Value) -> String {
-    let text = serde_json::to_string(value).unwrap_or_default();
+/// FNV-1a over exact bytes, rendered as sixteen lowercase hexadecimal digits.
+pub fn fnv1a64_hex(bytes: &[u8]) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in text.as_bytes() {
+    for byte in bytes {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("{hash:016x}")
+}
+
+/// FNV-1a over a block's canonical JSON. A content key, so a block is booked by
+/// what it SAYS rather than by what a runner chose to call it.
+fn block_digest(value: &serde_json::Value) -> String {
+    let text = serde_json::to_string(value).unwrap_or_default();
+    fnv1a64_hex(text.as_bytes())
 }
 
 fn append_block_record(line: &str) {

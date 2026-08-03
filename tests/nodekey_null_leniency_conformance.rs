@@ -68,14 +68,16 @@ fn decode_hex(hex: &str) -> Vec<u8> {
         .collect()
 }
 
-fn decode(scenario: &Value) -> IpcMessage {
+fn decode(scenario: &Value, exp: &Expect) -> IpcMessage {
     match scenario["codec"].as_str().expect("codec") {
         "json" => {
             let text = scenario["wire_json"].as_str().expect("wire_json is text");
+            exp.assert_key("wire_input_fnv1a64", common::fnv1a64_hex(text.as_bytes()));
             serde_json::from_str(text).unwrap_or_else(|e| panic!("json decode: {e}"))
         }
         "msgpack" => {
             let bytes = decode_hex(scenario["wire_msgpack_hex"].as_str().expect("hex"));
+            exp.assert_key("wire_input_fnv1a64", common::fnv1a64_hex(&bytes));
             IpcMessage::decode_msgpack(&bytes).unwrap_or_else(|e| panic!("msgpack decode: {e}"))
         }
         other => panic!("unknown codec {other}"),
@@ -367,7 +369,12 @@ fn nodekey_null_leniency_is_replayed() {
         );
         forms_replayed.insert(on_wire.to_owned());
 
-        let message = decode(scenario);
+        let exp = Expect::new(
+            path.clone(),
+            format!("scenarios[{id}].expect"),
+            &scenario["expect"],
+        );
+        let message = decode(scenario, &exp);
         // The scenario's `variant` label, held against the variant the decode
         // really produced (`#lznullformblind`). It was read by NOTHING: this
         // runner has no tracker over the scenario's own top-level keys, so an
@@ -386,11 +393,6 @@ fn nodekey_null_leniency_is_replayed() {
         }
         let node = reencoded_node(scenario, &message);
 
-        let exp = Expect::new(
-            path.clone(),
-            format!("scenarios[{id}].expect"),
-            &scenario["expect"],
-        );
         // The decode half: an omitted `key` and an explicit `key: null` must
         // both arrive as absent, and a real key must survive.
         exp.assert_key_with("decoded_key", |v| {
@@ -470,15 +472,7 @@ fn nodekey_null_leniency_is_replayed() {
         "clause",
         &["key_forms", "decoded_key", "reencoded_key_field_present"],
     );
-    // PROXY. `wire_encoding` is a claim about how the CORPUS carries its bytes —
-    // raw text and lowercase hex rather than a pre-parsed object — which no
-    // assertion a run makes can observe directly. The honest proxy is the
-    // raw-wire control: `key_forms` is now satisfied only by the three shapes
-    // this runner read out of the raw frames themselves, so had the carriage
-    // collapsed an absent entry into an explicit nil (or the runner collapsed
-    // them before looking), the three-way split could not survive into the run
-    // at all, in either codec. `codecs` pins that both carriages were exercised.
-    a.prose_key("wire_encoding", &["key_forms", "codecs", "decoded_key"]);
+    a.prose_key("wire_encoding", &["wire_input_fnv1a64"]);
     a.prose_key("reencode_obligation", &["reencoded_key_field_present"]);
     // The controls are the `omitted` and `present` forms of `key_forms`, counted
     // off the raw wire rather than off the fixture's labels, seen through

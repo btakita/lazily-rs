@@ -47,10 +47,11 @@ fn fixture_path() -> String {
 /// `Err` is a conforming outcome for an over-range identifier and a failure for
 /// an `exact` one; the caller decides which, because that is the whole
 /// distinction the fixture draws.
-fn decode(scenario: &Value) -> Result<IpcMessage, String> {
+fn decode(scenario: &Value, exp: &Expect) -> Result<IpcMessage, String> {
     match scenario["codec"].as_str().expect("codec") {
         "json" => {
             let text = scenario["wire_json"].as_str().expect("wire_json is text");
+            exp.assert_key("wire_input_fnv1a64", common::fnv1a64_hex(text.as_bytes()));
             serde_json::from_str(text).map_err(|e| e.to_string())
         }
         "msgpack" => {
@@ -58,6 +59,7 @@ fn decode(scenario: &Value) -> Result<IpcMessage, String> {
                 .as_str()
                 .expect("wire_msgpack_hex is text");
             let bytes = decode_hex(hex);
+            exp.assert_key("wire_input_fnv1a64", common::fnv1a64_hex(&bytes));
             IpcMessage::decode_msgpack(&bytes).map_err(|e| e.to_string())
         }
         other => panic!("unknown codec {other}"),
@@ -125,7 +127,12 @@ fn nodeid_exact_range_is_replayed() {
             .parse()
             .expect("decimal string parses as u64");
 
-        let message = decode(scenario).unwrap_or_else(|e| {
+        let exp = Expect::new(
+            path.clone(),
+            format!("scenarios[{id}].expect"),
+            &scenario["expect"],
+        );
+        let message = decode(scenario, &exp).unwrap_or_else(|e| {
             panic!(
                 "{id}: lazily-rs represents the full u64 range, so this frame must decode; got {e}"
             )
@@ -136,11 +143,6 @@ fn nodeid_exact_range_is_replayed() {
             panic!("{id}: fixture declares the Snapshot variant");
         };
 
-        let exp = Expect::new(
-            path.clone(),
-            format!("scenarios[{id}].expect"),
-            &scenario["expect"],
-        );
         // `outcome` is consumed rather than asserted equal: it is the fixture's
         // statement about what the WHOLE corpus of bindings may do, and this
         // binding satisfies both branches by decoding.
@@ -214,14 +216,7 @@ fn nodeid_exact_range_is_replayed() {
     // The three declared paragraphs, each naming the executable keys that carry
     // its obligation.
     a.prose_key("clause", &["node_id_decimal", "outcome"]);
-    // PROXY. `wire_encoding` is a claim about how the CORPUS carries its bytes
-    // and its expectation — none of the three a JSON number — which no assertion
-    // a run makes can observe. The proxy is the codec vocabulary plus
-    // `node_id_decimal`, which is compared as a decimal STRING against a decode
-    // of `wire_json` / `wire_msgpack_hex` rather than a re-serialized
-    // pre-parsed object, and so would redden against a decoder that rounds.
-    // `codecs` is now itself grounded in the carriages the run really read.
-    a.prose_key("wire_encoding", &["codecs", "node_id_decimal"]);
+    a.prose_key("wire_encoding", &["wire_input_fnv1a64"]);
     // "the two `exact` scenarios are the control" — the control is visible as
     // the `outcome` key each scenario carries, over the full `scenario_count`,
     // with `node_id_decimal` proving the boundary value really decoded.
