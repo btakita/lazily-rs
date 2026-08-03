@@ -259,6 +259,12 @@ fn blob_backend_discriminator_is_replayed() {
     assert_eq!(fixture["protocol_version"], 1, "{path}: protocol version");
     assert_eq!(fixture["kind"], "BlobBackendDiscriminator", "{path}: kind");
 
+    // Fixture-scoped, because the paragraphs in `assertions` are discharged by
+    // per-scenario `expect` keys asserted long after that block drops
+    // (`#lzprosekeyconvention`). The guard fails the run if `verify_prose`
+    // below is never reached.
+    let _prose = common::ProseLedger::open(&path);
+
     let a = Expect::new(path.clone(), "assertions", &fixture["assertions"]);
     a.assert_key("required_of_binding", "MUST");
     a.assert_key_with("codecs", |v| {
@@ -305,32 +311,64 @@ fn blob_backend_discriminator_is_replayed() {
         "scenario_count",
         fixture["scenarios"].as_array().expect("scenarios").len() as u64,
     );
-    a.prose("clause", "states the omitted/null-vs-present decoder split");
-    a.prose("wire_encoding", "explains why the wire is text/hex");
-    a.prose("reject_obligation", "requires the error to name the token");
-    a.prose(
+    // The nine paragraphs the corpus declares in `assertions.prose`
+    // (`#lzprosekeyconvention`). Each names the executable keys this run really
+    // asserts and that genuinely carry the obligation — the free-text reasons
+    // that used to sit here ("explains why the wire is text/hex") named nothing
+    // and were checkable by nothing.
+    a.prose_key(
+        "clause",
+        &["decoded_backend", "rejected", "rejection_kind", "backends"],
+    );
+    // PROXY. `wire_encoding` is a claim about how the CORPUS carries its bytes;
+    // no assertion a run makes can observe it. The honest proxy is the codec and
+    // form vocabulary plus the two decode outcomes — together they prove the
+    // absent-versus-present-short-string distinction survived into the runner,
+    // which is the distinction the paragraph exists to protect.
+    a.prose_key(
+        "wire_encoding",
+        &["codecs", "backend_forms", "decoded_backend", "rejected"],
+    );
+    a.prose_key(
+        "reject_obligation",
+        &["error_names_token", "rejection_kind"],
+    );
+    a.prose_key(
         "backend_form_vocabulary",
-        "its normative half — every declared backend must be some accept scenario's \
-         decoded_backend — is asserted below as `backends_decoded` vs `assertions.backends`",
+        &["backends", "backend_forms", "decoded_backend"],
     );
-    a.prose(
+    a.prose_key(
         "null_form",
-        "its obligation is asserted per null scenario: decoded_backend `shm` plus a \
-         re-encoded frame carrying no `backend` entry",
+        &["decoded_backend", "reencoded_backend_field_present"],
     );
-    a.prose(
+    a.prose_key(
         "non_string_form",
-        "its obligation is asserted per non_string scenario via `rejection_is_decode_error` \
-         and the catch_unwind in `decode`",
+        &["rejected", "rejection_kind", "rejection_is_decode_error"],
     );
-    a.prose(
-        "epoch_disambiguation",
-        "its obligation is asserted per accept scenario: frame_epoch against the Delta and \
-         blob_epoch against the descriptor, plus `epochs_distinct`",
+    a.prose_key("epoch_disambiguation", &["frame_epoch", "blob_epoch"]);
+    // The four controls, in order: (1) and (2) are `decoded_backend`, (3) is
+    // `reencoded_backend_field_present`, (4) is the `backends` set difference.
+    a.prose_key(
+        "anti_vacuity",
+        &[
+            "decoded_backend",
+            "reencoded_backend_field_present",
+            "backends",
+            "scenario_count",
+        ],
     );
-    a.prose("anti_vacuity", "explains the four controls");
-    a.prose("theorem", "names the routing theorem the clause discharges");
-    a.prose("generator", "names the script that regenerates the fixture");
+    // PROXY. `theorem` names a Lean theorem in lazily-formal; a run can only
+    // prove its consequence. `resolve_wrong_backend`'s operative consequence
+    // here is that a kind is never normalized: an unknown one is `rejected`, and
+    // a known one arrives as itself in `decoded_backend`.
+    a.prose_key("theorem", &["decoded_backend", "rejected"]);
+    // NOT prose — the corpus does not list it, and a script path is a value, not
+    // a paragraph. There is nothing in this binding that regenerates the fixture.
+    a.excuse_key(
+        "generator",
+        "the corpus-side script that regenerates the fixture; lazily-rs replays the \
+         fixture and never regenerates it, so there is nothing here to compare it against",
+    );
     a.finish();
 
     // Anti-vacuity counters, one per way this runner could report green having
@@ -617,4 +655,8 @@ fn blob_backend_discriminator_is_replayed() {
         epochs_distinct, accepted,
         "every accept scenario must carry a frame epoch and a descriptor epoch that DIFFER"
     );
+
+    // Every discharge above is checked here, once the whole replay has recorded
+    // which keys it asserted (`#lzprosekeyconvention`).
+    common::expect::verify_prose(&path);
 }

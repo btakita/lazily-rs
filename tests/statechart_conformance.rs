@@ -66,10 +66,6 @@ fn run_fixture(name: &str) {
     let (ctx, chart) = build_chart(&fixture);
 
     let fx = Expect::new(format!("{SPEC_DIR}/{name}"), "<fixture>", &fixture);
-    fx.prose(
-        "description",
-        "prose for the human reader, not an assertion",
-    );
     fx.excuse_key("kind", "corpus routing tag, consumed by the coverage guard");
     fx.excuse_key(
         "chart",
@@ -100,7 +96,6 @@ fn run_fixture(name: &str) {
     let steps = fx.raw()["steps"].as_array().expect("steps");
     for (i, step) in steps.iter().enumerate() {
         let step = fx.nested(format!("steps[{i}]"), step);
-        step.prose("note", "prose for the human reader, not an assertion");
         // `event` and `guards` are the step's *inputs* — they drive the send, and
         // what the send produced is asserted below.
         step.excuse_key("event", "the event sent; an input, not a value to compare");

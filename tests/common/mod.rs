@@ -92,7 +92,7 @@ pub mod expect;
 // Re-exported for `use common::Expect;`. Not every test binary that compiles
 // this module opens a fixture, so the re-export is unused in some of them.
 #[allow(unused_imports)]
-pub use expect::Expect;
+pub use expect::{Expect, ProseLedger};
 
 use std::collections::HashSet;
 use std::fs::OpenOptions;

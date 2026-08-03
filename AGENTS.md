@@ -182,14 +182,51 @@ this repo.
   compares). `Expect::get` / `Index` still mark a key READ, for a value that
   drives the replay rather than one that is compared, and a read alone is now a
   failure. `Expect::sub` descends into nested assertion blocks (`invalidates`,
-  `final_state`) and satisfies the parent key structurally. `Expect::prose` marks
-  documentation keys (`note`, `reason`) — exempt from all three checks.
+  `final_state`) and satisfies the parent key structurally.
   `Expect::excuse_key` (formerly `declared_exception`) marks a key that genuinely
   cannot be compared at this call site, with a required reason; it runs in BOTH
   directions, so excusing a key the same run also asserts fails as a stale
   excuse. Self-tested in `tests/expect_guard.rs`, including one case per
   read-then-discard shape (named skip in a consuming loop, value bound but never
-  compared, comparison against a literal)
+  compared, comparison against a literal).
+  Rung 4 is the **prose-key convention** (`#lzprosekeyconvention`), the family's
+  answer to a key whose value is an English paragraph. The corpus declares which
+  sibling keys those are in `assertions.prose`; a binding MUST NOT decide for
+  itself, which is exactly what the nine of us did — four different treatments of
+  the same four keys in `blob_backend_discriminator.json` v2, and lazily-rs's was
+  `Expect::prose`, a third exempt state that required a reason and then discarded
+  it. That method is **deleted**, not given a sibling. A paragraph is now
+  DISCHARGED: `exp.prose_key("epoch_disambiguation", &["frame_epoch",
+  "blob_epoch"])` names the executable keys that carry its obligation, and
+  `expect::verify_prose(fixture)` — armed by a `ProseLedger` guard whose own
+  `Drop` fails a run that never verified — checks the naming against what the run
+  really asserted. That is the point: "discharged by `frame_epoch`" is a claim
+  about the run and can be falsified; "is prose" cannot. Seven failure modes, one
+  self-test and one mutation probe each: a declared paragraph asserted, a
+  declared paragraph excused, an undeclared key discharged, a discharged set
+  differing from `prose`, a discharge naming nothing, a discharge naming a key
+  the run never asserted, a discharge naming another paragraph **or `prose`
+  itself** — the prose-name set is SEEDED with `prose`, because `prose` never
+  self-lists and rule 4's own comparison is what marks it asserted, so without
+  the seed a paragraph could be discharged by the declaration that it is a
+  paragraph. The DECLARATION and rules 3-4 are block-local; only rule 6/7 name
+  matching is **fixture-wide**, because `epoch_disambiguation` is stated in
+  `assertions` and discharged by `expect.frame_epoch` / `expect.blob_epoch`,
+  asserted long after that block drops. A "run" is ONE TEST: the ledger is
+  cleared at each verification, and a claim recorded after one un-verifies it, so
+  a discharge in one replay can never be satisfied by an assertion in another.
+  `ProseLedger::open` goes FIRST in the test body — Rust drops in reverse
+  declaration order, so the teardown net fires after every block check and after
+  the explicit `verify_prose`; opening it later inverts that and reports a false
+  failure. Two discharges in this corpus are PROXIES and say so at the call site:
+  `wire_encoding` is a claim about how the corpus carries its bytes, which no
+  assertion a run makes can observe, and `theorem` names a Lean theorem in
+  lazily-formal. `note`, `description` and `reason` stay exempt BY NAME wherever
+  the block does not declare them prose — the reactive-graph corpus carries ~97
+  per-step ones — and the declaration is evaluated on the RAW block FIRST: a
+  tracker that subtracts its reserved names before consulting `assertions.prose`
+  makes both `frame_roundtrip_*.json` declarations invisible and skips the whole
+  convention while still reporting conforming
 - `tests/state_table_pilot.rs` — the `#lazilystatetable` pilot: Agent Doc's
   retained-document-transition decision as a typed table (Phase 1 — written
   *before* any Agent Doc runtime change, so nothing here reaches into that repo).

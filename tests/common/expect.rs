@@ -94,10 +94,77 @@
 //! do: excusing a key the same run also asserts is a failure, because the excuse
 //! has gone stale and is now hiding nothing.
 //!
-//! [`Expect::prose`] is for `note` / `reason` / `description` — documentation
-//! aimed at a human reading the fixture, with no observable behind it. Prose is
-//! exempt from all three checks and is kept distinct from an excuse so review can
-//! tell "this is not an assertion" from "this is an assertion I cannot make here".
+//! # Prose keys (`#lzprosekeyconvention`)
+//!
+//! An `assertions` block mixes two kinds of key. Most carry a value a runner can
+//! compare against observed behaviour. A few carry an English paragraph that
+//! states an obligation and nothing comparable — `clause`, `anti_vacuity`,
+//! `null_form`, `theorem`, `note`. The corpus, not the binding, says which:
+//! `assertions.prose` is an array of sibling key names, and because it is itself
+//! a key of the block the guards above see it — a runner that ignores it fails
+//! with an unconsumed key, which is what makes the convention self-enforcing.
+//!
+//! A prose key is **discharged**, never asserted and never excused. To discharge
+//! it a runner names the executable assertion keys that carry its obligation:
+//!
+//! ```ignore
+//! exp.prose_key("epoch_disambiguation", &["frame_epoch", "blob_epoch"]);
+//! ```
+//!
+//! and the ledger checks the naming. That is the whole convention: the excuse
+//! becomes falsifiable. "`epoch_disambiguation` is discharged by `frame_epoch`
+//! and `blob_epoch`" is a claim about the run; "`epoch_disambiguation` is prose"
+//! is not. The former `Expect::prose` — a third exempt state that required a
+//! reason and then discarded it — is **deleted** rather than kept alongside; two
+//! paths to satisfy one key is the ambiguity this closes.
+//!
+//! The ledger fails the run when:
+//!
+//! | # | failure |
+//! |---|---|
+//! | 1 | a key listed in `assertions.prose` is **asserted** |
+//! | 2 | a key listed in `assertions.prose` is **excused** with free text |
+//! | 3 | a key **not** listed in `assertions.prose` is discharged |
+//! | 4 | the set of discharged keys differs from `assertions.prose` |
+//! | 5 | a discharge names **no** keys |
+//! | 6 | a discharge names a key the same fixture's run did not assert |
+//! | 7 | a discharge names a key that is itself prose, **or names `prose`** |
+//!
+//! Rule 7's second half is not redundant: `prose` never lists itself, so the
+//! prose-name set is SEEDED with `prose` — otherwise `discharged_by = ["prose"]`
+//! slips past rule 7, and the rule-4 comparison is what marks `prose` asserted,
+//! so rule 6 waves it through too. A paragraph discharged by the declaration
+//! that it is a paragraph proves nothing.
+//!
+//! Rule 6 is why the NAME MATCHING is **fixture-wide**:
+//! `epoch_disambiguation` is stated in `assertions` and discharged by
+//! `expect.frame_epoch` / `expect.blob_epoch`, asserted long after the
+//! `assertions` block has dropped. The DECLARATION is block-local, and so are
+//! rules 3 and 4 — each block owns its own `prose` array. Verification happens
+//! when the replay is finished — `expect::verify_prose(fixture)`, armed by a
+//! [`ProseLedger`] guard whose own `Drop` fails a run that never verified. An
+//! unverified claim is as bad as an unconsumed key. A "run" is ONE TEST, so the
+//! ledger is cleared at each verification rather than unioning asserted keys
+//! across tests.
+//!
+//! A discharge may name a key that carries the obligation only by PROXY, and two
+//! in the corpus must: `wire_encoding` is a claim about how the corpus carries
+//! its bytes, which no assertion a run makes can observe, and `theorem` names a
+//! Lean theorem in another repository. Naming the closest executable keys is
+//! conforming; naming a key with nothing to do with the obligation is not, and
+//! no tracker can tell the two apart. That judgement stays with review, which is
+//! why the discharge is written at the call site where review sees it — and why
+//! each proxy says at that call site that it IS one.
+//!
+//! `note`, `description` and `reason` stay exempt **by name** in a block that
+//! does not declare them prose — they are per-step and per-scenario annotations,
+//! and the reactive-graph corpus carries ~97 of them. The declaration is
+//! evaluated on the RAW block FIRST, before any name-based exemption: a tracker
+//! that subtracts its reserved names first makes `frame_roundtrip_json`'s
+//! declared `note` invisible — exempt from the unread guard, exempt from the
+//! unasserted guard, never discharged — so the fixture skips the whole
+//! convention while the binding still reports conforming. Two of the nine hit
+//! that independently.
 
 #![allow(dead_code)]
 
@@ -106,6 +173,244 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Index;
 
 use serde_json::Value;
+
+/// Key names that are annotations wherever they are not declared prose.
+const ANNOTATION_KEYS: [&str; 3] = ["note", "description", "reason"];
+
+/// The corpus's own declaration of which sibling keys are paragraphs.
+const PROSE_DECLARATION_KEY: &str = "prose";
+
+/// One `prose_key` claim: the paragraph, and the executable keys the runner says
+/// carry its obligation.
+#[derive(Clone, Debug)]
+struct Claim {
+    key: String,
+    discharged_by: Vec<String>,
+}
+
+/// What one guarded block contributed to its fixture's prose ledger.
+#[derive(Clone, Debug, Default)]
+struct BlockRecord {
+    label: String,
+    declared: BTreeSet<String>,
+    asserted: BTreeSet<String>,
+    excused: BTreeSet<String>,
+    non_prose_keys: usize,
+    claims: Vec<Claim>,
+}
+
+/// Fixture-scoped state: every key any block of this fixture asserted, plus the
+/// blocks that declared or discharged prose.
+#[derive(Clone, Debug, Default)]
+struct FixtureLedger {
+    open: bool,
+    verified: bool,
+    asserted: BTreeSet<String>,
+    blocks: Vec<BlockRecord>,
+}
+
+thread_local! {
+    /// Keyed by fixture path. Thread-local because Rust runs `#[test]` functions
+    /// on separate threads and each runner replays its own fixture — a process
+    /// -global map would let one test's assertions discharge another's claim.
+    static PROSE_LEDGER: RefCell<BTreeMap<String, FixtureLedger>> =
+        const { RefCell::new(BTreeMap::new()) };
+}
+
+fn with_ledger<R>(fixture: &str, f: impl FnOnce(&mut FixtureLedger) -> R) -> R {
+    PROSE_LEDGER.with(|l| f(l.borrow_mut().entry(fixture.to_owned()).or_default()))
+}
+
+/// Arms `expect::verify_prose` for one fixture's replay.
+///
+/// Open it as the FIRST binding in the test body, before any [`Expect`]. Rust
+/// drops in reverse declaration order, so a ledger opened first is torn down
+/// last — after every block's own consumption check and after the explicit
+/// `verify_prose` call at the end of the body. Opening it later inverts that and
+/// the teardown net fires before the verification it is meant to police.
+///
+/// [`Expect::prose_key`] refuses to record a claim without one, and this guard's
+/// own `Drop` fails a run that recorded claims and never verified them. Both
+/// halves are needed: a tracker that reports success by skipping the check is
+/// the shape `#lzprosekeyconvention` exists to remove.
+pub struct ProseLedger {
+    fixture: String,
+}
+
+impl ProseLedger {
+    /// Open the ledger for `fixture`, resetting anything a previous replay of the
+    /// same path on this thread left behind.
+    pub fn open(fixture: impl Into<String>) -> Self {
+        let fixture = fixture.into();
+        with_ledger(&fixture, |l| {
+            *l = FixtureLedger {
+                open: true,
+                ..FixtureLedger::default()
+            };
+        });
+        Self { fixture }
+    }
+}
+
+impl Drop for ProseLedger {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let (verified, claims) = with_ledger(&self.fixture, |l| {
+            l.open = false;
+            (
+                l.verified,
+                l.blocks.iter().map(|b| b.claims.len()).sum::<usize>(),
+            )
+        });
+        if !verified && claims > 0 {
+            panic!(
+                "{}: {claims} prose discharge claim(s) were recorded and never verified \
+                 (#lzprosekeyconvention). Call `expect::verify_prose(fixture)` at the end \
+                 of the replay — an unverified claim proves exactly as much as an \
+                 unconsumed key.",
+                self.fixture
+            );
+        }
+    }
+}
+
+/// Verify every prose discharge recorded for `fixture`, then mark the ledger
+/// satisfied.
+///
+/// Runs rules 1-4, 6 and 7 of `#lzprosekeyconvention` (rule 5 — a discharge
+/// naming nothing — fails eagerly at the `prose_key` call site). Panics when the
+/// fixture has no open [`ProseLedger`], because "nothing to check" and "the
+/// runner forgot to arm the check" are the two things this must tell apart.
+pub fn verify_prose(fixture: &str) {
+    let ledger = PROSE_LEDGER.with(|l| l.borrow().get(fixture).cloned());
+    let Some(ledger) = ledger.filter(|l| l.open) else {
+        panic!(
+            "{fixture}: verify_prose called without an open ProseLedger \
+             (#lzprosekeyconvention). Hold `let _prose = ProseLedger::open(&path);` for the \
+             whole replay — verifying an unarmed ledger checks nothing and reports success."
+        );
+    };
+
+    // Rule 7 needs every paragraph named anywhere in the fixture, not just the
+    // block being checked — that is the fixture-wide half, and the only one.
+    //
+    // SEEDED WITH `prose` ITSELF. `prose` never self-lists, so without the seed
+    // rule 7 misses `discharged_by = ["prose"]` — and the rule-4 comparison
+    // below is what marks `prose` asserted, so rule 6 would wave it straight
+    // through. A paragraph discharged by the declaration that it is a paragraph
+    // proves exactly nothing.
+    let all_prose: BTreeSet<String> = std::iter::once(PROSE_DECLARATION_KEY.to_owned())
+        .chain(
+            ledger
+                .blocks
+                .iter()
+                .flat_map(|b| b.declared.iter().cloned()),
+        )
+        .collect();
+
+    for block in &ledger.blocks {
+        if block.declared.is_empty() && block.claims.is_empty() {
+            continue;
+        }
+        let at = format!("`{}` of {fixture}", block.label);
+
+        // 1. a declared paragraph was asserted.
+        let asserted: Vec<&String> = block
+            .declared
+            .iter()
+            .filter(|k| block.asserted.contains(*k))
+            .collect();
+        assert!(
+            asserted.is_empty(),
+            "{at}: prose key(s) {asserted:?} were ASSERTED (#lzprosekeyconvention rule 1). \
+             Comparing a paragraph — or a tally derived from one — to an English string \
+             pins wording, not behaviour: a copy-edit reddens the run and a library \
+             regression does not. Discharge it with `prose_key` instead."
+        );
+
+        // 2. a declared paragraph was excused with free text.
+        let excused: Vec<&String> = block
+            .declared
+            .iter()
+            .filter(|k| block.excused.contains(*k))
+            .collect();
+        assert!(
+            excused.is_empty(),
+            "{at}: prose key(s) {excused:?} were EXCUSED (#lzprosekeyconvention rule 2). \
+             An unfalsifiable reason is indistinguishable from the undocumented default \
+             this clause removes. Name the executable keys with `prose_key` instead."
+        );
+
+        let discharged: BTreeSet<String> = block.claims.iter().map(|c| c.key.clone()).collect();
+
+        // 3. a key that is not declared prose was discharged.
+        let undeclared: Vec<&String> = discharged.difference(&block.declared).collect();
+        assert!(
+            undeclared.is_empty(),
+            "{at}: key(s) {undeclared:?} were discharged but are NOT listed in \
+             `{PROSE_DECLARATION_KEY}` (#lzprosekeyconvention rule 3). The corpus decides \
+             what is a paragraph; a binding that decides for itself is how four treatments \
+             of one rule went unnoticed."
+        );
+
+        // 4. the discharged set is the declared set — the comparison that
+        //    consumes `prose` itself, and what makes a forgotten key fail
+        //    rather than vanish.
+        assert!(
+            discharged == block.declared,
+            "{at}: discharged prose keys {discharged:?} differ from `{PROSE_DECLARATION_KEY}` \
+             {:?} (#lzprosekeyconvention rule 4).",
+            block.declared
+        );
+
+        // A block that is entirely prose has nothing that could discharge it.
+        assert!(
+            block.declared.is_empty() || block.non_prose_keys > 0,
+            "{at}: the block declares `{PROSE_DECLARATION_KEY}` and carries no other key \
+             (#lzprosekeyconvention). A block that is entirely prose has nothing that \
+             could discharge it."
+        );
+
+        for claim in &block.claims {
+            for named in &claim.discharged_by {
+                // 7 before 6: a paragraph can never be asserted (rule 1), so a
+                // discharge naming one would otherwise always report as rule 6
+                // and the real defect — naming a paragraph — would never be
+                // said out loud.
+                assert!(
+                    !all_prose.contains(named),
+                    "{at}: `{}` claims to be discharged by `{named}`, which is itself a \
+                     prose key (#lzprosekeyconvention rule 7). A paragraph cannot carry \
+                     another paragraph's obligation.",
+                    claim.key
+                );
+                // 6. the named key was never asserted by this fixture's run.
+                assert!(
+                    ledger.asserted.contains(named),
+                    "{at}: `{}` claims to be discharged by `{named}`, which this fixture's \
+                     run never ASSERTED (#lzprosekeyconvention rule 6). The keys this run \
+                     asserted are {:?}. Rule 6 is the whole convention — the discharge is \
+                     a claim about the run, so the ledger can check it.",
+                    claim.key,
+                    ledger.asserted
+                );
+            }
+        }
+    }
+
+    // A "run" is ONE TEST, not one process. Where a fixture is replayed by
+    // several tests the ledger is CLEARED at each verification: unioning
+    // asserted keys across tests would let a discharge in one be satisfied by an
+    // assertion in another, which is the accident-of-collocation the
+    // fixture-scoped ledger exists to bound in the first place.
+    with_ledger(fixture, |l| {
+        l.verified = true;
+        l.asserted.clear();
+        l.blocks.clear();
+    });
+}
 
 /// A fixture assertion block plus the sets of keys the runner read, asserted,
 /// excused, descended into, and marked as prose.
@@ -121,7 +426,11 @@ pub struct Expect<'a> {
     read: RefCell<BTreeSet<String>>,
     asserted: RefCell<BTreeSet<String>>,
     excused: RefCell<BTreeMap<String, String>>,
-    prose: RefCell<BTreeSet<String>>,
+    /// Keys satisfied by [`Expect::prose_key`] — this block's paragraphs.
+    discharged: RefCell<BTreeSet<String>>,
+    /// The block's own `assertions.prose` value, read once at construction.
+    declared: BTreeSet<String>,
+    claims: RefCell<Vec<Claim>>,
     descended: RefCell<BTreeSet<String>>,
     armed: Cell<bool>,
 }
@@ -134,6 +443,19 @@ impl<'a> Expect<'a> {
     /// error, because "this fixture has no assertion block" is a shape question
     /// the runner already answers.
     pub fn new(fixture: impl Into<String>, label: impl Into<String>, value: &'a Value) -> Self {
+        let declared: BTreeSet<String> = value
+            .get(PROSE_DECLARATION_KEY)
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .map(|v| {
+                        v.as_str()
+                            .expect("`prose` declares sibling key NAMES")
+                            .to_owned()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         Self {
             fixture: fixture.into(),
             label: label.into(),
@@ -141,7 +463,9 @@ impl<'a> Expect<'a> {
             read: RefCell::new(BTreeSet::new()),
             asserted: RefCell::new(BTreeSet::new()),
             excused: RefCell::new(BTreeMap::new()),
-            prose: RefCell::new(BTreeSet::new()),
+            discharged: RefCell::new(BTreeSet::new()),
+            declared,
+            claims: RefCell::new(Vec::new()),
             descended: RefCell::new(BTreeSet::new()),
             armed: Cell::new(true),
         }
@@ -252,22 +576,60 @@ impl<'a> Expect<'a> {
         )
     }
 
-    /// Mark `key` satisfied because it is *documentation*, not an assertion —
-    /// `note`, `reason`, `description`: prose aimed at a human reading the
-    /// fixture, with no observable behind it.
+    /// Discharge the prose key `key` by naming the executable assertion keys
+    /// that carry its obligation (`#lzprosekeyconvention`).
     ///
-    /// Exempt from all three checks, and kept distinct from
-    /// [`Expect::excuse_key`] so review can tell "this is not an assertion" from
-    /// "this is an assertion this binding cannot make here".
-    pub fn prose(&self, key: &str, why: &str) {
+    /// `key` MUST be listed in the block's own `prose` array, `discharged_by`
+    /// MUST be non-empty, and every key it names MUST be asserted somewhere in
+    /// the same fixture's run and MUST NOT itself be prose. The first two are
+    /// checked here; the rest are fixture-scoped and checked by
+    /// [`verify_prose`], because a paragraph in `assertions` is routinely
+    /// carried by a per-scenario `expect` key asserted long afterwards.
+    ///
+    /// Naming the keys is what makes the exemption falsifiable — it replaces
+    /// the free-text reason the deleted `prose()` required and then discarded.
+    pub fn prose_key(&self, key: &str, discharged_by: &[&str]) {
+        // Rule 5, eagerly: a discharge naming nothing is the free-text excuse
+        // again, spelled as an empty list.
         assert!(
-            !why.is_empty(),
-            "{}: prose for `{}.{}` needs a reason",
+            !discharged_by.is_empty(),
+            "{}: `{}.{}` was discharged naming NO keys (#lzprosekeyconvention rule 5). \
+             A discharge that names nothing is the unfalsifiable excuse this clause \
+             removes — name the executable assertion keys that carry the obligation.",
             self.fixture,
             self.label,
             key
         );
-        self.prose.borrow_mut().insert(key.to_owned());
+        // Recording a claim un-verifies the ledger, so a claim made AFTER a
+        // verification is still caught by the guard's teardown rather than
+        // riding on the previous test's green.
+        let open = with_ledger(&self.fixture, |l| {
+            if l.open {
+                l.verified = false;
+            }
+            l.open
+        });
+        assert!(
+            open,
+            "{}: `{}.{}` was discharged without an open ProseLedger \
+             (#lzprosekeyconvention). Hold `let _prose = ProseLedger::open(&path);` for the \
+             whole replay and call `expect::verify_prose(&path)` when it finishes — an \
+             unverified discharge claim checks nothing.",
+            self.fixture, self.label, key
+        );
+        // The declaration itself is consumed by the rule-4 comparison in
+        // `verify_prose`, so record it as asserted here rather than leaving the
+        // block's own drop check to report `prose` as unconsumed.
+        self.read.borrow_mut().insert(PROSE_DECLARATION_KEY.into());
+        self.asserted
+            .borrow_mut()
+            .insert(PROSE_DECLARATION_KEY.into());
+        self.read.borrow_mut().insert(key.to_owned());
+        self.discharged.borrow_mut().insert(key.to_owned());
+        self.claims.borrow_mut().push(Claim {
+            key: key.to_owned(),
+            discharged_by: discharged_by.iter().map(|s| (*s).to_owned()).collect(),
+        });
     }
 
     /// Mark `key` satisfied *without* asserting it, for a comparison that
@@ -315,7 +677,7 @@ impl<'a> Expect<'a> {
     pub fn read_but_not_asserted(&self) -> Vec<String> {
         let asserted = self.asserted.borrow();
         let excused = self.excused.borrow();
-        let prose = self.prose.borrow();
+        let discharged = self.discharged.borrow();
         let descended = self.descended.borrow();
         self.read
             .borrow()
@@ -323,8 +685,9 @@ impl<'a> Expect<'a> {
             .filter(|k| {
                 !asserted.contains(k.as_str())
                     && !excused.contains_key(k.as_str())
-                    && !prose.contains(k.as_str())
+                    && !discharged.contains(k.as_str())
                     && !descended.contains(k.as_str())
+                    && !self.annotation_exempt(k)
             })
             .cloned()
             .collect()
@@ -351,8 +714,54 @@ impl<'a> Expect<'a> {
         self.read.borrow().contains(key)
             || self.asserted.borrow().contains(key)
             || self.excused.borrow().contains_key(key)
-            || self.prose.borrow().contains(key)
+            || self.discharged.borrow().contains(key)
             || self.descended.borrow().contains(key)
+            || self.annotation_exempt(key)
+    }
+
+    /// `note` / `description` / `reason` are annotations, exempt by name — the
+    /// reactive-graph corpus carries ~97 per-step ones and no runner should have
+    /// to hand-wave each. The exemption is **overridden** by the corpus: a block
+    /// that lists the name in its own `prose` array has said it states an
+    /// obligation, and it must then be discharged like any other paragraph.
+    fn annotation_exempt(&self, key: &str) -> bool {
+        ANNOTATION_KEYS.contains(&key) && !self.declared.contains(key)
+    }
+
+    /// Hand this block's contribution to the fixture-scoped prose ledger.
+    ///
+    /// Every block contributes its asserted key names — a paragraph in
+    /// `assertions` is routinely discharged by a per-scenario `expect` key, so
+    /// rule 6 cannot be answered from one block. Only blocks that declared or
+    /// discharged prose contribute a record.
+    fn record_prose(&self) {
+        let asserted = self.asserted.borrow().clone();
+        let declared = self.declared.clone();
+        let claims = self.claims.borrow().clone();
+        let excused: BTreeSet<String> = self.excused.borrow().keys().cloned().collect();
+        let non_prose_keys = self
+            .value
+            .as_object()
+            .map(|o| {
+                o.keys()
+                    .filter(|k| k.as_str() != PROSE_DECLARATION_KEY && !declared.contains(*k))
+                    .count()
+            })
+            .unwrap_or(0);
+        let label = self.label.clone();
+        with_ledger(&self.fixture, |l| {
+            l.asserted.extend(asserted.iter().cloned());
+            if !declared.is_empty() || !claims.is_empty() {
+                l.blocks.push(BlockRecord {
+                    label,
+                    declared,
+                    asserted,
+                    excused,
+                    non_prose_keys,
+                    claims,
+                });
+            }
+        });
     }
 
     fn mark_asserted(&self, key: &str) -> &'a Value {
@@ -413,6 +822,9 @@ impl Drop for Expect<'_> {
         if !self.armed.get() || std::thread::panicking() {
             return;
         }
+        // The ledger is fixture-scoped and outlives this block, so it is fed
+        // BEFORE the block's own drop check can panic.
+        self.record_prose();
         self.check();
     }
 }

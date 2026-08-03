@@ -80,6 +80,11 @@ fn nodeid_exact_range_is_replayed() {
     assert_eq!(fixture["protocol_version"], 1, "{path}: protocol version");
     assert_eq!(fixture["kind"], "NodeIdExactRange", "{path}: kind");
 
+    // Fixture-scoped prose ledger (`#lzprosekeyconvention`): the paragraphs in
+    // `assertions` are discharged by per-scenario `expect` keys asserted after
+    // that block drops.
+    let _prose = common::ProseLedger::open(&path);
+
     let a = Expect::new(path.clone(), "assertions", &fixture["assertions"]);
     a.assert_key("required_of_binding", "MUST");
     a.assert_key_with("codecs", |v| {
@@ -89,14 +94,44 @@ fn nodeid_exact_range_is_replayed() {
         "scenario_count",
         fixture["scenarios"].as_array().expect("scenarios").len() as u64,
     );
-    a.prose("clause", "states the normative decoder obligation");
-    a.prose(
-        "wire_encoding",
-        "explains why wire and expectation are strings",
+    // `outcomes` is NOT prose — the corpus does not list it. It maps a
+    // vocabulary to English glosses, so the assertion is the KEY SET and the
+    // parent key's own assertion discharges it (`#lzprosekeyconvention`).
+    a.assert_key_with("outcomes", |v| {
+        let vocabulary: Vec<&str> = v
+            .as_object()
+            .expect("outcomes maps each outcome token to its gloss")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            vocabulary,
+            ["exact", "exact_or_reject"],
+            "the outcome vocabulary this runner dispatches on"
+        );
+    });
+    // The three declared paragraphs, each naming the executable keys that carry
+    // its obligation.
+    a.prose_key("clause", &["node_id_decimal", "outcome"]);
+    // PROXY. `wire_encoding` is a claim about how the CORPUS carries its bytes
+    // and its expectation — none of the three a JSON number — which no assertion
+    // a run makes can observe. The proxy is the codec vocabulary plus
+    // `node_id_decimal`, which is compared as a decimal STRING against a decode
+    // of `wire_json` / `wire_msgpack_hex` rather than a re-serialized
+    // pre-parsed object, and so would redden against a decoder that rounds.
+    a.prose_key("wire_encoding", &["codecs", "node_id_decimal"]);
+    // "the two `exact` scenarios are the control" — the control is visible as
+    // the `outcome` key each scenario carries, over the full `scenario_count`,
+    // with `node_id_decimal` proving the boundary value really decoded.
+    a.prose_key(
+        "anti_vacuity",
+        &["outcome", "node_id_decimal", "scenario_count"],
     );
-    a.prose("outcomes", "defines `exact` and `exact_or_reject`");
-    a.prose("anti_vacuity", "explains why the `exact` scenarios exist");
-    a.prose("generator", "names the script that regenerates the fixture");
+    a.excuse_key(
+        "generator",
+        "the corpus-side script that regenerates the fixture; lazily-rs replays the \
+         fixture and never regenerates it, so there is nothing here to compare it against",
+    );
     a.finish();
 
     // A binding whose identity type covers the whole u64 range must decode
@@ -181,4 +216,6 @@ fn nodeid_exact_range_is_replayed() {
         accepted, replayed,
         "lazily-rs is u64-wide; a refusal here means the decoder narrowed"
     );
+
+    common::expect::verify_prose(&path);
 }

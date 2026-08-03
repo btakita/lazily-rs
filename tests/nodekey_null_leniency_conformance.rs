@@ -108,6 +108,9 @@ fn nodekey_null_leniency_is_replayed() {
     assert_eq!(fixture["protocol_version"], 1, "{path}: protocol version");
     assert_eq!(fixture["kind"], "NodeKeyNullLeniency", "{path}: kind");
 
+    // Fixture-scoped prose ledger (`#lzprosekeyconvention`).
+    let _prose = common::ProseLedger::open(&path);
+
     let a = Expect::new(path.clone(), "assertions", &fixture["assertions"]);
     a.assert_key("required_of_binding", "MUST");
     a.assert_key_with("codecs", |v| {
@@ -127,14 +130,29 @@ fn nodekey_null_leniency_is_replayed() {
         "scenario_count",
         fixture["scenarios"].as_array().expect("scenarios").len() as u64,
     );
-    a.prose("clause", "states the normative encoder/decoder split");
-    a.prose("wire_encoding", "explains why the wire is text/hex");
-    a.prose(
-        "reencode_obligation",
-        "explains the re-encode half of the rule",
+    // The four declared paragraphs (`#lzprosekeyconvention`). The clause is the
+    // encoder/decoder split, so it takes both halves; the re-encode obligation
+    // is exactly the encoder half, which no decode assertion can reach.
+    a.prose_key("clause", &["decoded_key", "reencoded_key_field_present"]);
+    // PROXY. `wire_encoding` is a claim about how the CORPUS carries its bytes,
+    // which no assertion a run makes can observe. The proxy is the codec and key
+    // form vocabulary plus `decoded_key`, asserted against a decode of the raw
+    // `wire_json` text / `wire_msgpack_hex` bytes rather than a pre-parsed
+    // object — together they prove the absent-versus-explicit-nil distinction
+    // survived into the runner.
+    a.prose_key("wire_encoding", &["codecs", "key_forms", "decoded_key"]);
+    a.prose_key("reencode_obligation", &["reencoded_key_field_present"]);
+    // The controls are the `omitted` and `present` forms of `key_forms`, seen
+    // through `decoded_key` across the full `scenario_count`.
+    a.prose_key(
+        "anti_vacuity",
+        &["decoded_key", "key_forms", "scenario_count"],
     );
-    a.prose("anti_vacuity", "explains why omitted/present are controls");
-    a.prose("generator", "names the script that regenerates the fixture");
+    a.excuse_key(
+        "generator",
+        "the corpus-side script that regenerates the fixture; lazily-rs replays the \
+         fixture and never regenerates it, so there is nothing here to compare it against",
+    );
     a.finish();
 
     // Anti-vacuity, both directions. `decoded_key: null` is what a runner that
@@ -196,4 +214,6 @@ fn nodekey_null_leniency_is_replayed() {
         "only the `present` scenarios carry a key; a runner reporting absent for \
          everything satisfies the null cases trivially"
     );
+
+    common::expect::verify_prose(&path);
 }

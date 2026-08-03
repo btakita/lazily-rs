@@ -78,9 +78,22 @@ fn assert_fixture_block(path: &str, fixture: &Value, codec: &str, byte_canonical
         "scenario_count",
         fixture["scenarios"].as_array().expect("scenarios").len() as u64,
     );
-    a.prose(
+    // `note` is declared prose by the corpus (`#lzprosekeyconvention`), so it is
+    // DISCHARGED by naming the executable keys that carry its obligation rather
+    // than excused with a sentence. The json paragraph's claim is that `role`
+    // and `byte_canonical` are two senses a runner must not conflate — both are
+    // asserted right here. The msgpack paragraph's claim is that
+    // `byte_canonical: false` is why the fixture pins decoded values and named
+    // fields instead of golden bytes, and it names `encoded_body_field_names`
+    // itself; that key is asserted per scenario further down, which is exactly
+    // why the ledger is fixture-scoped rather than block-scoped.
+    a.prose_key(
         "note",
-        "documents the reference-vs-byte-canonical distinction",
+        match codec {
+            "json" => &["role", "byte_canonical"][..],
+            "msgpack" => &["byte_canonical", "encoded_body_field_names"][..],
+            other => panic!("{path}: unknown codec `{other}` in fixture block"),
+        },
     );
     a.finish();
 }
@@ -222,6 +235,7 @@ fn assert_values(exp: &Expect<'_>, message: &IpcMessage) {
 #[test]
 fn json_frames_round_trip() {
     let (path, fixture) = load("frame_roundtrip_json.json");
+    let _prose = common::ProseLedger::open(&path);
     assert_fixture_block(&path, &fixture, "json", true);
 
     let mut replayed = 0;
@@ -250,6 +264,7 @@ fn json_frames_round_trip() {
         replayed += 1;
     }
     assert_eq!(replayed, 3, "one scenario per IpcMessage variant");
+    common::expect::verify_prose(&path);
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +289,7 @@ fn sorted_field_names(map: &Value) -> Vec<String> {
 #[test]
 fn msgpack_frames_round_trip() {
     let (path, fixture) = load("frame_roundtrip_msgpack.json");
+    let _prose = common::ProseLedger::open(&path);
     assert_fixture_block(&path, &fixture, "msgpack", false);
 
     let mut replayed = 0;
@@ -342,4 +358,5 @@ fn msgpack_frames_round_trip() {
         replayed += 1;
     }
     assert_eq!(replayed, 3, "one scenario per IpcMessage variant");
+    common::expect::verify_prose(&path);
 }

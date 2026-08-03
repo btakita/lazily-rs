@@ -752,10 +752,6 @@ fn liveness_orset_lww_fixture() {
         "open_set_add_wins_over_stale_remove",
     );
     let exp = expect("liveness_orset_lww.json", sc.value());
-    exp.prose(
-        "reason",
-        "prose explaining WHY add wins; the observable is `present`, asserted below",
-    );
     let apply_orset = |ops: Vec<&serde_json::Value>| {
         let mut set = OrSet::new();
         for op in ops {
@@ -864,10 +860,6 @@ fn liveness_orset_lww_fixture() {
         "whole_editor_death_cascades",
     );
     let exp = expect("liveness_orset_lww.json", sc.value());
-    exp.prose(
-        "note",
-        "prose restating the cascade in words; the observables are live_docs_before/after",
-    );
     // present (doc, pid) pairs from the fixture open_set
     let mut open: Vec<(String, u64)> = Vec::new();
     for entry in sc["open_set"].as_array().unwrap() {
