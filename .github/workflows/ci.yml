@@ -349,6 +349,9 @@ jobs:
           test -s "$LAZILY_CONFORMANCE_BLOCKS" || { echo "::error::assertion-block ledger $LAZILY_CONFORMANCE_BLOCKS is absent or empty — the recorder never attached, so the bind rung cannot be computed"; exit 1; }
           ./scripts/check-conformance-coverage.sh
 
+      - name: Assertion observation ordering (#lzassertordering)
+        run: python3 ../lazily-spec/scripts/check-assertion-ordering.py --binding rs --root .
+
       # The gate that keeps every step above honest. It compares `make check`'s
       # prerequisite closure against the run: bodies in this file and fails on
       # any target CI does not reach. Comments inside run: bodies are stripped
