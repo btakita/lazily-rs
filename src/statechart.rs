@@ -112,6 +112,11 @@ impl ChartDef {
             order.insert(id.clone(), idx);
             states.insert(id.clone(), parse_state(id, raw)?);
         }
+        if !states.contains_key(&_top_initial) {
+            return Err(format!(
+                "chart.initial names undeclared state `{_top_initial}`"
+            ));
+        }
 
         Self::from_states(states, order)
     }
@@ -125,6 +130,30 @@ impl ChartDef {
         states: HashMap<String, StateDef>,
         order: HashMap<String, usize>,
     ) -> Result<ChartDef, String> {
+        for (id, def) in &states {
+            for (field, target) in [
+                ("parent", def.parent.as_deref()),
+                ("initial", def.initial.as_deref()),
+                ("default", def.default.as_deref()),
+            ] {
+                if let Some(target) = target
+                    && !states.contains_key(target)
+                {
+                    return Err(format!(
+                        "state {id}: `{field}` names undeclared state `{target}`"
+                    ));
+                }
+            }
+            for (event, transition) in &def.transitions {
+                if !states.contains_key(&transition.target) {
+                    return Err(format!(
+                        "state {id}: transition `{event}` targets undeclared state `{}`",
+                        transition.target
+                    ));
+                }
+            }
+        }
+
         // Derived structure: children, depth, root.
         let mut children: HashMap<String, Vec<String>> = HashMap::new();
         let mut root: Option<String> = None;
@@ -158,7 +187,10 @@ impl ChartDef {
     }
 
     fn kind(&self, id: &str) -> Kind {
-        self.states.get(id).map(|s| s.kind).unwrap_or(Kind::Atomic)
+        self.states
+            .get(id)
+            .unwrap_or_else(|| panic!("unknown state in this chart: {id}"))
+            .kind
     }
 
     fn ancestors_inclusive(&self, id: &str) -> Vec<String> {

@@ -172,3 +172,18 @@ fn conformance_history_deep() {
 fn conformance_entry_exit_actions() {
     run_fixture("entry_exit_actions.json");
 }
+
+#[test]
+fn conformance_malformed_charts_are_rejected() {
+    let fixture = load_fixture("malformed_rejected.json");
+    let cases = fixture["cases"].as_array().expect("cases");
+    assert!(!cases.is_empty(), "malformed corpus must contain cases");
+    for case in cases {
+        let name = case["name"].as_str().expect("case name");
+        let chart = case.get("chart").expect("case chart");
+        assert!(
+            ChartDef::from_json(chart).is_err(),
+            "malformed statechart case `{name}` was accepted"
+        );
+    }
+}
