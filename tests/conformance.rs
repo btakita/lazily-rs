@@ -22,8 +22,8 @@ mod common;
 
 use common::Expect;
 use lazily::{
-    Delta, DeltaApplyStatus, DeltaOp, EdgeSnapshot, IpcMessage, NodeId, NodeSnapshot, NodeState,
-    PeerId, PeerPermissions, SHM_BLOB_HEADER_LEN, ShmBlobArena, Snapshot,
+    CapabilityHandshake, Delta, DeltaApplyStatus, DeltaOp, EdgeSnapshot, IpcMessage, NodeId,
+    NodeSnapshot, NodeState, PeerId, PeerPermissions, SHM_BLOB_HEADER_LEN, ShmBlobArena, Snapshot,
 };
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -97,6 +97,55 @@ fn assert_round_trip_msgpack(message: &IpcMessage) {
 /// `first_op_payload_backend` sat unasserted in lazily-kt.
 fn assertions<'a>(name: &str, block: &'a serde_json::Value) -> Expect<'a> {
     Expect::new(fixture_path(name), "assertions", block)
+}
+
+#[test]
+fn capability_handshake_negotiates_the_canonical_contract() {
+    let name = "codec/capability_handshake.json";
+    let path = fixture_path(name);
+    let raw = common::spec_read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let fixture: serde_json::Value =
+        serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {path}: {e}"));
+
+    assert_eq!(fixture["protocol_version"], 1, "{path}: protocol version");
+    assert_eq!(
+        fixture["kind"], "CapabilityHandshake",
+        "{path}: fixture kind"
+    );
+
+    let mut replayed = 0usize;
+    for (_, id, scenario_view) in common::scenarios(&path, &fixture) {
+        let scenario = scenario_view.value();
+        replayed += 1;
+
+        let local: CapabilityHandshake = serde_json::from_value(scenario["local"].clone())
+            .unwrap_or_else(|e| panic!("{id}: decode local handshake: {e}"));
+        let remote: CapabilityHandshake = serde_json::from_value(scenario["remote"].clone())
+            .unwrap_or_else(|e| panic!("{id}: decode remote handshake: {e}"));
+        let result = local.negotiate_with(&remote);
+        let expected = Expect::new(
+            path.clone(),
+            format!("scenarios[{id}].expected"),
+            &scenario["expected"],
+        );
+
+        expected.assert_key("compatible", result.is_ok());
+        match result {
+            Ok(negotiated) => {
+                expected.assert_key("negotiated_max_frame_size", negotiated.max_frame_size);
+                expected.assert_key(
+                    "negotiated_fragmentation_supported",
+                    negotiated.fragmentation_supported,
+                );
+            }
+            Err(error) => expected.assert_key("field", error.field()),
+        }
+    }
+
+    assert_eq!(
+        replayed, 5,
+        "{path}: the settled handshake fixture has five scenarios"
+    );
 }
 
 /// Compare `actual` against the fixture's value for `key`, marking the key

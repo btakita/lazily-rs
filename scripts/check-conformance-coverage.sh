@@ -167,7 +167,9 @@ fi
 # wrong" from "nothing was examined", so assert the magnitude explicitly before
 # reporting OK. Do not lower these to fix a red run — a drop here means the
 # corpus or the recorder shrank, which is the finding.
-MIN_FIXTURES="${MIN_FIXTURES:-130}"
+# Raised for the capability-handshake fixture (#lzhandshakedeadfields): one
+# opened fixture and five replayed scenarios.
+MIN_FIXTURES="${MIN_FIXTURES:-131}"
 if [ "$total" -eq 0 ]; then
   echo "ERROR: the corpus at $SPEC_DIR listed ZERO fixtures." >&2
   echo "       Every check above is vacuously green over an empty population." >&2
@@ -397,7 +399,8 @@ if problems:
 # The rung above walks the scenarios of OPENED fixtures. Zero opened fixtures
 # means zero scenarios, which means zero unreplayed scenarios, which reports OK
 # having compared nothing. Assert the magnitude before claiming green.
-MIN_SCENARIOS = int(os.environ.get("MIN_SCENARIOS", "132"))
+# Raised by five for capability-handshake negotiation (#lzhandshakedeadfields).
+MIN_SCENARIOS = int(os.environ.get("MIN_SCENARIOS", "137"))
 if total == 0:
     sys.stderr.write(
         "ERROR: ZERO scenarios were found across the opened fixtures.\n"

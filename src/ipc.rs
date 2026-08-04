@@ -1765,6 +1765,54 @@ pub struct CapabilityHandshake {
     pub features: Vec<String>,
 }
 
+/// Session limits retained after two [`CapabilityHandshake`] values agree.
+///
+/// The frame ceiling is the smaller receive limit advertised by either peer.
+/// Fragmentation is usable only when both peers can send and reassemble it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NegotiatedCapabilityHandshake {
+    pub max_frame_size: u64,
+    pub fragmentation_supported: bool,
+}
+
+/// Why two capability handshakes cannot establish a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityHandshakeError {
+    ProtocolId,
+    ProtocolMajorVersion,
+    Codec,
+    MaxFrameSize,
+    OrderedReliable,
+    SessionId,
+}
+
+impl CapabilityHandshakeError {
+    /// Canonical wire field responsible for the incompatibility.
+    #[must_use]
+    pub const fn field(self) -> &'static str {
+        match self {
+            Self::ProtocolId => "protocol_id",
+            Self::ProtocolMajorVersion => "protocol_major_version",
+            Self::Codec => "codec",
+            Self::MaxFrameSize => "max_frame_size",
+            Self::OrderedReliable => "ordered_reliable",
+            Self::SessionId => "session_id",
+        }
+    }
+}
+
+impl fmt::Display for CapabilityHandshakeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "capability handshake is incompatible at `{}`",
+            self.field()
+        )
+    }
+}
+
+impl std::error::Error for CapabilityHandshakeError {}
+
 impl CapabilityHandshake {
     /// Create a handshake with protocol defaults (JSON codec, 1 MiB frame size,
     /// ordered-reliable, no features).
@@ -1810,22 +1858,58 @@ impl CapabilityHandshake {
         self
     }
 
-    /// Whether this handshake is mutually compatible with `other`.
+    /// Negotiate a session with `other`, retaining the effective frame limits.
     ///
     /// Peers are compatible when both advertise [`PROTOCOL_ID`], both advertise
     /// [`PROTOCOL_MAJOR_VERSION`], their major versions and codecs agree, and
-    /// both require ordered reliable delivery. Feature negotiation is
-    /// caller-driven via [`features`](Self::features) / [`has_feature`](Self::has_feature).
+    /// both require ordered reliable delivery. Both frame ceilings must be
+    /// positive and both handshakes must name the same non-empty session.
+    ///
+    /// A ceiling mismatch is reconciled to the smaller value. Fragmentation is
+    /// negotiated with logical AND. Feature negotiation remains caller-driven
+    /// via [`features`](Self::features) / [`has_feature`](Self::has_feature).
+    pub fn negotiate_with(
+        &self,
+        other: &Self,
+    ) -> Result<NegotiatedCapabilityHandshake, CapabilityHandshakeError> {
+        if self.protocol_id != PROTOCOL_ID || other.protocol_id != PROTOCOL_ID {
+            return Err(CapabilityHandshakeError::ProtocolId);
+        }
+        if self.protocol_major_version != PROTOCOL_MAJOR_VERSION
+            || other.protocol_major_version != PROTOCOL_MAJOR_VERSION
+            || self.protocol_major_version != other.protocol_major_version
+        {
+            return Err(CapabilityHandshakeError::ProtocolMajorVersion);
+        }
+        if self.codec != other.codec {
+            return Err(CapabilityHandshakeError::Codec);
+        }
+        if !self.ordered_reliable || !other.ordered_reliable {
+            return Err(CapabilityHandshakeError::OrderedReliable);
+        }
+        if self.max_frame_size == 0 || other.max_frame_size == 0 {
+            return Err(CapabilityHandshakeError::MaxFrameSize);
+        }
+        if self.session_id.is_empty()
+            || other.session_id.is_empty()
+            || self.session_id != other.session_id
+        {
+            return Err(CapabilityHandshakeError::SessionId);
+        }
+
+        Ok(NegotiatedCapabilityHandshake {
+            max_frame_size: self.max_frame_size.min(other.max_frame_size),
+            fragmentation_supported: self.fragmentation_supported && other.fragmentation_supported,
+        })
+    }
+
+    /// Whether this handshake is mutually compatible with `other`.
+    ///
+    /// This compatibility-only wrapper delegates to [`Self::negotiate_with`] so
+    /// it cannot drift from the session limits returned to callers.
     #[must_use]
     pub fn is_compatible_with(&self, other: &Self) -> bool {
-        self.protocol_id == PROTOCOL_ID
-            && other.protocol_id == PROTOCOL_ID
-            && self.protocol_major_version == PROTOCOL_MAJOR_VERSION
-            && other.protocol_major_version == PROTOCOL_MAJOR_VERSION
-            && self.protocol_major_version == other.protocol_major_version
-            && self.codec == other.codec
-            && self.ordered_reliable
-            && other.ordered_reliable
+        self.negotiate_with(other).is_ok()
     }
 
     /// Whether this peer advertises `feature`.

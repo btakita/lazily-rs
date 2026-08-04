@@ -1083,6 +1083,9 @@ mod capability_handshake {
         let a = CapabilityHandshake::new(PEER_A, "s");
         let b = CapabilityHandshake::new(PEER_B, "s");
         assert!(a.is_compatible_with(&b));
+        let negotiated = a.negotiate_with(&b).unwrap();
+        assert_eq!(negotiated.max_frame_size, 1_048_576);
+        assert!(!negotiated.fragmentation_supported);
     }
 
     #[test]
@@ -1120,16 +1123,50 @@ mod capability_handshake {
     }
 
     #[test]
-    fn fragmentation_and_features_do_not_block_compatibility() {
-        // Fragmentation support and feature lists are informational for the
-        // core compatibility check; callers use `has_feature` for specific gates.
+    fn frame_limits_reconcile_and_features_remain_caller_driven() {
         let a = CapabilityHandshake::new(PEER_A, "s")
+            .with_max_frame_size(16 * 1024 * 1024)
             .with_fragmentation(true)
             .with_features(["shared-blob"]);
         let b = CapabilityHandshake::new(PEER_B, "s")
+            .with_max_frame_size(1024)
             .with_fragmentation(false)
             .with_features(["signaling-relay"]);
         assert!(a.is_compatible_with(&b));
+        let negotiated = a.negotiate_with(&b).unwrap();
+        assert_eq!(negotiated.max_frame_size, 1024);
+        assert!(!negotiated.fragmentation_supported);
+    }
+
+    #[test]
+    fn fragmentation_requires_both_peers() {
+        let a = CapabilityHandshake::new(PEER_A, "s")
+            .with_max_frame_size(4096)
+            .with_fragmentation(true);
+        let b = CapabilityHandshake::new(PEER_B, "s")
+            .with_max_frame_size(8192)
+            .with_fragmentation(true);
+        let negotiated = a.negotiate_with(&b).unwrap();
+        assert_eq!(negotiated.max_frame_size, 4096);
+        assert!(negotiated.fragmentation_supported);
+    }
+
+    #[test]
+    fn zero_frame_ceiling_fails_closed() {
+        let a = CapabilityHandshake::new(PEER_A, "s").with_max_frame_size(0);
+        let b = CapabilityHandshake::new(PEER_B, "s");
+        let error = a.negotiate_with(&b).unwrap_err();
+        assert_eq!(error.field(), "max_frame_size");
+        assert!(!a.is_compatible_with(&b));
+    }
+
+    #[test]
+    fn session_id_must_be_shared_and_non_empty() {
+        let a = CapabilityHandshake::new(PEER_A, "graph-a");
+        let other = CapabilityHandshake::new(PEER_B, "graph-b");
+        let empty = CapabilityHandshake::new(PEER_B, "");
+        assert_eq!(a.negotiate_with(&other).unwrap_err().field(), "session_id");
+        assert_eq!(a.negotiate_with(&empty).unwrap_err().field(), "session_id");
     }
 
     // --- #lzspecdeltacrdt ---
