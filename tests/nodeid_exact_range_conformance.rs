@@ -224,11 +224,6 @@ fn nodeid_exact_range_is_replayed() {
         "anti_vacuity",
         &["outcome", "node_id_decimal", "scenario_count"],
     );
-    a.excuse_key(
-        "generator",
-        "the corpus-side script that regenerates the fixture; lazily-rs replays the \
-         fixture and never regenerates it, so there is nothing here to compare it against",
-    );
     a.finish();
 
     // Runner-side coverage gates LAST.

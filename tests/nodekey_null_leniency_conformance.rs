@@ -481,11 +481,6 @@ fn nodekey_null_leniency_is_replayed() {
         "anti_vacuity",
         &["decoded_key", "key_forms", "scenario_count"],
     );
-    a.excuse_key(
-        "generator",
-        "the corpus-side script that regenerates the fixture; lazily-rs replays the \
-         fixture and never regenerates it, so there is nothing here to compare it against",
-    );
     a.finish();
 
     // Runner-side coverage gates LAST, so they can only ever add a failure the

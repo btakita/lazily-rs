@@ -621,13 +621,6 @@ fn blob_backend_discriminator_is_replayed() {
     // here is that a kind is never normalized: an unknown one is `rejected`, and
     // a known one arrives as itself in `decoded_backend`.
     a.prose_key("theorem", &["decoded_backend", "rejected"]);
-    // NOT prose — the corpus does not list it, and a script path is a value, not
-    // a paragraph. There is nothing in this binding that regenerates the fixture.
-    a.excuse_key(
-        "generator",
-        "the corpus-side script that regenerates the fixture; lazily-rs replays the \
-         fixture and never regenerates it, so there is nothing here to compare it against",
-    );
     a.finish();
 
     assert_eq!(
