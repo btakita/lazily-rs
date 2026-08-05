@@ -716,7 +716,7 @@ impl AsyncComputeContext {
     /// (§9.2.3) — so it goes through the plain [`AsyncContext`] write path rather
     /// than this tracking compute context. Mirrors how [`get_async`] builds an
     /// `AsyncContext` from `self.inner` to drive a downstream slot.
-    fn owning_context(&self) -> AsyncContext {
+    pub(crate) fn owning_context(&self) -> AsyncContext {
         AsyncContext {
             inner: self.inner.clone(),
             #[cfg(feature = "instrumentation")]

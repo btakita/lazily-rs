@@ -29,7 +29,7 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::cell_family::EntryKind;
+use crate::cell_family::{DependencyAvailability, EntryKind};
 use crate::keyed_order::{KeyedOrder, Move, Mutation};
 use crate::{Computed, Source, ThreadSafeContext};
 
@@ -444,6 +444,69 @@ where
 /// A thread-safe **input-cell** map: every entry is an always-materialized
 /// [`Source<V>`]. The `Send + Sync` analog of [`SourceMap`](crate::SourceMap).
 pub type ThreadSafeSourceMap<K, V> = ThreadSafeReactiveMap<K, V, Source<V>>;
+
+/// Thread-safe exact-key dependency availability map.
+pub type ThreadSafeDependencyMap<K, V> =
+    ThreadSafeReactiveMap<K, DependencyAvailability<V>, Source<DependencyAvailability<V>>>;
+
+impl<K, V> ThreadSafeReactiveMap<K, DependencyAvailability<V>, Source<DependencyAvailability<V>>>
+where
+    K: Eq + Hash + Clone + Send + Sync + 'static,
+    V: PartialEq + Clone + Send + Sync + 'static,
+{
+    /// Resolve or atomically create one dependency handle.
+    ///
+    /// Source allocation cannot execute user code, so keeping the map lock
+    /// through allocation closes the ordinary map's lost-materialization race
+    /// without introducing a callback re-entry seam.
+    fn dependency_handle(
+        &self,
+        ctx: &ThreadSafeContext,
+        key: K,
+        initial: DependencyAvailability<V>,
+    ) -> Source<DependencyAvailability<V>> {
+        let (handle, inserted) = {
+            let mut state = self.lock();
+            if let Some(handle) = state.get(&key) {
+                return handle;
+            }
+            let candidate = ctx.source(initial);
+            let (handle, mutation) = state.insert(key, candidate);
+            (handle, mutation == Mutation::Changed)
+        };
+        if inserted {
+            self.bump_membership(ctx);
+        }
+        handle
+    }
+
+    /// Observe one exact key, materializing a stable `Unavailable` source when
+    /// the key has not yet been published.
+    pub fn observe_dependency(&self, ctx: &ThreadSafeContext, key: K) -> DependencyAvailability<V> {
+        let handle = self.dependency_handle(ctx, key, DependencyAvailability::Unavailable);
+        ctx.get(&handle)
+    }
+
+    /// Publish an exact key as available.
+    pub fn publish(&self, ctx: &ThreadSafeContext, key: K, value: V) {
+        let existing = self.lock().get(&key);
+        if let Some(handle) = existing {
+            ctx.set(&handle, DependencyAvailability::Available(value));
+            return;
+        }
+        self.dependency_handle(ctx, key, DependencyAvailability::Available(value));
+    }
+
+    /// Transition an exact key to unavailable while retaining its handle.
+    pub fn unpublish(&self, ctx: &ThreadSafeContext, key: K) {
+        let existing = self.lock().get(&key);
+        if let Some(handle) = existing {
+            ctx.set(&handle, DependencyAvailability::Unavailable);
+            return;
+        }
+        self.dependency_handle(ctx, key, DependencyAvailability::Unavailable);
+    }
+}
 
 /// A thread-safe **derived-slot** map: entries are [`Computed<V>`] minted lazily
 /// on access or eagerly via [`materialize_all`](ThreadSafeReactiveMap::materialize_all).

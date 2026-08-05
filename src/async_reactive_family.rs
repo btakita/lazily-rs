@@ -26,7 +26,7 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::cell_family::EntryKind;
+use crate::cell_family::{DependencyAvailability, EntryKind};
 use crate::keyed_order::{KeyedOrder, Move, Mutation};
 use crate::{AsyncComputeContext, AsyncComputed, AsyncContext, AsyncSource, Read};
 
@@ -418,6 +418,69 @@ where
 /// An async **input-cell** map: every entry is an always-resolved
 /// [`AsyncSource<V>`].
 pub type AsyncSourceMap<K, V> = AsyncReactiveMap<K, V, AsyncSource<V>>;
+
+/// Async exact-key dependency availability map.
+pub type AsyncDependencyMap<K, V> =
+    AsyncReactiveMap<K, DependencyAvailability<V>, AsyncSource<DependencyAvailability<V>>>;
+
+impl<K, V> AsyncReactiveMap<K, DependencyAvailability<V>, AsyncSource<DependencyAvailability<V>>>
+where
+    K: Eq + Hash + Clone + Send + Sync + 'static,
+    V: PartialEq + Clone + Send + Sync + 'static,
+{
+    fn dependency_handle(
+        &self,
+        ctx: &AsyncContext,
+        key: K,
+        initial: DependencyAvailability<V>,
+    ) -> AsyncSource<DependencyAvailability<V>> {
+        let (handle, inserted) = {
+            let mut state = self.lock();
+            if let Some(handle) = state.get(&key) {
+                return handle;
+            }
+            let candidate = ctx.source(initial);
+            let (handle, mutation) = state.insert(key, candidate);
+            (handle, mutation == Mutation::Changed)
+        };
+        if inserted {
+            self.bump_membership(ctx);
+        }
+        handle
+    }
+
+    /// Observe one exact key from an async compute, materializing a stable
+    /// `Unavailable` source if publication has not happened yet.
+    pub fn observe_dependency(
+        &self,
+        ctx: &AsyncComputeContext,
+        key: K,
+    ) -> DependencyAvailability<V> {
+        let owner = ctx.owning_context();
+        let handle = self.dependency_handle(&owner, key, DependencyAvailability::Unavailable);
+        ctx.get(&handle)
+    }
+
+    /// Publish an exact key as available.
+    pub fn publish(&self, ctx: &AsyncContext, key: K, value: V) {
+        let existing = self.lock().get(&key);
+        if let Some(handle) = existing {
+            ctx.set(&handle, DependencyAvailability::Available(value));
+            return;
+        }
+        self.dependency_handle(ctx, key, DependencyAvailability::Available(value));
+    }
+
+    /// Transition an exact key to unavailable while retaining its handle.
+    pub fn unpublish(&self, ctx: &AsyncContext, key: K) {
+        let existing = self.lock().get(&key);
+        if let Some(handle) = existing {
+            ctx.set(&handle, DependencyAvailability::Unavailable);
+            return;
+        }
+        self.dependency_handle(ctx, key, DependencyAvailability::Unavailable);
+    }
+}
 
 /// An async **derived-slot** map: entries are [`AsyncComputed<V>`] minted lazily
 /// on access or eagerly via [`materialize_all`](AsyncReactiveMap::materialize_all),

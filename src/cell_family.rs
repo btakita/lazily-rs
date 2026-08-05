@@ -69,7 +69,7 @@ use std::rc::Rc;
 use crate::Context;
 use crate::cell::Computed;
 use crate::cell::Source;
-use crate::context::{Compute, ComputeOps};
+use crate::context::{Compute, ComputeOps, Read, Write};
 use crate::keyed_order::{KeyedOrder, Move, Mutation};
 
 /// Which kind of reactive node a [`ReactiveMap`] entry is — the handle-kind axis
@@ -83,6 +83,20 @@ pub enum EntryKind {
     /// A **derived** slot ([`Computed`]) — materialized eagerly (pre-mint) or
     /// lazily on first read.
     Computed,
+}
+
+/// Availability state for an exact-key dependency (`#lzdependencyavailability`).
+///
+/// Unlike `Option<V>` returned by a non-minting map observation, this value
+/// belongs to a stable source node: observing [`Unavailable`](Self::Unavailable)
+/// registers the edge that a later [`Available`](Self::Available) publication
+/// invalidates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DependencyAvailability<V> {
+    /// The exact key has a dependency node, but no value has been published.
+    Unavailable,
+    /// The exact key currently has a published value.
+    Available(V),
 }
 
 /// Deprecated pre-v2 spellings of the [`EntryKind`] variants, kept as
@@ -251,7 +265,10 @@ where
 
     /// Bump the *order* signal (invalidates `keys` readers). Add/remove also
     /// bump this; a pure move bumps **only** this.
-    fn bump_order(&self, ctx: &Context) {
+    fn bump_order<C: ComputeOps>(&self, ctx: &C)
+    where
+        Source<u64>: Write<C, Value = u64>,
+    {
         let next = self.inner.order_version.get().wrapping_add(1);
         self.inner.order_version.set(next);
         ctx.set(&self.inner.order_signal, next);
@@ -259,7 +276,10 @@ where
 
     /// Bump set-membership (invalidates `len`/`contains_key` readers). Always
     /// paired with an order bump because add/remove change order too.
-    fn bump_membership(&self, ctx: &Context) {
+    fn bump_membership<C: ComputeOps>(&self, ctx: &C)
+    where
+        Source<u64>: Write<C, Value = u64>,
+    {
         let next = self.inner.version.get().wrapping_add(1);
         self.inner.version.set(next);
         // A write, not a tracked read: membership readers are invalidated, but
@@ -447,6 +467,11 @@ where
 /// surface.
 pub type SourceMap<K, V> = ReactiveMap<K, V, Source<V>>;
 
+/// A keyed collection whose first exact-key observation creates a stable
+/// `Unavailable` dependency source that later publication updates in place.
+pub type DependencyMap<K, V> =
+    ReactiveMap<K, DependencyAvailability<V>, Source<DependencyAvailability<V>>>;
+
 /// A keyed **derived-slot** collection: every entry is a [`Computed<V>`] whose
 /// value is derived. `get_or_insert_with` mints a slot on first access (lazy
 /// materialization); [`materialize_all`](ReactiveMap::materialize_all) pre-mints
@@ -498,6 +523,71 @@ where
             return;
         }
         self.entry_with(ctx, key, || value);
+    }
+}
+
+impl<K, V> ReactiveMap<K, DependencyAvailability<V>, Source<DependencyAvailability<V>>>
+where
+    K: Eq + Hash + Clone + 'static,
+    V: PartialEq + Clone + 'static,
+{
+    fn dependency_handle<C: ComputeOps>(
+        &self,
+        ctx: &C,
+        key: K,
+        initial: DependencyAvailability<V>,
+    ) -> Source<DependencyAvailability<V>>
+    where
+        Source<u64>: Write<C, Value = u64>,
+    {
+        if let Some(handle) = self.inner.core.borrow().get(&key) {
+            return handle;
+        }
+        let handle = ctx.source(initial);
+        let (handle, mutation) = self.inner.core.borrow_mut().insert(key, handle);
+        if mutation == Mutation::Changed {
+            self.bump_membership(ctx);
+        }
+        handle
+    }
+
+    /// Observe one exact key, materializing only its stable dependency source.
+    ///
+    /// This is intentionally distinct from the non-minting [`get`](Self::get).
+    pub fn observe_dependency<C: ComputeOps>(&self, ctx: &C, key: K) -> DependencyAvailability<V>
+    where
+        Source<u64>: Write<C, Value = u64>,
+        Source<DependencyAvailability<V>>: Read<C, Output = DependencyAvailability<V>>,
+    {
+        let handle = self.dependency_handle(ctx, key, DependencyAvailability::Unavailable);
+        ctx.get(&handle)
+    }
+
+    /// Publish an exact key as available, preserving a previously observed
+    /// dependency source's identity.
+    pub fn publish<C: ComputeOps>(&self, ctx: &C, key: K, value: V)
+    where
+        Source<u64>: Write<C, Value = u64>,
+        Source<DependencyAvailability<V>>: Write<C, Value = DependencyAvailability<V>>,
+    {
+        if let Some(handle) = self.inner.core.borrow().get(&key) {
+            ctx.set(&handle, DependencyAvailability::Available(value));
+            return;
+        }
+        self.dependency_handle(ctx, key, DependencyAvailability::Available(value));
+    }
+
+    /// Transition an exact key back to unavailable without removing its source.
+    pub fn unpublish<C: ComputeOps>(&self, ctx: &C, key: K)
+    where
+        Source<u64>: Write<C, Value = u64>,
+        Source<DependencyAvailability<V>>: Write<C, Value = DependencyAvailability<V>>,
+    {
+        if let Some(handle) = self.inner.core.borrow().get(&key) {
+            ctx.set(&handle, DependencyAvailability::Unavailable);
+            return;
+        }
+        self.dependency_handle(ctx, key, DependencyAvailability::Unavailable);
     }
 }
 

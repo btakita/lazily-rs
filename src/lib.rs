@@ -183,7 +183,7 @@ pub use async_queue::{AsyncQueueCell, AsyncQueueReaderHandles};
 pub use async_reactive_family::{AsyncCellMap, AsyncSlotMap};
 #[cfg(feature = "async")]
 pub use async_reactive_family::{
-    AsyncComputedMap, AsyncMapHandle, AsyncReactiveMap, AsyncSourceMap,
+    AsyncComputedMap, AsyncDependencyMap, AsyncMapHandle, AsyncReactiveMap, AsyncSourceMap,
 };
 #[cfg(feature = "async")]
 pub use async_topic::AsyncTopicCell;
@@ -194,7 +194,10 @@ pub use bridge::{BridgeHub, HubError};
 pub use cell::{Computed, Source};
 #[allow(deprecated)]
 pub use cell_family::{CellMap, SlotMap};
-pub use cell_family::{ComputedMap, EntryKind, MapHandle, ReactiveMap, SourceMap};
+pub use cell_family::{
+    ComputedMap, DependencyAvailability, DependencyMap, EntryKind, MapHandle, ReactiveMap,
+    SourceMap,
+};
 #[cfg(feature = "ipc")]
 pub use command::{
     CallState, CommandAdmissionDecision, CommandAdmissionRejection, CommandAdmitter,
@@ -388,7 +391,8 @@ pub use thread_safe_queue::ThreadSafeQueueCell;
 pub use thread_safe_reactive_family::{ThreadSafeCellMap, ThreadSafeSlotMap};
 #[cfg(feature = "thread-safe")]
 pub use thread_safe_reactive_family::{
-    ThreadSafeComputedMap, ThreadSafeMapHandle, ThreadSafeReactiveMap, ThreadSafeSourceMap,
+    ThreadSafeComputedMap, ThreadSafeDependencyMap, ThreadSafeMapHandle, ThreadSafeReactiveMap,
+    ThreadSafeSourceMap,
 };
 #[cfg(feature = "thread-safe")]
 pub use thread_safe_sem_tree::ThreadSafeSemTree;
