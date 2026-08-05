@@ -55,6 +55,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # lazily-spec owns both the canonical cross-language fixtures and the
+      # generated Protobuf source. Fetch it before any all-feature compile so
+      # the optional `protobuf` build cannot fall back to a copied schema.
+      - name: Fetch canonical lazily-spec conformance fixtures (#lzspecconf)
+        run: git clone --depth 1 https://github.com/lazily-hub/lazily-spec.git ../lazily-spec
+
       - name: Install Rust stable
         run: rustup toolchain install stable --profile minimal --component clippy --component rustfmt
 
@@ -66,15 +72,6 @@ jobs:
 
       - name: Build
         run: cargo +stable build --locked --all-targets --all-features
-
-      # lazily-spec is the canonical cross-language wire-protocol source. Clone
-      # it as a sibling BEFORE any feature-test step so every test target that
-      # reads ../lazily-spec (conformance, collections_conformance,
-      # seqcrdt_conformance, schema_compliance) has the canonical fixtures — CI
-      # then validates lazily-rs against canonical fixtures and fails on drift
-      # (#lzspecconf).
-      - name: Fetch canonical lazily-spec conformance fixtures (#lzspecconf)
-        run: git clone --depth 1 https://github.com/lazily-hub/lazily-spec.git ../lazily-spec
 
       # Truncate ONCE, before the first test step (#lzguardsnotinci). Every test
       # binary APPENDS its share, so the files have to be reset here and nowhere
@@ -285,6 +282,11 @@ jobs:
           test -d ../lazily-spec/conformance/reliable-sync || { echo "::error::../lazily-spec/conformance/reliable-sync missing — reliable_sync_conformance.rs cannot run"; exit 1; }
           cargo +stable test --locked --features ipc,ipc-msgpack --test reliable_sync_conformance
           cargo +stable test --locked --features ipc,ipc-msgpack --lib reliable_sync::
+
+      - name: Test generated Protobuf graph-boundary interop
+        run: |
+          test -f ../lazily-spec/conformance/protobuf/graph_boundary_traces.json || { echo "::error::canonical Protobuf graph-boundary traces missing"; exit 1; }
+          cargo +stable test --locked --features protobuf --test protobuf_graph_boundary
 
       # TWO invocations: the fixture's four scenarios are not all expressible
       # against one backend — "stale handle cannot regress serialized cursor" is

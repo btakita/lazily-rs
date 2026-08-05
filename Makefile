@@ -66,6 +66,7 @@ ci-reach \
 	test-nodekey-null-leniency-conformance \
 	test-blob-backend-discriminator-conformance \
 	test-reliable-sync-conformance \
+	test-protobuf-graph-boundary \
 	test-durable-outbox \
 	test-collections-conformance \
 	test-collections-family-conformance \
@@ -92,7 +93,7 @@ test-ingress-family-conformance \
 	instrumentation-profile \
 	benchmark-spread
 
-check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-json-base64 test-ipc-conformance test-codec-roundtrip-conformance test-nodeid-exact-range-conformance test-nodekey-null-leniency-conformance test-blob-backend-discriminator-conformance test-reliable-sync-conformance test-durable-outbox test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-ingress-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-evidence benchmark-check conformance-coverage assertion-ordering-check ci-reach
+check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-json-base64 test-ipc-conformance test-codec-roundtrip-conformance test-nodeid-exact-range-conformance test-nodekey-null-leniency-conformance test-blob-backend-discriminator-conformance test-reliable-sync-conformance test-protobuf-graph-boundary test-durable-outbox test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-ingress-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-evidence benchmark-check conformance-coverage assertion-ordering-check ci-reach
 
 assertion-ordering-check:
 >$(PYTHON) ../lazily-spec/scripts/check-assertion-ordering.py --binding rs --root .
@@ -237,6 +238,13 @@ test-blob-backend-discriminator-conformance:
 test-reliable-sync-conformance:
 >$(CARGO) test --locked --features ipc,ipc-msgpack --test reliable_sync_conformance
 >$(CARGO) test --locked --features ipc,ipc-msgpack --lib reliable_sync::
+
+# Optional generated Protobuf boundary encoding (#lzprotobufinterop). It is an
+# explicit target because the default test feature set intentionally does not
+# ship the codec, while runtime coverage must still prove the canonical logical
+# traces were opened and replayed before the manifest is checked.
+test-protobuf-graph-boundary:
+>$(CARGO) test --locked --features protobuf --test protobuf_graph_boundary
 
 # Durable outbox store protocol (#lzdurableoutbox): replays
 # ../lazily-spec/conformance/reliable-sync/outbox_store_protocol.json. TWO

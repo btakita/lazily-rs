@@ -55,6 +55,9 @@ ipc-msgpack = ["ipc", "dep:rmp-serde"]
 # at runtime; `json-u8` stays the canonical fixture form. Implies `ffi` (the
 # JSON codec surface).
 json-base64 = ["ffi", "dep:base64"]
+# Optional generated Protobuf encoding of the canonical graph-boundary algebra.
+# The feature adds message transport only; semantic admission remains native.
+protobuf = ["dep:prost"]
 # Loom model tests for the thread-safe context. Implies `thread-safe` so the
 # model has something to test.
 loom = ["thread-safe"]
@@ -115,6 +118,7 @@ futures-util = { version = "0.3", optional = true, default-features = false, fea
 libc = { version = "0.2", optional = true }
 parking_lot = { version = "0.12", optional = true }
 postcard = { version = "1", optional = true, features = ["alloc"] }
+prost = { version = "0.14.4", optional = true }
 rmp-serde = { version = "1", optional = true }
 serde = { version = "1", optional = true, features = ["derive"] }
 serde_json = { version = "1", optional = true }
@@ -133,6 +137,10 @@ proptest = "1"
 rmp-serde = "1"
 serde_json = "1"
 tempfile = "3"
+
+[build-dependencies]
+prost-build = "0.14.4"
+protoc-bin-vendored = "3.2.0"
 
 [[example]]
 name = "tokio_sync"

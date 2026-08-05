@@ -106,6 +106,8 @@ mod merge;
 #[cfg(feature = "ipc")]
 pub mod outbox;
 mod presence;
+#[cfg(feature = "protobuf")]
+pub mod protobuf;
 mod queue;
 mod rateshape;
 mod receipt;
