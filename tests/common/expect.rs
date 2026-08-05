@@ -570,8 +570,8 @@ impl<'a> Expect<'a> {
         }
     }
 
-    /// Mark `key` asserted and hand the fixture's value to the caller's own
-    /// check, returning whatever that check returns.
+    /// Hand the fixture's value to the caller's own check, then mark `key`
+    /// asserted and return whatever that check returns.
     ///
     /// For a comparison `Value` equality cannot express: a tolerance, a set
     /// containment, a regex, a decode-then-compare. The requirement is that the
@@ -579,8 +579,10 @@ impl<'a> Expect<'a> {
     /// The closure must actually assert — handing the value to `|_| ()` marks the
     /// key while proving nothing, which is the defect this guard exists for.
     pub fn assert_key_with<R>(&self, key: &str, check: impl FnOnce(&'a Value) -> R) -> R {
-        let want = self.mark_asserted(key);
-        check(want)
+        let want = self.get(key);
+        let result = check(want);
+        self.asserted.borrow_mut().insert(key.to_owned());
+        result
     }
 
     /// [`Expect::assert_key_with`], but only when the block actually carries
