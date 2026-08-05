@@ -12,6 +12,7 @@ const FRAMES_PATH: &str = "../lazily-spec/conformance/signaling/frames.json";
 const SESSION_PATH: &str = "../lazily-spec/conformance/signaling/anti_spoof_session.json";
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FrameCase {
     label: String,
     direction: String,
@@ -32,15 +33,26 @@ struct FrameCase {
     /// were carried by the corpus and asserted by no binding here.
     #[serde(default)]
     assertions: Value,
+    #[serde(default)]
+    #[allow(dead_code)]
+    #[serde(rename = "reason")]
+    frame_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FramesFixture {
+    #[allow(dead_code)]
+    #[serde(rename = "description")]
+    frames_description: String,
+    protocol_version: u64,
+    kind: String,
     frames: Vec<FrameCase>,
     rejects: Vec<FrameCase>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SessionInput {
     /// Which connection sent the frame. The server's whole anti-spoof job is to
     /// stamp `from` off THIS, never off anything the client wrote.
@@ -50,18 +62,27 @@ struct SessionInput {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SessionReject {
     label: String,
     input: SessionInput,
+    #[allow(dead_code)]
+    #[serde(rename = "reason")]
+    session_reason: String,
 }
 
 /// One frame the session emits, and the connection it goes to.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SessionEmit {
+    #[allow(dead_code)]
+    #[serde(rename = "to")]
+    emit_to: String,
     frame: Value,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SessionStep {
     input: SessionInput,
     #[serde(default)]
@@ -69,7 +90,14 @@ struct SessionStep {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SessionFixture {
+    #[allow(dead_code)]
+    #[serde(rename = "description")]
+    session_description: String,
+    protocol_version: u64,
+    kind: String,
+    mode: String,
     #[serde(default)]
     steps: Vec<SessionStep>,
     rejects: Vec<SessionReject>,
@@ -102,6 +130,8 @@ fn signaling_frames_replay_positive_and_negative_cases() {
     let raw = common::spec_read_to_string(FRAMES_PATH).expect("read signaling frames fixture");
     let fixture: FramesFixture =
         serde_json::from_str(&raw).expect("parse signaling frames fixture");
+    assert_eq!(fixture.protocol_version, 1);
+    assert_eq!(fixture.kind, "SignalingFrames");
 
     let mut variants_replayed = 0usize;
     for case in fixture.frames {
@@ -241,6 +271,9 @@ fn anti_spoof_fixture_rejects_client_supplied_from() {
     let raw = common::spec_read_to_string(SESSION_PATH).expect("read anti-spoof fixture");
     let fixture: SessionFixture =
         serde_json::from_str(&raw).expect("parse signaling anti-spoof fixture");
+    assert_eq!(fixture.protocol_version, 1);
+    assert_eq!(fixture.kind, "SignalingSession");
+    assert_eq!(fixture.mode, "open");
 
     // These three were EXCUSED as "server-session claims the Rust crate cannot
     // reach", on the grounds that `lazily` ships the signalling client codec only

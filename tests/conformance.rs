@@ -206,8 +206,8 @@ fn ipc_value_kind(value: &lazily::IpcValue) -> &'static str {
 #[serde(deny_unknown_fields)]
 struct ArenaFixture {
     #[allow(dead_code)]
-    description: String,
-    #[allow(dead_code)]
+    #[serde(rename = "description")]
+    arena_description: String,
     protocol_version: u64,
     kind: String,
     assertions: serde_json::Value,
@@ -636,6 +636,7 @@ fn conformance_msgpack_round_trips_canonical_fixtures() {
 #[test]
 fn conformance_arena_blob_descriptor_and_header() {
     let fixture = load_arena_fixture("arena_blob.json");
+    assert_eq!(fixture.protocol_version, 1);
     assert_eq!(fixture.kind, "Arena");
 
     let mut arena = ShmBlobArena::with_capacity(fixture.input.capacity).unwrap();
