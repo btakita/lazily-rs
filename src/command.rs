@@ -69,7 +69,8 @@ pub struct CommandSubmit {
     pub authority_generation: u64,
     /// Dedupe / supersede key.
     pub idempotency_key: String,
-    /// Deadline in milliseconds; `0` means no deadline.
+    /// Absolute caller-supplied logical-clock deadline in milliseconds;
+    /// `0` means no deadline.
     pub deadline_ms: u64,
     /// Admission policy.
     pub policy: CommandPolicy,
@@ -251,6 +252,242 @@ pub enum CommandApplyStatus {
         /// Incoming conflicting terminal status.
         incoming: CommandStatus,
     },
+}
+
+/// Why a command admitter refused a decoded command-plane value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandAdmissionRejection {
+    /// A dedupe policy that needs an idempotency key received an empty one.
+    EmptyIdempotencyKey,
+    /// The caller-supplied logical clock has reached the command deadline.
+    DeadlineElapsed {
+        /// Deadline carried by the command.
+        deadline_ms: u64,
+        /// Admitter clock at the decision.
+        now_ms: u64,
+    },
+    /// The payload type is not qualified by the command namespace and name.
+    InvalidPayloadType {
+        /// Required `namespace.name.` prefix.
+        expected_prefix: String,
+        /// Payload type carried by the command.
+        actual: String,
+    },
+    /// The target did not advertise every feature required by the command.
+    MissingRequiredFeatures {
+        /// Missing feature names, sorted and deduplicated.
+        missing: Vec<String>,
+    },
+    /// A command receipt came from a producer other than the intended target.
+    UnexpectedObserver {
+        /// Command whose receipt was refused.
+        command_id: String,
+        /// Intended command target.
+        expected: String,
+        /// Receipt producer.
+        actual: String,
+    },
+}
+
+/// Result of command admission before the projection reducer sees the submit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandAdmissionDecision {
+    /// Record the new command.
+    Record,
+    /// Collapse the submit into an already admitted command.
+    Deduplicate {
+        /// Command that already owns the selected dedupe key.
+        existing_command_id: String,
+    },
+    /// Record the new command and preempt an older non-terminal command.
+    Supersede {
+        /// Older command sharing the idempotency key.
+        existing_command_id: String,
+        /// Whether the older command's policy permits an explicit cancel.
+        cancel_existing: bool,
+    },
+    /// Refuse the submit without changing the projection.
+    Reject(CommandAdmissionRejection),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AdmittedCommand {
+    target: String,
+    policy: CommandPolicy,
+}
+
+/// Stateful command admission in front of [`CommandProjection`].
+///
+/// The projection remains a pure fold of already-admitted facts. This type owns
+/// the target-side decisions whose wire fields would otherwise be decoded and
+/// discarded: dedupe, supersession, cancellation permission, deadline,
+/// payload-type qualification, required features, and receipt producer
+/// identity.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommandAdmitter {
+    now_ms: u64,
+    advertised_features: BTreeSet<String>,
+    admitted: BTreeMap<String, AdmittedCommand>,
+    command_by_idempotency_key: BTreeMap<String, String>,
+}
+
+impl CommandAdmitter {
+    /// Create an admitter at logical time zero for a target's advertised
+    /// features.
+    #[must_use]
+    pub fn new(features: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            advertised_features: features.into_iter().map(Into::into).collect(),
+            ..Self::default()
+        }
+    }
+
+    /// Advance the caller-owned logical clock used for deadline admission.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `now_ms` moves backwards.
+    pub fn advance_to(&mut self, now_ms: u64) {
+        assert!(
+            now_ms >= self.now_ms,
+            "command admission clock cannot move backwards"
+        );
+        self.now_ms = now_ms;
+    }
+
+    /// Decide whether a decoded submit may enter the projection.
+    #[must_use]
+    pub fn decide(
+        &self,
+        projection: &CommandProjection,
+        submit: &CommandSubmit,
+    ) -> CommandAdmissionDecision {
+        // Stable command ids are idempotent independently of the optional
+        // cross-command dedupe policy.
+        if projection.entry(&submit.command_id).is_some() {
+            return CommandAdmissionDecision::Deduplicate {
+                existing_command_id: submit.command_id.clone(),
+            };
+        }
+
+        if submit.deadline_ms != 0 && self.now_ms >= submit.deadline_ms {
+            return CommandAdmissionDecision::Reject(CommandAdmissionRejection::DeadlineElapsed {
+                deadline_ms: submit.deadline_ms,
+                now_ms: self.now_ms,
+            });
+        }
+
+        let expected_prefix = format!("{}.{}.", submit.namespace, submit.name);
+        let payload_version = submit.payload_type.strip_prefix(&expected_prefix);
+        if payload_version.is_none_or(str::is_empty) {
+            return CommandAdmissionDecision::Reject(
+                CommandAdmissionRejection::InvalidPayloadType {
+                    expected_prefix,
+                    actual: submit.payload_type.clone(),
+                },
+            );
+        }
+
+        let missing = submit
+            .required_features
+            .iter()
+            .filter(|feature| !self.advertised_features.contains(feature.as_str()))
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return CommandAdmissionDecision::Reject(
+                CommandAdmissionRejection::MissingRequiredFeatures { missing },
+            );
+        }
+
+        match submit.policy.dedupe {
+            DedupePolicy::None | DedupePolicy::SameCommandId => CommandAdmissionDecision::Record,
+            DedupePolicy::SameIdempotencyKey => {
+                if submit.idempotency_key.is_empty() {
+                    return CommandAdmissionDecision::Reject(
+                        CommandAdmissionRejection::EmptyIdempotencyKey,
+                    );
+                }
+                let Some(existing_command_id) =
+                    self.command_by_idempotency_key.get(&submit.idempotency_key)
+                else {
+                    return CommandAdmissionDecision::Record;
+                };
+                let existing_is_terminal = projection
+                    .entry(existing_command_id)
+                    .is_some_and(|entry| entry.terminal);
+                if submit.policy.supersede && !existing_is_terminal {
+                    let cancel_existing = self
+                        .admitted
+                        .get(existing_command_id)
+                        .is_some_and(|existing| existing.policy.cancel_on_preempt);
+                    CommandAdmissionDecision::Supersede {
+                        existing_command_id: existing_command_id.clone(),
+                        cancel_existing,
+                    }
+                } else {
+                    CommandAdmissionDecision::Deduplicate {
+                        existing_command_id: existing_command_id.clone(),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Admit a submit and fold it into `projection` when the decision records
+    /// the command.
+    pub fn admit(
+        &mut self,
+        projection: &mut CommandProjection,
+        submit: &CommandSubmit,
+    ) -> CommandAdmissionDecision {
+        let decision = self.decide(projection, submit);
+        if matches!(
+            decision,
+            CommandAdmissionDecision::Record | CommandAdmissionDecision::Supersede { .. }
+        ) {
+            let apply = projection.submit(submit);
+            debug_assert_eq!(apply, CommandApplyStatus::Recorded);
+            self.admitted.insert(
+                submit.command_id.clone(),
+                AdmittedCommand {
+                    target: submit.target.clone(),
+                    policy: submit.policy,
+                },
+            );
+            if submit.policy.dedupe == DedupePolicy::SameIdempotencyKey {
+                self.command_by_idempotency_key
+                    .insert(submit.idempotency_key.clone(), submit.command_id.clone());
+            }
+        }
+        decision
+    }
+
+    /// Validate a command receipt's producer and then fold it into the
+    /// projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandAdmissionRejection::UnexpectedObserver`] when a receipt
+    /// for a locally admitted command was not produced by that command's target.
+    pub fn observe_receipt(
+        &self,
+        projection: &mut CommandProjection,
+        receipt: &CausalReceipt,
+    ) -> Result<CommandApplyStatus, CommandAdmissionRejection> {
+        if let Some(admitted) = self.admitted.get(&receipt.causation_id)
+            && receipt.observer != admitted.target
+        {
+            return Err(CommandAdmissionRejection::UnexpectedObserver {
+                command_id: receipt.causation_id.clone(),
+                expected: admitted.target.clone(),
+                actual: receipt.observer.clone(),
+            });
+        }
+        Ok(projection.observe_receipt(receipt))
+    }
 }
 
 /// The folded command projection reducer.

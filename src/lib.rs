@@ -195,7 +195,8 @@ pub use cell_family::{CellMap, SlotMap};
 pub use cell_family::{ComputedMap, EntryKind, MapHandle, ReactiveMap, SourceMap};
 #[cfg(feature = "ipc")]
 pub use command::{
-    CallState, CommandApplyStatus, CommandCancel, CommandEvent, CommandEventKind, CommandEvents,
+    CallState, CommandAdmissionDecision, CommandAdmissionRejection, CommandAdmitter,
+    CommandApplyStatus, CommandCancel, CommandEvent, CommandEventKind, CommandEvents,
     CommandMessage, CommandPolicy, CommandProjection, CommandProjectionEntry,
     CommandProjectionImage, CommandRpcClient, CommandStatus, CommandSubmit, CommandTransport,
     DedupePolicy, applied_receipt, rejected_receipt,

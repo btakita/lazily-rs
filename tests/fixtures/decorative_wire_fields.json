@@ -1,0 +1,224 @@
+{
+  "base_submit": {
+    "command_id": "cmd-1",
+    "causation_id": "cmd-1",
+    "source": "plugin",
+    "target": "controller",
+    "namespace": "agent-doc",
+    "name": "editor_route",
+    "authority_generation": 7,
+    "idempotency_key": "document:run",
+    "deadline_ms": 0,
+    "policy": {
+      "dedupe": "same_idempotency_key",
+      "supersede": false,
+      "cancel_on_preempt": true
+    },
+    "payload_type": "agent-doc.editor_route.v1",
+    "payload_hash": "sha256:fixture",
+    "payload": {
+      "Inline": []
+    },
+    "required_features": []
+  },
+  "command_scenarios": [
+    {
+      "id": "dedupe_none_keeps_distinct_command_ids",
+      "now_ms": 0,
+      "features": [],
+      "steps": [
+        {
+          "op": "submit",
+          "expect": {
+            "decision": "record"
+          }
+        },
+        {
+          "op": "submit",
+          "overrides": {
+            "command_id": "cmd-2",
+            "causation_id": "cmd-2",
+            "policy": {
+              "dedupe": "none"
+            }
+          },
+          "expect": {
+            "decision": "record"
+          }
+        }
+      ]
+    },
+    {
+      "id": "same_command_id_policy_does_not_collapse_a_shared_idempotency_key",
+      "now_ms": 0,
+      "features": [],
+      "steps": [
+        {
+          "op": "submit",
+          "expect": {
+            "decision": "record"
+          }
+        },
+        {
+          "op": "submit",
+          "overrides": {
+            "command_id": "cmd-2",
+            "causation_id": "cmd-2",
+            "policy": {
+              "dedupe": "same_command_id"
+            }
+          },
+          "expect": {
+            "decision": "record"
+          }
+        }
+      ]
+    },
+    {
+      "id": "same_idempotency_key_collapses_a_distinct_command_id",
+      "now_ms": 0,
+      "features": [],
+      "steps": [
+        {
+          "op": "submit",
+          "expect": {
+            "decision": "record"
+          }
+        },
+        {
+          "op": "submit",
+          "overrides": {
+            "command_id": "cmd-2",
+            "causation_id": "cmd-2"
+          },
+          "expect": {
+            "decision": "deduplicate",
+            "existing_command_id": "cmd-1"
+          }
+        }
+      ]
+    },
+    {
+      "id": "supersede_uses_the_preempted_commands_cancel_permission",
+      "now_ms": 0,
+      "features": [],
+      "steps": [
+        {
+          "op": "submit",
+          "expect": {
+            "decision": "record"
+          }
+        },
+        {
+          "op": "submit",
+          "overrides": {
+            "command_id": "cmd-2",
+            "causation_id": "cmd-2",
+            "policy": {
+              "supersede": true
+            }
+          },
+          "expect": {
+            "decision": "supersede",
+            "existing_command_id": "cmd-1",
+            "cancel_existing": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "deadline_rejects_at_the_boundary",
+      "now_ms": 100,
+      "features": [],
+      "steps": [
+        {
+          "op": "submit",
+          "overrides": {
+            "deadline_ms": 100
+          },
+          "expect": {
+            "decision": "deadline_elapsed",
+            "deadline_ms": 100,
+            "now_ms": 100
+          }
+        }
+      ]
+    },
+    {
+      "id": "payload_type_must_match_namespace_and_command_name",
+      "now_ms": 0,
+      "features": [],
+      "steps": [
+        {
+          "op": "submit",
+          "overrides": {
+            "payload_type": "agent-doc.other_command.v1"
+          },
+          "expect": {
+            "decision": "invalid_payload_type",
+            "expected_prefix": "agent-doc.editor_route."
+          }
+        }
+      ]
+    },
+    {
+      "id": "required_features_fail_closed",
+      "now_ms": 0,
+      "features": [],
+      "steps": [
+        {
+          "op": "submit",
+          "overrides": {
+            "required_features": [
+              "causal-receipts"
+            ]
+          },
+          "expect": {
+            "decision": "missing_required_features",
+            "missing": [
+              "causal-receipts"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "receipt_observer_must_match_the_command_target",
+      "now_ms": 0,
+      "features": [],
+      "steps": [
+        {
+          "op": "submit",
+          "expect": {
+            "decision": "record"
+          }
+        },
+        {
+          "op": "receipt",
+          "wire": {
+            "receipt_id": "receipt-1",
+            "causation_id": "cmd-1",
+            "observer": "different-controller",
+            "generation": 7,
+            "outcome": "applied",
+            "reason": null,
+            "payload_hash": null
+          },
+          "expect": {
+            "decision": "unexpected_observer",
+            "expected": "controller",
+            "actual": "different-controller"
+          }
+        }
+      ]
+    }
+  ],
+  "handshake_scenarios": [
+    {
+      "id": "session_id_mismatch_fails_closed",
+      "local_session_id": "session-a",
+      "remote_session_id": "session-b",
+      "expect": "session_id"
+    }
+  ]
+}
