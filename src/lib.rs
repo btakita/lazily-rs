@@ -52,12 +52,16 @@ macro_rules! define_schema {
 }
 
 #[cfg(feature = "async")]
+mod async_boundary_ingress;
+#[cfg(feature = "async")]
 #[allow(dead_code)]
 mod async_context;
 #[cfg(feature = "async")]
 mod async_egress;
 #[cfg(feature = "async")]
 mod async_reactive_family;
+mod boundary_ingress;
+mod boundary_ingress_core;
 #[cfg(feature = "webrtc")]
 mod bridge;
 mod cell;
@@ -143,6 +147,8 @@ mod text_crdt;
 #[cfg(feature = "thread-safe")]
 mod thread_safe;
 #[cfg(feature = "thread-safe")]
+mod thread_safe_boundary_ingress;
+#[cfg(feature = "thread-safe")]
 mod thread_safe_egress;
 #[cfg(feature = "thread-safe")]
 mod thread_safe_ingress;
@@ -174,6 +180,8 @@ mod work_queue_core;
 mod ws_backend;
 
 #[cfg(feature = "async")]
+pub use async_boundary_ingress::AsyncBoundaryIngressCell;
+#[cfg(feature = "async")]
 #[allow(deprecated)]
 pub use async_context::{
     AsyncCellHandle, AsyncComputeContext, AsyncComputed, AsyncContext, AsyncContextId,
@@ -197,6 +205,14 @@ pub use async_reactive_family::{
 pub use async_topic::AsyncTopicCell;
 #[cfg(feature = "async")]
 pub use async_work_queue::{AsyncWorkQueueCell, AsyncWorkQueueReaderHandles};
+pub use boundary_ingress::BoundaryIngressCell;
+pub use boundary_ingress_core::{
+    BoundaryDeliveryReceipt, BoundaryFreshness, BoundaryIngressAction, BoundaryIngressAuthority,
+    BoundaryIngressConfig, BoundaryIngressCore, BoundaryIngressEffectIntent, BoundaryIngressEvent,
+    BoundaryIngressPayload, BoundaryIngressPhase, BoundaryIngressProjection,
+    BoundaryIngressReadiness, BoundaryIngressSnapshot, BoundaryIngressTransition,
+    BoundaryValidation,
+};
 #[cfg(feature = "webrtc")]
 pub use bridge::{BridgeHub, HubError};
 pub use cell::{Computed, Source};
@@ -395,6 +411,8 @@ pub use thread_safe::{
     ReadStrategy, ThreadSafeContext, ThreadSafeEffectCallbackResult, ThreadSafeSignalHandle,
     ThreadSafeTeardownScope,
 };
+#[cfg(feature = "thread-safe")]
+pub use thread_safe_boundary_ingress::ThreadSafeBoundaryIngressCell;
 #[cfg(feature = "thread-safe")]
 pub use thread_safe_egress::ThreadSafeEgressCell;
 #[cfg(feature = "thread-safe")]
