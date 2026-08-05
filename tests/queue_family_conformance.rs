@@ -1565,13 +1565,13 @@ mod work_queue_flavors {
         let text = crate::common::spec_read_to_string(format!("{SPEC_DIR}/{name}"))
             .unwrap_or_else(|e| panic!("canonical fixture {name} unreadable: {e}"));
         let fixture: Value = serde_json::from_str(&text).expect("fixture parses");
-        let config = &fixture["config"];
+        let initial = &fixture["initial"];
         let queue = M::new(
-            as_u64(&config["visibility_timeout"], "visibility_timeout"),
-            as_u64(&config["max_deliveries"], "max_deliveries") as u32,
+            as_u64(&initial["visibility_timeout"], "initial.visibility_timeout"),
+            as_u64(&initial["max_deliveries"], "initial.max_deliveries") as u32,
         );
         assert!(
-            fixture["initial"]["pending"]
+            initial["pending"]
                 .as_array()
                 .expect("initial pending")
                 .is_empty(),

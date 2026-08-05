@@ -124,15 +124,15 @@ fn run_fixture(name: &str) {
     let Some(fixture) = load_fixture(name) else {
         return;
     };
-    let config = &fixture["config"];
+    let initial = &fixture["initial"];
     let ctx = Context::new();
     let queue = WorkQueueCell::<String>::new(
         &ctx,
-        as_u64(&config["visibility_timeout"], "visibility_timeout"),
-        as_u64(&config["max_deliveries"], "max_deliveries") as u32,
+        as_u64(&initial["visibility_timeout"], "initial.visibility_timeout"),
+        as_u64(&initial["max_deliveries"], "initial.max_deliveries") as u32,
     );
     assert!(
-        fixture["initial"]["pending"]
+        initial["pending"]
             .as_array()
             .expect("initial pending")
             .is_empty()
