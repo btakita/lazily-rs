@@ -70,8 +70,9 @@ ci-reach \
 	test-durable-outbox \
 	test-collections-conformance \
 	test-collections-family-conformance \
-	test-queue-family-conformance \
+test-queue-family-conformance \
 test-ingress-family-conformance \
+test-egress-family-conformance \
 	test-queue-conformance \
 	test-queue-demand-driven \
 	test-seqcrdt-conformance \
@@ -93,7 +94,7 @@ test-ingress-family-conformance \
 	instrumentation-profile \
 	benchmark-spread
 
-check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-json-base64 test-ipc-conformance test-codec-roundtrip-conformance test-nodeid-exact-range-conformance test-nodekey-null-leniency-conformance test-blob-backend-discriminator-conformance test-reliable-sync-conformance test-protobuf-graph-boundary test-durable-outbox test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-ingress-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-evidence benchmark-check conformance-coverage assertion-ordering-check ci-reach
+check: conformance-manifest-reset fmt clippy build test test-thread-safe test-tokio test-async test-async-resolve test-loom test-distributed test-crdt-plane test-interop-peer test-distributed-conformance test-ffi test-ffi-binary test-ipc test-ipc-binary test-json-base64 test-ipc-conformance test-codec-roundtrip-conformance test-nodeid-exact-range-conformance test-nodekey-null-leniency-conformance test-blob-backend-discriminator-conformance test-reliable-sync-conformance test-protobuf-graph-boundary test-durable-outbox test-shm test-collections-conformance test-collections-family-conformance test-queue-family-conformance test-ingress-family-conformance test-egress-family-conformance test-queue-conformance test-queue-demand-driven test-seqcrdt-conformance test-lossless-tree test-schema-compliance test-statechart-conformance test-lean-formal test-lazily-formal test-signaling-client test-webrtc test-webrtc-signaling test-websocket benchmark-evidence benchmark-check conformance-coverage assertion-ordering-check ci-reach
 
 assertion-ordering-check:
 >$(PYTHON) ../lazily-spec/scripts/check-assertion-ordering.py --binding rs --root .
@@ -311,6 +312,13 @@ test-queue-family-conformance:
 # a bare `cargo test` proves only the single-threaded shell.
 test-ingress-family-conformance:
 >$(CARGO) test --locked --features "thread-safe async serde" --test ingress_family_conformance
+
+# Reactive egress conformance (#lzegress): every canonical transition and
+# reader-kind invalidation is replayed against the sync, thread-safe, and async
+# shells. The wide feature set is required so one green run cannot omit a
+# shipped flavor.
+test-egress-family-conformance:
+>$(CARGO) test --locked --features "thread-safe async" --test egress_family_conformance
 
 # Reactive queue conformance (#lzqueue): lazily-rs replays the canonical compute
 # fixtures in lazily-spec/conformance/collections/ `queuecell_*.json` — SPSC

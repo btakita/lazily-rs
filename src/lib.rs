@@ -55,6 +55,8 @@ macro_rules! define_schema {
 #[allow(dead_code)]
 mod async_context;
 #[cfg(feature = "async")]
+mod async_egress;
+#[cfg(feature = "async")]
 mod async_reactive_family;
 #[cfg(feature = "webrtc")]
 mod bridge;
@@ -90,6 +92,8 @@ mod crdt_tree;
 #[cfg(any(feature = "distributed", feature = "ipc", feature = "signaling-client"))]
 mod distributed;
 mod effect;
+mod egress;
+mod egress_core;
 #[cfg(feature = "ffi")]
 pub mod ffi;
 mod ingress;
@@ -139,6 +143,8 @@ mod text_crdt;
 #[cfg(feature = "thread-safe")]
 mod thread_safe;
 #[cfg(feature = "thread-safe")]
+mod thread_safe_egress;
+#[cfg(feature = "thread-safe")]
 mod thread_safe_ingress;
 #[cfg(feature = "thread-safe")]
 mod thread_safe_queue;
@@ -174,6 +180,8 @@ pub use async_context::{
     AsyncEffectHandle, AsyncSignalHandle, AsyncSlotHandle, AsyncSlotState, AsyncSlotStateView,
     AsyncSource, AsyncTeardownScope,
 };
+#[cfg(feature = "async")]
+pub use async_egress::AsyncEgressCell;
 #[cfg(feature = "async")]
 pub use async_ingress::AsyncIngressCell;
 #[cfg(feature = "async")]
@@ -226,6 +234,11 @@ pub use crdt_tree::CrdtTree;
 #[cfg(any(feature = "distributed", feature = "ipc", feature = "signaling-client"))]
 pub use distributed::{NodeId, OpKind, PeerId, PeerPermissions, PermissionDenied, RemoteOp};
 pub use effect::{Effect, EffectCallbackResult};
+pub use egress::{EgressCell, EgressTransport};
+pub use egress_core::{
+    EgressAck, EgressChange, EgressClaim, EgressConfigError, EgressCore, EgressEnvelope,
+    EgressFailure, EgressPolicy, EgressReconnect, EgressRetry, EgressRetryAction,
+};
 #[cfg(feature = "ffi")]
 pub use ffi::{
     LazilyFfiBytes, LazilyFfiChannel, LazilyFfiMessageKind, LazilyFfiStatus, lazily_ffi_bytes_free,
@@ -382,6 +395,8 @@ pub use thread_safe::{
     ReadStrategy, ThreadSafeContext, ThreadSafeEffectCallbackResult, ThreadSafeSignalHandle,
     ThreadSafeTeardownScope,
 };
+#[cfg(feature = "thread-safe")]
+pub use thread_safe_egress::ThreadSafeEgressCell;
 #[cfg(feature = "thread-safe")]
 pub use thread_safe_ingress::ThreadSafeIngressCell;
 #[cfg(feature = "thread-safe")]

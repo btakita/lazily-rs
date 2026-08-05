@@ -313,6 +313,11 @@ jobs:
           test -d ../lazily-spec/conformance/ingress || { echo "::error::../lazily-spec/conformance/ingress missing — ingress_family_conformance.rs cannot run"; exit 1; }
           cargo +stable test --locked --features "thread-safe async serde" --test ingress_family_conformance
 
+      - name: Test egress family conformance across all three flavors
+        run: |
+          test -d ../lazily-spec/conformance/egress || { echo "::error::../lazily-spec/conformance/egress missing — egress_family_conformance.rs cannot run"; exit 1; }
+          cargo +stable test --locked --features "thread-safe async" --test egress_family_conformance
+
       - name: Test reactive queue conformance against canonical spec fixtures
         run: cargo +stable test --locked --features serde --test queue_conformance
 
