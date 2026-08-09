@@ -371,18 +371,42 @@ fn entry_kind_orthogonal_to_mode() {
     expected.assert_key_with("eager_present", |want| {
         assert_eq!(eager_present, as_set(&want_strs(want, "eager_present")))
     });
-    // default_mode_eager across kinds: the strategy the fixture names is the one
-    // whose build has every declared entry present.
+    // default_mode_eager across kinds. The fixture's value SELECTS the build, and
+    // the fact asserted is that the build it names holds exactly the entries that
+    // strategy materializes at build time. Comparing the key to the literal
+    // `"eager"` asserted only that the fixture equals itself
+    // (`#lzconsumednotasserted`) — a build that materialized nothing still passed,
+    // and the paired length check read the eager build regardless of what the key
+    // said, so no arm of it was mode-dispatched.
     expected.assert_key_with("default_mode", |want| {
         let mode = want.as_str().expect("default_mode");
+        let default_cells: SourceMap<String, V> = SourceMap::new(&ctx);
+        for k in &cell_keys {
+            default_cells.entry(&ctx, k.clone(), value_of(k));
+        }
+        let default_slots: ComputedMap<String, V> = ComputedMap::new(&ctx);
+        match mode {
+            // Pre-mint: input cells and derived slots alike.
+            "eager" => default_slots.materialize_all(&ctx, slot_keys.clone(), lookup.clone()),
+            // Mint-on-access: nothing derived is minted at build.
+            "lazy" => {}
+            other => panic!("unknown default_mode {other}"),
+        }
+        let mut default_present = as_set(&default_cells.present_keys());
+        default_present.extend(default_slots.present_keys());
+        // ...and the fact asserted is that THAT build holds every declared entry.
+        // Only the eager build does, so a corpus renaming its default reddens here.
+        // Asserting instead that each mode holds "what that mode implies" would be a
+        // TAUTOLOGY — true of both arms, green under the flip — which is the trap
+        // this site fell into once already.
+        let all_declared: HashSet<String> = as_set(&cell_keys)
+            .union(&as_set(&slot_keys))
+            .cloned()
+            .collect();
         assert_eq!(
-            mode, "eager",
-            "only the eager build materializes both kinds"
-        );
-        assert_eq!(
-            eager_present.len(),
-            cell_keys.len() + slot_keys.len(),
-            "the fixture's default mode ({mode}) materializes every entry at build"
+            default_present, all_declared,
+            "a map built the fixture's default way ({mode}) materializes every \
+             declared entry at build"
         );
     });
 
