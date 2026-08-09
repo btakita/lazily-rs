@@ -226,6 +226,11 @@ jobs:
           test -f ../lazily-spec/conformance/collections/seqcrdt_convergence.json || { echo "::error::seqcrdt_convergence.json missing — seqcrdt_conformance.rs cannot run"; exit 1; }
           cargo +stable test --locked --features distributed --test seqcrdt_conformance
 
+      - name: Test register CRDT conformance against canonical spec fixtures
+        run: |
+          test -f ../lazily-spec/conformance/collections/registers_convergence.json || { echo "::error::registers_convergence.json missing — registers_conformance.rs cannot run"; exit 1; }
+          cargo +stable test --locked --features distributed --test registers_conformance
+
       # The conformance runners `make check` names explicitly and CI did not run
       # at all (#lzguardsnotinci). Each one is the only executor of part of the
       # canonical corpus, so with these missing the fixture manifest can never be
