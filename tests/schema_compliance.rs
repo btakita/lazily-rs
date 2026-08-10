@@ -269,6 +269,88 @@ fn causal_receipts_wire_validates_schema() {
 // shared cross-language input set; this guards the reference against them).
 // ---------------------------------------------------------------------------
 
+/// IPC-named corpus fixtures this runner knowingly does NOT schema-validate,
+/// with the reason (`#lzledgeragreementaudit`).
+///
+/// This is the IN-HOST half of a two-ledger absence. The other half is
+/// `KNOWN_UNCOVERED` in `scripts/check-conformance-coverage.sh`, and the two
+/// describe different things: the shell guard states what NO runner in this
+/// repo OPENS, while this states what THIS runner opens, recognises as IPC by
+/// name, and then declines. The test below is the only ENUMERATING replay in
+/// this suite — it discovers fixtures by listing the corpus directory rather
+/// than naming them — so it is the only one that can meet a fixture nobody
+/// declared anywhere. lazily-cs was red on exactly that shape: the shell guard
+/// excused a fixture while an enumerating host crashed on it with a bare key
+/// error naming neither the fixture nor the reason.
+///
+/// Enforced in both directions below, like the shell guard's own allowlist: an
+/// entry naming a fixture this run never saw is rot, and an entry naming a
+/// fixture this run DID validate is a stale excuse.
+///
+/// The two ledgers are therefore mutually exclusive by construction: a fixture
+/// declared here IS opened (the read books the runtime manifest), so listing it
+/// in `KNOWN_UNCOVERED` as well makes the shell guard fail with "the suite DID
+/// open it". Disagreement between them cannot stay silent.
+///
+/// EMPTY today, and that is the goal state — every top-level `snapshot*` /
+/// `delta*` fixture in the canonical corpus validates.
+const KNOWN_UNVALIDATED_IPC_FIXTURES: &[(&str, &str)] = &[];
+
+/// Validate one IPC-named corpus fixture's `wire` against the schema its name
+/// selects, reporting WHY it could not be validated instead of panicking.
+///
+/// Non-panicking on purpose (`#lzledgeragreementaudit`): the ledger above must
+/// be able to hold a declared decline to its word, and it can only do that if
+/// the decline is tested rather than trusted. Every failure path names the
+/// fixture AND the reason — the enumerating host that crashes with a bare key
+/// error naming neither is the defect this whole shape exists to prevent.
+fn validate_ipc_fixture(
+    path: &std::path::Path,
+    name: &str,
+    snapshot_schema: &Value,
+    delta_schema: &Value,
+) -> Result<(), String> {
+    let raw = crate::common::spec_read_to_string(path)
+        .map_err(|e| format!("{}: read failed: {e}", path.display()))?;
+    let fixture: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("{}: parse failed: {e}", path.display()))?;
+    let Some(wire) = fixture.get("wire") else {
+        return Err(format!(
+            "{}: this fixture is named like an IPC frame ({name}) but carries no `wire` \
+             block, so its shape is one this runner has never been taught.",
+            path.display()
+        ));
+    };
+    // Explicit in both arms rather than `if snapshot { .. } else { delta }`: the
+    // else branch validated ANY future IPC prefix against the delta schema,
+    // which reports a schema mismatch for a fixture the runner mis-dispatched.
+    let (schema, schema_name) = if name.starts_with("snapshot") {
+        (snapshot_schema, "snapshot")
+    } else if name.starts_with("delta") {
+        (delta_schema, "delta")
+    } else {
+        return Err(format!(
+            "{}: reached schema dispatch with no recognised IPC prefix; the enumeration \
+             filter and this dispatch have drifted apart.",
+            path.display()
+        ));
+    };
+    let validator = jsonschema::Validator::new(schema)
+        .map_err(|e| format!("{schema_name}.json is not a valid schema: {e}"))?;
+    let errors: Vec<String> = validator
+        .iter_errors(wire)
+        .map(|e| format!("  - {e}"))
+        .collect();
+    if errors.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{}: fixture `wire` does not validate against {schema_name}.json:\n{}",
+        path.display(),
+        errors.join("\n")
+    ))
+}
+
 #[test]
 fn every_ipc_conformance_fixture_wire_is_schema_valid() {
     if !sibling_schemas_present() {
@@ -281,7 +363,12 @@ fn every_ipc_conformance_fixture_wire_is_schema_valid() {
 
     let local_dir = "tests/conformance";
     let spec_dir = "../lazily-spec/conformance";
+    // Every IPC-named fixture this enumeration MET, whether or not it was
+    // validated. The ledger check below reasons about this set, so an excuse
+    // for a fixture the corpus no longer carries cannot hide in it.
     let mut checked = HashSet::new();
+    let mut declined: HashSet<String> = HashSet::new();
+    let mut validated = 0usize;
     for dir in [spec_dir, local_dir] {
         let read = match std::fs::read_dir(dir) {
             Ok(rd) => rd,
@@ -299,23 +386,67 @@ fn every_ipc_conformance_fixture_wire_is_schema_valid() {
             if !checked.insert(name.to_string()) {
                 continue;
             }
-            let raw = crate::common::spec_read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read fixture {path:?}: {e}"));
-            let fixture: Value = serde_json::from_str(&raw)
-                .unwrap_or_else(|e| panic!("parse fixture {path:?}: {e}"));
-            let wire = fixture.get("wire").expect("fixture has `wire`");
-            let schema = if name.starts_with("snapshot") {
-                &snapshot_schema
-            } else {
-                &delta_schema
-            };
-            assert_valid(schema, wire, name);
+            let outcome = validate_ipc_fixture(&path, name, &snapshot_schema, &delta_schema);
+            // A declared decline is LOUD, named, and TESTED. Skipping on the
+            // strength of the declaration alone is how the excuse outlives the
+            // gap it describes: it costs nothing and nothing contradicts it.
+            if let Some((_, reason)) = KNOWN_UNVALIDATED_IPC_FIXTURES
+                .iter()
+                .find(|(f, _)| *f == name)
+            {
+                declined.insert(name.to_string());
+                let Err(why) = outcome else {
+                    panic!(
+                        "KNOWN_UNVALIDATED_IPC_FIXTURES lists '{name}' (reason: {reason}), \
+                         but this run validated it cleanly. The excuse is stale — delete \
+                         the entry from tests/schema_compliance.rs."
+                    )
+                };
+                eprintln!("SKIP schema-validation {name}: {reason} (still unvalidatable: {why})");
+                continue;
+            }
+            // FAIL CLOSED, naming the fixture AND the reason
+            // (`#lzledgeragreementaudit`). This runner ENUMERATES the corpus, so
+            // it replays whatever lands there — including a shape it has never
+            // been taught. `.expect("fixture has `wire`")` panicked with a bare
+            // string naming neither, which is the lazily-cs signature: a shell
+            // guard and a test host describing the same absence and disagreeing
+            // in silence until someone reads a stack trace.
+            if let Err(why) = outcome {
+                panic!(
+                    "{why}\n\nTeach this runner the fixture's shape, or declare it in \
+                     KNOWN_UNVALIDATED_IPC_FIXTURES in tests/schema_compliance.rs with a \
+                     reason."
+                );
+            }
+            validated += 1;
         }
     }
     assert!(
-        !checked.is_empty(),
-        "no IPC conformance fixtures found in {local_dir} or {spec_dir}"
+        validated > 0,
+        "no IPC conformance fixture was VALIDATED in {local_dir} or {spec_dir} \
+         ({} met, {} declined) — reporting schema compliance over nothing",
+        checked.len(),
+        declined.len()
     );
+
+    // The in-host ledger is enforced in both directions, exactly as the shell
+    // guard enforces `KNOWN_UNCOVERED`. An excuse that costs nothing rots.
+    for (fixture, reason) in KNOWN_UNVALIDATED_IPC_FIXTURES {
+        assert!(
+            !reason.trim().is_empty(),
+            "KNOWN_UNVALIDATED_IPC_FIXTURES entry '{fixture}' carries no reason; an \
+             unexplained gap wearing a green badge is what this ledger exists to prevent"
+        );
+        assert!(
+            checked.contains(*fixture),
+            "KNOWN_UNVALIDATED_IPC_FIXTURES lists '{fixture}', which this run never met \
+             in {spec_dir} or {local_dir}. The corpus moved and the excuse did not."
+        );
+        // The other direction — an excuse for a fixture that now validates — is
+        // caught inside the loop, where the decline is actually exercised.
+        assert!(declined.contains(*fixture), "unreachable: {fixture}");
+    }
 }
 
 // ---------------------------------------------------------------------------
