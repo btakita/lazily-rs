@@ -169,9 +169,20 @@ fi
 # wrong" from "nothing was examined", so assert the magnitude explicitly before
 # reporting OK. Do not lower these to fix a red run — a drop here means the
 # corpus or the recorder shrank, which is the finding.
-# Raised for the capability-handshake fixture (#lzhandshakedeadfields): one
-# opened fixture and five replayed scenarios.
-MIN_FIXTURES="${MIN_FIXTURES:-131}"
+#
+# PINNED TO REALITY (#lzscenariofloordrift). This floor equals what CI actually
+# replays, with NO margin: the run that pinned it OPENED exactly 144 fixtures,
+# and 145 fails. The older convention — "the corpus grew by N, so raise the
+# floor by N and keep the existing margin" — is the bug it replaces. It let the
+# gap reach 13, and a floor 13 below reality tolerates 13 fixtures silently
+# detaching, which is the exact failure this floor exists to catch.
+#
+# So when a change moves the count, re-derive the floor from the gate's own
+# output rather than adding a delta: run `make check`, read the "conformance
+# coverage OK: <n>/..." line, set this to that <n>, then prove it is exact by
+# temporarily setting it to <n>+1 and watching this guard fail. A floor you
+# never watched fail is a floor you have not verified.
+MIN_FIXTURES="${MIN_FIXTURES:-144}"
 if [ "$total" -eq 0 ]; then
   echo "ERROR: the corpus at $SPEC_DIR listed ZERO fixtures." >&2
   echo "       Every check above is vacuously green over an empty population." >&2
@@ -401,11 +412,20 @@ if problems:
 # The rung above walks the scenarios of OPENED fixtures. Zero opened fixtures
 # means zero scenarios, which means zero unreplayed scenarios, which reports OK
 # having compared nothing. Assert the magnitude before claiming green.
-# Raised by five for capability-handshake negotiation (#lzhandshakedeadfields).
-# Raised by one for collections/textcrdt_convergence.json's
-# `gc_keeps_a_tombstone_that_is_still_a_left_origin` (#lzspecgcreferencedtombstone):
-# the corpus grew by one scenario, so the floor moves by one and keeps its margin.
-MIN_SCENARIOS = int(os.environ.get("MIN_SCENARIOS", "138"))
+#
+# PINNED TO REALITY (#lzscenariofloordrift). This equals what CI actually
+# replays, with NO margin: the run that pinned it REPLAYED exactly 162
+# scenarios, and 163 fails. It is deliberately NOT the old "raise by however
+# many this change added, keeping the margin" convention — that convention only
+# ever widens the gap, and it had reached 24 here. A floor 24 below reality
+# tolerates 24 scenarios silently detaching, which is precisely what this floor
+# is for.
+#
+# When the corpus moves, re-derive from the gate's own output instead of adding
+# a delta: run `make check`, read the "scenario coverage OK: <n>/..." line, set
+# this to that <n>, then prove it exact by setting it to <n>+1 and watching this
+# guard fail. A floor you never watched fail is a floor you have not verified.
+MIN_SCENARIOS = int(os.environ.get("MIN_SCENARIOS", "162"))
 if total == 0:
     sys.stderr.write(
         "ERROR: ZERO scenarios were found across the opened fixtures.\n"
@@ -516,7 +536,17 @@ if unbound:
 
 # Positive-evidence floor (#lzvacuousrun): zero declared blocks means zero
 # unbound blocks, which reports OK having compared nothing.
-MIN_BLOCKS = int(os.environ.get("MIN_BLOCKS", "20"))
+#
+# PINNED TO REALITY (#lzscenariofloordrift). This equals what CI actually
+# inventories, with NO margin: the run that pinned it declared exactly 30
+# blocks, and 31 fails. It previously sat at 20 — ten below reality, so ten
+# blocks could have detached without reddening anything.
+#
+# When the corpus moves, re-derive from the gate's own output instead of adding
+# a delta: run `make check`, read the "assertion-block bind OK: <n> distinct
+# blocks" line, set this to that <n>, then prove it exact by setting it to <n>+1
+# and watching this guard fail.
+MIN_BLOCKS = int(os.environ.get("MIN_BLOCKS", "30"))
 if len(declared) < MIN_BLOCKS:
     sys.stderr.write(
         "ERROR: only %d distinct assertion blocks were inventoried, expected >= %d.\n"
