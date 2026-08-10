@@ -402,7 +402,10 @@ if problems:
 # means zero scenarios, which means zero unreplayed scenarios, which reports OK
 # having compared nothing. Assert the magnitude before claiming green.
 # Raised by five for capability-handshake negotiation (#lzhandshakedeadfields).
-MIN_SCENARIOS = int(os.environ.get("MIN_SCENARIOS", "137"))
+# Raised by one for collections/textcrdt_convergence.json's
+# `gc_keeps_a_tombstone_that_is_still_a_left_origin` (#lzspecgcreferencedtombstone):
+# the corpus grew by one scenario, so the floor moves by one and keeps its margin.
+MIN_SCENARIOS = int(os.environ.get("MIN_SCENARIOS", "138"))
 if total == 0:
     sys.stderr.write(
         "ERROR: ZERO scenarios were found across the opened fixtures.\n"
