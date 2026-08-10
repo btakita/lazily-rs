@@ -102,11 +102,14 @@ where
     /// ordinary clock skew — and `LwwRegister::set` adopts only on `>`, so that
     /// write vanished silently. Carrying the source's *peer* instead is the
     /// mirror-image bug: identical stamps from two replicas, neither adopting,
-    /// permanent divergence. Both shapes are pinned by tests below;
-    /// `seqcrdt_convergence.json` reaches neither, because every fork in that
-    /// corpus is followed by an op whose `now` exceeds the source's last wall
-    /// time, and `send` then resets the logical counter regardless of which
-    /// clock the fork started from.
+    /// permanent divergence. Both shapes are pinned by tests below AND, since
+    /// the corpus gained `fork_carries_the_clock_so_a_backwards_skewed_write_survives`
+    /// and `fork_stamps_with_its_own_peer_so_equal_wall_edits_converge`, by
+    /// `seqcrdt_convergence.json` itself — the two scenarios this comment
+    /// previously said the corpus could not reach. Both fork and then write at a
+    /// `now` that does NOT exceed the source's last wall time, which is exactly
+    /// the branch a reset clock hides: `send` only resets the logical counter
+    /// when `now_micros > last_wall`.
     pub fn fork(&self, peer: PeerId) -> Self {
         Self {
             entries: self.entries.clone(),
