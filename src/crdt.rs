@@ -173,6 +173,26 @@ impl Hlc {
         }
     }
 
+    /// A clock for `peer` that continues from **this** clock's causal position.
+    ///
+    /// Both halves are load-bearing (`#lzzigforkhlcpeer`). The *position*
+    /// carries because a replica forked from this one has already observed
+    /// everything this one holds — restart it at zero and its next local
+    /// [`send`](Hlc::send) under ordinary clock skew (a `now_micros` below
+    /// `last_wall`) mints a stamp causally behind state it already carries;
+    /// LWW adopts only on `>`, so that write is silently dropped. The *peer*
+    /// does **not** carry, because it is the stamp's final tiebreaker: two
+    /// replicas stamping under one id can mint the identical
+    /// `(wall_time, logical, peer)`, and a tie means neither side adopts and
+    /// they diverge permanently.
+    pub fn fork(&self, peer: PeerId) -> Self {
+        Self {
+            peer,
+            last_wall: self.last_wall,
+            last_logical: self.last_logical,
+        }
+    }
+
     /// Stamp a local event at wall time `now_micros`.
     pub fn send(&mut self, now_micros: u64) -> HlcStamp {
         if now_micros > self.last_wall {

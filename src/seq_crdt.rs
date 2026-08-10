@@ -94,10 +94,23 @@ where
     /// entries with their original stamps/positions, new HLC identity). The
     /// fork continues from the source's causal state under a new peer id, so
     /// concurrent ops on different forks tiebreak deterministically.
+    ///
+    /// The clock is [`Hlc::fork`]ed, not rebuilt: the causal position carries,
+    /// the peer does not (`#lzzigforkhlcpeer`). A fresh `Hlc::new(peer)` here
+    /// let the fork's next local write mint a stamp *behind* state it already
+    /// held whenever `now_micros` dipped below the source's last wall time —
+    /// ordinary clock skew — and `LwwRegister::set` adopts only on `>`, so that
+    /// write vanished silently. Carrying the source's *peer* instead is the
+    /// mirror-image bug: identical stamps from two replicas, neither adopting,
+    /// permanent divergence. Both shapes are pinned by tests below;
+    /// `seqcrdt_convergence.json` reaches neither, because every fork in that
+    /// corpus is followed by an op whose `now` exceeds the source's last wall
+    /// time, and `send` then resets the logical counter regardless of which
+    /// clock the fork started from.
     pub fn fork(&self, peer: PeerId) -> Self {
         Self {
             entries: self.entries.clone(),
-            hlc: Hlc::new(peer),
+            hlc: self.hlc.fork(peer),
             peer,
         }
     }
@@ -478,6 +491,71 @@ mod tests {
     }
 
     #[test]
+    fn fork_carries_the_source_clock_so_a_skewed_local_write_is_not_dropped() {
+        // A fork has already OBSERVED everything the source holds, so its clock
+        // must not restart: if it does, its next local op stamps from zero, and
+        // under ordinary clock skew — `now_micros` BELOW the source's last wall
+        // time, which is the whole reason an HLC exists — it mints a stamp
+        // causally BEHIND state the fork already carries. `LwwRegister::set`
+        // adopts only on `>`, so the fork's own write is silently DROPPED and
+        // both replicas then converge on the value nobody wrote last
+        // (`#lzzigforkhlcpeer`).
+        //
+        //   a@peer1  insert x=1 @ now=100   -> (100, 0, 1)
+        //   b = a.fork(2)                   -> clock carries (100, 0)
+        //   b        set x=99 @ now=50      -> 50 <= 100, logical bumps -> (100, 1, 2)
+        //
+        // With a fresh clock b would mint (50, 0, 2), which is not > (100, 0, 1),
+        // and b.get("x") would still read 1.
+        let mut a: SeqCrdt<&str, i32> = SeqCrdt::new(peer(1));
+        a.insert_back("x", 1, 100);
+
+        let mut b = a.fork(peer(2));
+        b.set_value(&"x", 99, 50);
+
+        // The fork's OWN write survives on the fork.
+        assert_eq!(b.get(&"x"), Some(99), "fork's local write must not vanish");
+
+        // And it survives the round trip: both replicas converge on it.
+        a.merge(&b, 200);
+        b.merge(&a, 200);
+        assert_eq!(a.get(&"x"), b.get(&"x"), "replicas must converge");
+        assert_eq!(a.get(&"x"), Some(99));
+    }
+
+    #[test]
+    fn fork_stamps_with_its_own_peer_so_equal_clock_edits_still_converge() {
+        // Carrying the causal position is right; carrying the source's PEER is
+        // not. The peer is the stamp's final tiebreaker, so two replicas
+        // stamping under one id can mint the identical (wall, logical, peer).
+        // LWW adopts only on `>`, so a tie means NEITHER side adopts and the
+        // replicas diverge permanently — the one outcome a CRDT exists to make
+        // impossible. lazily-zig shipped exactly that (`#lzzigforkhlcpeer`).
+        //
+        //   a@peer1  insert x=1 @ now=10    -> (10, 0, 1)
+        //   b = a.fork(2)                   -> clock carries (10, 0), peer 2
+        //   b        set x=99 @ now=10      -> (10, 1, 2)
+        //   a        set x=55 @ now=10      -> (10, 1, 1)
+        //
+        // b's stamp dominates only because peer 2 > peer 1. Share the peer and
+        // both are (10, 1, 1): a keeps 55, b keeps 99, forever.
+        let mut a: SeqCrdt<&str, i32> = SeqCrdt::new(peer(1));
+        a.insert_back("x", 1, 10);
+
+        let mut b = a.fork(peer(2));
+        b.set_value(&"x", 99, 10);
+        a.set_value(&"x", 55, 10);
+
+        a.merge(&b, 20);
+        b.merge(&a, 20);
+
+        // Convergence FIRST: the replicas must agree at all before which value
+        // won is a meaningful question.
+        assert_eq!(a.get(&"x"), b.get(&"x"), "replicas must converge");
+        assert_eq!(a.get(&"x"), Some(99), "peer 2 breaks the tie above peer 1");
+    }
+
+    #[test]
     fn gc_collects_stable_tombstones_only() {
         let mut s: SeqCrdt<&str, i32> = SeqCrdt::new(peer(1));
         for (i, k) in ["a", "b", "c"].iter().enumerate() {
@@ -542,24 +620,24 @@ mod tests {
     }
 
     // --- test helpers: cheap state clones for two-replica scenarios ---
+    //
+    // These delegate rather than rebuild the replica field by field. The
+    // hand-rolled versions they replace reset the clock to `Hlc::new(peer)`,
+    // which is the same defect `fork` carried (`#lzzigforkhlcpeer`) — a copy
+    // helper that drops the source's causal position lets the copy's next write
+    // stamp behind state it already holds. `Clone` is the same-peer copy and is
+    // correct as derived: it keeps position *and* peer, which is what a copy of
+    // one replica (not a new replica) must do.
     impl<Id, V> SeqCrdt<Id, V>
     where
         Id: Eq + Hash + Clone,
-        V: Clone,
+        V: Clone + PartialEq,
     {
         fn clone_state(&self) -> Self {
-            self.clone_state_as(self.peer)
+            self.clone()
         }
         fn clone_state_as(&self, peer: PeerId) -> Self {
-            let mut entries = HashMap::new();
-            for (id, e) in &self.entries {
-                entries.insert(id.clone(), e.clone());
-            }
-            SeqCrdt {
-                entries,
-                hlc: Hlc::new(peer),
-                peer,
-            }
+            self.fork(peer)
         }
     }
 }
