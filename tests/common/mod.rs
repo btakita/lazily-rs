@@ -97,13 +97,74 @@ pub use expect::{Expect, ProseLedger};
 use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 /// Path segment that marks a read as belonging to the canonical corpus. Ids are
 /// recorded relative to the directory that follows it, e.g.
 /// `collections/queuecell_spsc_push_pop.json`.
 const CONFORMANCE_MARKER: &str = "lazily-spec/conformance/";
+
+/// The corpus location when nothing overrides it.
+const DEFAULT_CONFORMANCE_ROOT: &str = "../lazily-spec/conformance";
+
+/// Corpus root for this run, or `None` when the default applies.
+///
+/// `LAZILY_SPEC_CONFORMANCE_DIR` names the corpus directly; `LAZILY_SPEC_DIR`
+/// names the sibling checkout. Resolved once — the corpus a run reads must not
+/// change halfway through it.
+pub fn conformance_root_override() -> Option<&'static str> {
+    static ROOT: OnceLock<Option<String>> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        std::env::var("LAZILY_SPEC_CONFORMANCE_DIR")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .or_else(|| {
+                std::env::var("LAZILY_SPEC_DIR")
+                    .ok()
+                    .filter(|v| !v.is_empty())
+                    .map(|v| format!("{v}/conformance"))
+            })
+    })
+    .as_deref()
+}
+
+/// Rewrite a corpus path onto the overridden root (`#lzoverrideallrunnersaudit`).
+///
+/// Every conformance test in this repo declares its own
+/// `const SPEC_DIR: &str = "../lazily-spec/conformance/<area>"` — 47 sites across
+/// 41 files — and formats fixture paths from it. Nothing read an environment
+/// variable, so `LAZILY_SPEC_CONFORMANCE_DIR` moved the coverage guard and NOT ONE
+/// replay: truncating a fixture in a scratch corpus and pointing the suite at it
+/// reddened 0 of 25 areas, while the same bytes read directly redden all 25.
+///
+/// The redirect lives HERE, at the single seam every corpus read already passes
+/// through, rather than being threaded into 47 constants. That is deliberate and
+/// it is the stronger property: a rewrite of the constants fixes the sites someone
+/// remembered, while this cannot miss one and covers every future runner that uses
+/// the seam — which `spec_read_to_string`'s own doc comment already requires.
+///
+/// It matches on the marker rather than on the literal default, so an absolute or
+/// canonicalised path redirects the same way a relative one does.
+fn redirect(path: &Path) -> Option<PathBuf> {
+    let root = conformance_root_override()?;
+    let text = path.to_string_lossy().replace('\\', "/");
+    let idx = text.find(CONFORMANCE_MARKER)?;
+    Some(Path::new(root).join(&text[idx + CONFORMANCE_MARKER.len()..]))
+}
+
+/// `path` with any corpus override applied — for presence probes, which check a
+/// path without reading it and would otherwise test the DEFAULT corpus while the
+/// suite replays the overridden one.
+pub fn spec_path<P: AsRef<Path>>(path: P) -> PathBuf {
+    let path = path.as_ref();
+    redirect(path).unwrap_or_else(|| path.to_path_buf())
+}
+
+/// The corpus directory itself, honouring the override.
+pub fn spec_root() -> PathBuf {
+    PathBuf::from(conformance_root_override().unwrap_or(DEFAULT_CONFORMANCE_ROOT))
+}
 
 fn seen() -> &'static Mutex<HashSet<String>> {
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -113,7 +174,9 @@ fn seen() -> &'static Mutex<HashSet<String>> {
 /// `std::fs::read_to_string` plus a record of any conformance fixture it opens
 /// and an inventory of every `assertions` block that fixture carries.
 pub fn spec_read_to_string<P: AsRef<Path>>(path: P) -> io::Result<String> {
-    let path = path.as_ref();
+    let requested = path.as_ref();
+    let redirected = redirect(requested);
+    let path = redirected.as_deref().unwrap_or(requested);
     let result = std::fs::read_to_string(path);
     if let Ok(text) = &result {
         record_conformance_read(path);
@@ -547,6 +610,19 @@ fn conformance_id(path: &Path) -> Option<String> {
         let text = candidate.to_string_lossy().replace('\\', "/");
         if let Some(idx) = text.find(CONFORMANCE_MARKER) {
             return Some(text[idx + CONFORMANCE_MARKER.len()..].to_owned());
+        }
+        // Under an override the scratch corpus need not be named `lazily-spec`, so
+        // the marker cannot appear. Strip the resolved root instead — otherwise the
+        // manifest records nothing and the coverage guard reports missing evidence
+        // for a run that in fact replayed everything (`#lzoverrideallrunnersaudit`).
+        if let Some(root) = conformance_root_override() {
+            let root = std::fs::canonicalize(root)
+                .ok()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|| root.replace('\\', "/"));
+            if let Some(rest) = text.strip_prefix(&format!("{root}/")) {
+                return Some(rest.to_owned());
+            }
         }
     }
     None
