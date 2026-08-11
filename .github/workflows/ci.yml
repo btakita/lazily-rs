@@ -328,11 +328,16 @@ jobs:
 
       # `crdt_tree_laws` is named here because no other target enables
       # `lossless-tree`: without this line the whole file compiles to nothing and
-      # its replay of crdt-tree/algebra.json never happens.
+      # its replay of crdt-tree/algebra.json never happens. The `--lib` line is
+      # here for the same reason one rung down (#lzdifforderallbindings): `mod
+      # lossless_tree_crdt` is `#[cfg(feature = "lossless-tree")]`, so its own
+      # unit tests — including the canonical diff-order pin — compiled to nothing
+      # under a `--test`-only invocation.
       - name: Test lossless-tree CRDT conformance against canonical spec fixtures
         run: |
           test -d ../lazily-spec/conformance/lossless-tree || { echo "::error::../lazily-spec/conformance/lossless-tree missing — lossless_tree_conformance.rs cannot run"; exit 1; }
           cargo +stable test --locked --features "lossless-tree serde" --test lossless_tree_conformance --test lossless_tree_proptest --test lossless_tree_schema --test crdt_tree_laws
+          cargo +stable test --locked --features "lossless-tree serde" --lib lossless_tree_crdt::
 
       - name: Test statechart conformance against canonical spec fixtures
         run: |

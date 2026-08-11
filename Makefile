@@ -364,8 +364,15 @@ test-registers-conformance:
 # `crdt-tree/algebra.json` never happened. The static coverage grep could not see
 # that (the filename was right there in the source); the runtime manifest named
 # it on the first run (#lazilyupgradeconformance).
+#
+# The `--lib` line is here for the same reason one rung down (#lzdifforderallbindings):
+# `mod lossless_tree_crdt` is `#[cfg(feature = "lossless-tree")]`, this target
+# enumerates `--test` binaries only, and `make test` runs default features — so
+# the module's own unit tests compiled to nothing under `make check` too. The
+# runtime manifest cannot see this one: unit tests open no fixture.
 test-lossless-tree:
 >$(CARGO) test --locked --features "lossless-tree serde" --test lossless_tree_conformance --test lossless_tree_proptest --test lossless_tree_schema --test crdt_tree_laws
+>$(CARGO) test --locked --features "lossless-tree serde" --lib lossless_tree_crdt::
 
 # JSON Schema compliance: lazily-rs's own serde output (Snapshot/Delta/CrdtSync,
 # incl. NodeKey) validates against the sibling lazily-spec/schemas, and every IPC

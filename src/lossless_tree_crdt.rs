@@ -1008,4 +1008,67 @@ mod tests {
         b.apply_update(&repair);
         assert_eq!(a.render(), b.render(), "converged after repair");
     }
+
+    /// `diff` returns ops in canonical `(counter, peer)` order.
+    ///
+    /// This ordering is a CROSS-BINDING CONTRACT, not an implementation detail:
+    /// the shared corpus addresses ops POSITIONALLY —
+    /// `lossless-tree/non_contiguous_anti_entropy.json` carries
+    /// `deliver.only: [0, 2]`, which indexes into whatever `diff` returns — so
+    /// that fixture only means the same thing in every binding while every
+    /// binding returns the same order.
+    ///
+    /// The corpus cannot catch a regression here. Measured in lazily-zig
+    /// (`#lzzigdiffmutant`): reversing the sort, or deleting it outright, left the
+    /// whole suite green including the anti-entropy fixture, because the two
+    /// indices select the same SET either way and `apply_update` is order-tolerant
+    /// by design. A direct test is the only thing that pins it.
+    #[test]
+    fn diff_returns_ops_in_canonical_counter_peer_order() {
+        let mut a = LosslessTreeCrdt::new(1);
+        let para = a.create_node(TreeNodeId::ROOT, None, elem("para")).unwrap();
+        let base = a
+            .create_node(para, None, leaf(LeafKind::Trivia, "0"))
+            .unwrap();
+
+        let mut b = a.fork(2);
+
+        // `a` runs ahead to counter 4; `b`'s single op stays at counter 3, so it
+        // arrives afterwards and lands LAST in `a`'s log while sorting EARLIER
+        // than `a`'s own (4, 1).
+        let one = a
+            .create_node(para, Some(base), leaf(LeafKind::Trivia, "1"))
+            .unwrap();
+        a.create_node(para, Some(one), leaf(LeafKind::Trivia, "2"))
+            .unwrap();
+        b.create_node(para, Some(base), leaf(LeafKind::Trivia, "9"))
+            .unwrap();
+
+        let from_b = b.diff(&a.frontier());
+        a.apply_update(&from_b);
+
+        let all = a.diff(&TreeVersionFrontier::default());
+
+        // Non-vacuity: the LOG order and the CANONICAL order must genuinely
+        // differ, otherwise the ordering assertion below holds for a reversed or
+        // unsorted `diff` too and pins nothing. Assert the difference EXPLICITLY
+        // so a future refactor that makes the two coincide fails loudly here
+        // instead of silently hollowing out the check.
+        assert_eq!(all.ops.len(), a.log.len(), "diff returns the whole log");
+        let log_ids: Vec<TreeOpId> = a.log.iter().map(|op| op.id).collect();
+        let diff_ids: Vec<TreeOpId> = all.ops.iter().map(|op| op.id).collect();
+        assert_ne!(
+            log_ids, diff_ids,
+            "log order must differ from canonical order, or this test pins nothing: {log_ids:?}"
+        );
+
+        // The returned sequence is strictly increasing by (counter, peer).
+        for pair in diff_ids.windows(2) {
+            let (prev, curr) = (pair[0], pair[1]);
+            assert!(
+                (prev.counter, prev.peer) < (curr.counter, curr.peer),
+                "diff ops are not in canonical (counter, peer) order: {diff_ids:?}"
+            );
+        }
+    }
 }
