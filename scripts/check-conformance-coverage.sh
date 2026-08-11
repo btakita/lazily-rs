@@ -62,50 +62,12 @@ set -euo pipefail
 # counted so a second copy of an already-listed reference in the same file is a
 # new site rather than a free one.
 CORPUS_ROOT_BASELINE=(
-  "tests/blob_backend_discriminator_conformance.rs|../lazily-spec/conformance/codec|1"
-  "tests/boundary_ingress_conformance.rs|../lazily-spec/conformance/ingress/boundary_ingress_adapter.json|1"
-  "tests/codec_roundtrip_conformance.rs|../lazily-spec/conformance/codec|1"
-  "tests/collections_conformance.rs|../lazily-spec/conformance/collections|1"
-  "tests/collections_family_conformance.rs|../lazily-spec/conformance/collections|1"
-  "tests/command_conformance.rs|../lazily-spec/conformance/message-passing|1"
-  "tests/conformance.rs|../lazily-spec/conformance|1"
-  "tests/coordination_conformance.rs|../lazily-spec/conformance/coordination|1"
-  "tests/crdt_tree_laws.rs|../lazily-spec/conformance/crdt-tree/algebra.json|1"
-  "tests/dependency_availability_conformance.rs|../lazily-spec/conformance/collections/dependency_reactive_availability.json|1"
-  "tests/distributed_conformance.rs|../lazily-spec/conformance/distributed|1"
-  "tests/durable_outbox.rs|../lazily-spec/conformance/reliable-sync/outbox_store_protocol.json|2"
-  "tests/egress_family_conformance.rs|../lazily-spec/conformance/egress|1"
-  "tests/familysync_conformance.rs|../lazily-spec/conformance/familysync/materialize_on_ingest.json|1"
-  "tests/ingress_family_conformance.rs|../lazily-spec/conformance/ingress|1"
-  "tests/lossless_tree_conformance.rs|../lazily-spec/conformance/lossless-tree|1"
-  "tests/materialization_async_conformance.rs|../lazily-spec/conformance/materialization|1"
-  "tests/materialization_conformance.rs|../lazily-spec/conformance/materialization|1"
-  "tests/materialization_threadsafe_conformance.rs|../lazily-spec/conformance/materialization|1"
-  "tests/membership_conformance.rs|../lazily-spec/conformance/membership|1"
-  "tests/merge_conformance.rs|../lazily-spec/conformance/collections|1"
-  "tests/nodeid_exact_range_conformance.rs|../lazily-spec/conformance/codec|1"
-  "tests/nodekey_null_leniency_conformance.rs|../lazily-spec/conformance/codec|1"
-  "tests/presence_conformance.rs|../lazily-spec/conformance/presence|1"
-  "tests/protobuf_graph_boundary.rs|../lazily-spec/conformance/protobuf/graph_boundary_traces.json|1"
-  "tests/queue_conformance.rs|../lazily-spec/conformance/collections|1"
-  "tests/queue_family_conformance.rs|../lazily-spec/conformance/collections|1"
-  "tests/rateshape_conformance.rs|../lazily-spec/conformance/rateshape|1"
-  "tests/reactive_graph_conformance.rs|../lazily-spec/conformance/reactive-graph|1"
-  "tests/registers_conformance.rs|../lazily-spec/conformance/collections|1"
-  "tests/reliable_sync_conformance.rs|../lazily-spec/conformance/reliable-sync|1"
-  "tests/resilience_conformance.rs|../lazily-spec/conformance/resilience|1"
-  "tests/schema_compliance.rs|../lazily-spec/conformance|1"
-  "tests/seqcrdt_conformance.rs|../lazily-spec/conformance/collections|1"
-  "tests/service_conformance.rs|../lazily-spec/conformance/service|1"
-  "tests/signaling_negative_conformance.rs|../lazily-spec/conformance/signaling/anti_spoof_session.json|1"
-  "tests/signaling_negative_conformance.rs|../lazily-spec/conformance/signaling/frames.json|1"
-  "tests/statechart_conformance.rs|../lazily-spec/conformance/statechart|1"
-  "tests/stdlib_conformance.rs|../lazily-spec/conformance/stdlib/revision_barrier.json|1"
-  "tests/stdlib_conformance.rs|../lazily-spec/conformance/stdlib/timeout.json|1"
-  "tests/stdlib_conformance.rs|../lazily-spec/conformance/stdlib/timer.json|1"
-  "tests/temporal_conformance.rs|../lazily-spec/conformance/temporal|1"
-  "tests/windowing_conformance.rs|../lazily-spec/conformance/windowing|1"
-  "tests/work_queue_conformance.rs|../lazily-spec/conformance/collections|1"
+  # EMPTY, and that is the point (#lzrsspecdirconsts). This list carried 45
+  # references across 41 files: every conformance test declared its own
+  # `const SPEC_DIR: &str = "../lazily-spec/conformance/<area>"`. They are now
+  # `common::SpecDir("<area>")`, which resolves the root at Display time, so a
+  # replay follows LAZILY_SPEC_CONFORMANCE_DIR without any call site changing
+  # shape. An entry added back here is debt being re-taken on, not a fix.
 )
 
 if ! command -v python3 >/dev/null 2>&1; then

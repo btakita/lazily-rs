@@ -10,18 +10,12 @@ use lazily::stdlib::{
 };
 use serde_json::{Map, Value, json};
 
-const FIXTURES: [(&str, &str); 3] = [
-    (
-        "stdlib_timer_v1",
-        "../lazily-spec/conformance/stdlib/timer.json",
-    ),
-    (
-        "stdlib_timeout_v1",
-        "../lazily-spec/conformance/stdlib/timeout.json",
-    ),
+const FIXTURES: [(&str, common::SpecDir); 3] = [
+    ("stdlib_timer_v1", common::SpecDir("stdlib/timer.json")),
+    ("stdlib_timeout_v1", common::SpecDir("stdlib/timeout.json")),
     (
         "stdlib_revision_barrier_v1",
-        "../lazily-spec/conformance/stdlib/revision_barrier.json",
+        common::SpecDir("stdlib/revision_barrier.json"),
     ),
 ];
 
@@ -61,7 +55,11 @@ fn fired_tick(base: Instant, timer: &Timer) -> u64 {
 
 #[test]
 fn canonical_corpus_matches_production_and_an_independent_interpreter() {
-    for (feature, path) in FIXTURES {
+    for (feature, spec) in FIXTURES {
+        // Resolve once: `SpecDir` renders under whichever corpus this run reads,
+        // and everything downstream wants a plain path.
+        let path_owned = spec.to_string();
+        let path = path_owned.as_str();
         let fixture = load(path);
         assert_eq!(fixture["feature"], feature);
         replay_production(path, &fixture);
@@ -75,7 +73,9 @@ fn canonical_corpus_matches_production_and_an_independent_interpreter() {
 
 #[test]
 fn every_declared_mutation_is_observed_by_the_independent_interpreter() {
-    for (_, path) in FIXTURES {
+    for (_, spec) in FIXTURES {
+        let path_owned = spec.to_string();
+        let path = path_owned.as_str();
         let fixture = load(path);
         for mutation in fixture["mutations"].as_array().expect("fixture mutations") {
             let operator = mutation["operator"].as_str().expect("mutation operator");

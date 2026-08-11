@@ -15,7 +15,7 @@ use lazily::{
 };
 use serde_json::Value;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/rateshape";
+const SPEC_DIR: common::SpecDir = common::SpecDir("rateshape");
 
 fn load_fixture(name: &str) -> Value {
     let path = format!("{SPEC_DIR}/{name}");
@@ -25,7 +25,7 @@ fn load_fixture(name: &str) -> Value {
 }
 
 fn present() -> bool {
-    std::path::Path::new(&format!("{SPEC_DIR}/debounce.json")).exists()
+    SPEC_DIR.join("debounce.json").exists()
 }
 
 fn steps(fx: &Value) -> &Vec<Value> {

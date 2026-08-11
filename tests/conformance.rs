@@ -29,7 +29,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 
 const FIXTURES_DIR: &str = "tests/conformance";
-const SPEC_FIXTURES_DIR: &str = "../lazily-spec/conformance";
+const SPEC_FIXTURES_DIR: common::SpecDir = common::SpecDir("");
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

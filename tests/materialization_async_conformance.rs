@@ -16,11 +16,11 @@ use common::Expect;
 use lazily::{AsyncComputedMap, AsyncContext};
 use serde_json::Value;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/materialization";
+const SPEC_DIR: common::SpecDir = common::SpecDir("materialization");
 type V = i64;
 
 fn present() -> bool {
-    std::path::Path::new(SPEC_DIR).exists()
+    SPEC_DIR.exists()
 }
 
 fn load(name: &str) -> Value {

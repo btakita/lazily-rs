@@ -23,12 +23,12 @@ use common::Expect;
 use lazily::{ComputedMap, Context, EntryKind, SourceMap};
 use serde_json::Value;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/materialization";
+const SPEC_DIR: common::SpecDir = common::SpecDir("materialization");
 
 type V = i64;
 
 fn spec_fixtures_present() -> bool {
-    std::path::Path::new(SPEC_DIR).exists()
+    SPEC_DIR.exists()
 }
 
 fn load_fixture(name: &str) -> Value {

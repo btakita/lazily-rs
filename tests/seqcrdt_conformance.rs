@@ -23,7 +23,7 @@ use common::Expect;
 use lazily::{PeerId, SeqCrdt};
 use serde_json::Value;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/collections";
+const SPEC_DIR: common::SpecDir = common::SpecDir("collections");
 
 type V = Value;
 

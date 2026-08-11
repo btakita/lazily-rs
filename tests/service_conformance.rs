@@ -10,7 +10,7 @@ use common::Expect;
 use lazily::{Context, DiscoveryCell, Health, HealthCell, ReadinessCell, ServiceRegistry};
 use serde_json::Value;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/service";
+const SPEC_DIR: common::SpecDir = common::SpecDir("service");
 
 fn load(name: &str) -> Value {
     let path = format!("{SPEC_DIR}/{name}");
@@ -20,7 +20,7 @@ fn load(name: &str) -> Value {
 }
 
 fn present() -> bool {
-    std::path::Path::new(&format!("{SPEC_DIR}/health.json")).exists()
+    SPEC_DIR.join("health.json").exists()
 }
 
 fn steps(fx: &Value) -> &Vec<Value> {

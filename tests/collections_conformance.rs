@@ -24,7 +24,7 @@ use lazily::{
 };
 use serde_json::Value;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/collections";
+const SPEC_DIR: common::SpecDir = common::SpecDir("collections");
 
 /// Cell value type used across all collection fixtures (JSON integers).
 type V = i64;
@@ -37,7 +37,7 @@ fn load_fixture(name: &str) -> Value {
 }
 
 fn spec_fixtures_present() -> bool {
-    std::path::Path::new(SPEC_DIR).exists()
+    SPEC_DIR.exists()
 }
 
 fn build_initial(ctx: &Context, initial: &Value) -> SourceMap<String, V> {

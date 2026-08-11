@@ -163,7 +163,66 @@ pub fn spec_path<P: AsRef<Path>>(path: P) -> PathBuf {
 
 /// The corpus directory itself, honouring the override.
 pub fn spec_root() -> PathBuf {
-    PathBuf::from(conformance_root_override().unwrap_or(DEFAULT_CONFORMANCE_ROOT))
+    PathBuf::from(conformance_root())
+}
+
+/// The corpus root this run reads.
+pub fn conformance_root() -> &'static str {
+    conformance_root_override().unwrap_or(DEFAULT_CONFORMANCE_ROOT)
+}
+
+/// An area or fixture path INSIDE the canonical corpus, resolved against the
+/// runtime root at the moment it is used (`#lzrsspecdirconsts`).
+///
+/// Every conformance test used to carry
+/// `const SPEC_DIR: &str = "../lazily-spec/conformance/<area>"` — 45 references
+/// across 41 files — and format fixture paths from it. That spelled the DEFAULT
+/// root into every runner, so `LAZILY_SPEC_CONFORMANCE_DIR` reached none of them
+/// until `spec_read_to_string` grew a redirect; and a redirect at the read is
+/// silent about a path that is never read, which is how the presence probes came
+/// to answer about a corpus the run was not replaying.
+///
+/// This carries the area alone and resolves the root on `Display`, so
+/// `format!("{SPEC_DIR}/{name}")` keeps working unchanged while producing a path
+/// under whichever corpus is actually in play. It stays a `const`, so nothing
+/// about the call sites' shape had to change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpecDir(pub &'static str);
+
+impl SpecDir {
+    /// The resolved path to this area/fixture.
+    pub fn path(self) -> PathBuf {
+        spec_root().join(self.0)
+    }
+
+    /// The resolved path to `<self>/<name>`.
+    pub fn join(self, name: &str) -> PathBuf {
+        self.path().join(name)
+    }
+
+    /// Does it exist UNDER THE CORPUS THIS RUN READS? A probe that answers about
+    /// the default corpus while the suite replays an overridden one reports on a
+    /// directory nobody opened, and its skip is then indistinguishable from a
+    /// pass (`#lzzigspecdiroption`).
+    pub fn exists(self) -> bool {
+        self.path().exists()
+    }
+
+    pub fn is_dir(self) -> bool {
+        self.path().is_dir()
+    }
+}
+
+impl From<SpecDir> for String {
+    fn from(dir: SpecDir) -> String {
+        dir.to_string()
+    }
+}
+
+impl std::fmt::Display for SpecDir {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", conformance_root(), self.0)
+    }
 }
 
 fn seen() -> &'static Mutex<HashSet<String>> {

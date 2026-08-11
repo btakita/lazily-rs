@@ -25,7 +25,7 @@ use lazily::{
 };
 use serde_json::Value;
 
-const SPEC: &str = "../lazily-spec/conformance/distributed";
+const SPEC: common::SpecDir = common::SpecDir("distributed");
 
 fn load(name: &str) -> Option<Value> {
     let text = crate::common::spec_read_to_string(format!("{SPEC}/{name}")).ok()?;

@@ -10,7 +10,7 @@ use lazily::{
 };
 use serde_json::Value;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/resilience";
+const SPEC_DIR: common::SpecDir = common::SpecDir("resilience");
 
 fn load(name: &str) -> Value {
     let path = format!("{SPEC_DIR}/{name}");
@@ -20,7 +20,7 @@ fn load(name: &str) -> Value {
 }
 
 fn present() -> bool {
-    std::path::Path::new(&format!("{SPEC_DIR}/circuit_breaker.json")).exists()
+    SPEC_DIR.join("circuit_breaker.json").exists()
 }
 
 fn steps(fx: &Value) -> &Vec<Value> {

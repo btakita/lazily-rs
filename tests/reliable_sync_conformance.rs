@@ -19,7 +19,7 @@ use lazily::{
 use std::collections::BTreeMap;
 use std::fs;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/reliable-sync";
+const SPEC_DIR: common::SpecDir = common::SpecDir("reliable-sync");
 
 fn load(name: &str) -> serde_json::Value {
     let path = format!("{SPEC_DIR}/{name}");

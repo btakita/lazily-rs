@@ -2,8 +2,6 @@
 
 mod common;
 
-use std::path::Path;
-
 #[cfg(feature = "async")]
 use lazily::{AsyncBoundaryIngressCell, AsyncContext};
 use lazily::{
@@ -16,7 +14,7 @@ use lazily::{
 use lazily::{ThreadSafeBoundaryIngressCell, ThreadSafeContext};
 use serde_json::Value;
 
-const FIXTURE: &str = "../lazily-spec/conformance/ingress/boundary_ingress_adapter.json";
+const FIXTURE: common::SpecDir = common::SpecDir("ingress/boundary_ingress_adapter.json");
 
 trait Model: Sized {
     fn build(config: BoundaryIngressConfig) -> Self;
@@ -463,7 +461,7 @@ fn assert_expected(actual: &BoundaryIngressProjection<String>, expected: &Value,
 }
 
 fn replay<M: Model>() -> usize {
-    let raw = common::spec_read_to_string(Path::new(FIXTURE)).expect("boundary fixture");
+    let raw = common::spec_read_to_string(FIXTURE.path()).expect("boundary fixture");
     let fixture: Value = serde_json::from_str(&raw).expect("valid fixture");
     let base_policy = &fixture["policy"];
     let mut count = 0;
@@ -481,7 +479,7 @@ fn replay<M: Model>() -> usize {
                 .expect("freshness horizon"),
         });
         let id = scenario["id"].as_str().expect("scenario id");
-        common::record_scenario(Path::new(FIXTURE), id, common::ScenarioIdSource::Id);
+        common::record_scenario(FIXTURE.path(), id, common::ScenarioIdSource::Id);
         for (index, step) in scenario["steps"]
             .as_array()
             .expect("steps")

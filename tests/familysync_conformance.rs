@@ -22,7 +22,7 @@ use common::Expect;
 use lazily::{Context, CrdtPlaneRuntime, PeerId};
 use serde_json::Value;
 
-const FIXTURE: &str = "../lazily-spec/conformance/familysync/materialize_on_ingest.json";
+const FIXTURE: common::SpecDir = common::SpecDir("familysync/materialize_on_ingest.json");
 
 fn suffix_of(node_key: &impl ToString) -> String {
     // `NodeKey` displays as `namespace/suffix`; the conformance fixture keys by suffix.
@@ -36,11 +36,11 @@ fn suffix_of(node_key: &impl ToString) -> String {
 
 #[test]
 fn family_sync_materialize_on_ingest_conformance() {
-    if !std::path::Path::new(FIXTURE).exists() {
+    if !FIXTURE.exists() {
         eprintln!("skipping: spec fixture {FIXTURE} not present");
         return;
     }
-    let raw = crate::common::spec_read_to_string(FIXTURE).expect("read fixture");
+    let raw = crate::common::spec_read_to_string(FIXTURE.path()).expect("read fixture");
     let fixture: Value = serde_json::from_str(&raw).expect("parse fixture");
     let namespace = fixture["namespace"].as_str().expect("namespace");
     assert_eq!(
@@ -50,7 +50,7 @@ fn family_sync_materialize_on_ingest_conformance() {
     );
 
     // Per-scenario replay ledger (`#lzscenariocoverage`).
-    for (si, _id, scenario) in common::scenarios(FIXTURE, &fixture) {
+    for (si, _id, scenario) in common::scenarios(&FIXTURE.to_string(), &fixture) {
         let name = scenario["name"].as_str().unwrap_or("<unnamed>");
         // Guard the scenario's `expect` block (`#lzassertunknownkeys`).
         let expect = Expect::new(

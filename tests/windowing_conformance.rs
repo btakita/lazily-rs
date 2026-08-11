@@ -9,7 +9,7 @@ use common::Expect;
 use lazily::{Context, SessionWindow, SlidingWindow, Sum, TumblingCountWindow, TumblingTimeWindow};
 use serde_json::Value;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/windowing";
+const SPEC_DIR: common::SpecDir = common::SpecDir("windowing");
 
 fn load(name: &str) -> Value {
     let path = format!("{SPEC_DIR}/{name}");
@@ -19,7 +19,7 @@ fn load(name: &str) -> Value {
 }
 
 fn present() -> bool {
-    std::path::Path::new(&format!("{SPEC_DIR}/tumbling_count.json")).exists()
+    SPEC_DIR.join("tumbling_count.json").exists()
 }
 
 fn steps(fx: &Value) -> &Vec<Value> {

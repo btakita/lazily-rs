@@ -7,14 +7,11 @@ use lazily::{Delta, DurableOutbox, InMemoryOutbox, IpcMessage};
 use serde_json::Value;
 
 fn fixture() -> Option<Value> {
-    let text = crate::common::spec_read_to_string(
-        "../lazily-spec/conformance/reliable-sync/outbox_store_protocol.json",
-    )
-    .ok()?;
+    let text = crate::common::spec_read_to_string(FIXTURE.path()).ok()?;
     Some(serde_json::from_str(&text).expect("outbox-store fixture JSON"))
 }
 
-const FIXTURE: &str = "../lazily-spec/conformance/reliable-sync/outbox_store_protocol.json";
+const FIXTURE: common::SpecDir = common::SpecDir("reliable-sync/outbox_store_protocol.json");
 
 /// Guard a scenario's `expect` block (`#lzassertunknownkeys`).
 fn expect<'a>(sc: &'a Value) -> Expect<'a> {
@@ -77,7 +74,7 @@ fn generic_outbox_replays_canonical_store_fixture() {
         // loop steps past must not record itself as replayed, or the skip becomes
         // invisible again — which is the whole defect.
         let (id, source) = common::scenario_id(scenario, index);
-        common::record_scenario(FIXTURE, &id, source);
+        common::record_scenario(FIXTURE.path(), &id, source);
         let mut outbox = InMemoryOutbox::default();
         for epoch in scenario["put_epochs"].as_array().unwrap() {
             let epoch = epoch.as_u64().unwrap();
@@ -151,7 +148,11 @@ fn stale_sqlite_handle_cannot_regress_serialized_cursor() {
     use lazily::SqliteOutbox;
 
     let fixture = fixture().expect("lazily-spec outbox-store fixture");
-    let scenario = common::scenario_by_id(FIXTURE, &fixture, "stale_handle_cannot_regress_cursor");
+    let scenario = common::scenario_by_id(
+        &FIXTURE.to_string(),
+        &fixture,
+        "stale_handle_cannot_regress_cursor",
+    );
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("stale-cursor.db");
     let mut stale = SqliteOutbox::open(&path, "doc").unwrap();

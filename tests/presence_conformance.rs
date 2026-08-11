@@ -10,7 +10,7 @@ use common::Expect;
 use lazily::{AwarenessCell, Context, EphemeralCell, PresenceCell};
 use serde_json::Value;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/presence";
+const SPEC_DIR: common::SpecDir = common::SpecDir("presence");
 
 fn load(name: &str) -> Value {
     let path = format!("{SPEC_DIR}/{name}");
@@ -30,7 +30,7 @@ fn expected<'a>(name: &str, i: usize, step: &'a Value) -> Expect<'a> {
 }
 
 fn present() -> bool {
-    std::path::Path::new(&format!("{SPEC_DIR}/presence.json")).exists()
+    SPEC_DIR.join("presence.json").exists()
 }
 
 fn steps(fx: &Value) -> &Vec<Value> {

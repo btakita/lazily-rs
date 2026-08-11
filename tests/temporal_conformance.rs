@@ -15,7 +15,7 @@ use common::Expect;
 use lazily::{Context, CronCell, DeadlineCell, Deadlined, IntervalCell, TimerCell};
 use serde_json::Value;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/temporal";
+const SPEC_DIR: common::SpecDir = common::SpecDir("temporal");
 
 fn load_fixture(name: &str) -> Value {
     let path = format!("{SPEC_DIR}/{name}");
@@ -25,7 +25,7 @@ fn load_fixture(name: &str) -> Value {
 }
 
 fn spec_fixtures_present() -> bool {
-    std::path::Path::new(&format!("{SPEC_DIR}/timer_single_shot.json")).exists()
+    SPEC_DIR.join("timer_single_shot.json").exists()
 }
 
 fn steps(fx: &Value) -> &Vec<Value> {

@@ -6,10 +6,10 @@ use common::Expect;
 use lazily::{CrdtTree, TextCrdt, TextVersionVector};
 use serde_json::Value;
 
-const FIXTURE: &str = "../lazily-spec/conformance/crdt-tree/algebra.json";
+const FIXTURE: common::SpecDir = common::SpecDir("crdt-tree/algebra.json");
 
 fn fixture() -> Option<Value> {
-    let text = crate::common::spec_read_to_string(FIXTURE).ok()?;
+    let text = crate::common::spec_read_to_string(FIXTURE.path()).ok()?;
     Some(serde_json::from_str(&text).expect("CrdtTree fixture JSON"))
 }
 
@@ -70,7 +70,7 @@ fn crdt_tree_replays_canonical_fixture() {
     // Per-scenario replay ledger (`#lzscenariocoverage`). This runner addresses
     // its three scenarios positionally, so each index goes through the recorder
     // rather than a bare `scenarios[n]`.
-    let merge = common::scenario_at(FIXTURE, &fixture, 0);
+    let merge = common::scenario_at(&FIXTURE.to_string(), &fixture, 0);
     let peer = merge["seed"]["peer"].as_u64().unwrap();
     let seed = merge["seed"]["text"].as_str().unwrap();
     let base = TextCrdt::from_str(peer, seed);
@@ -113,7 +113,7 @@ fn crdt_tree_replays_canonical_fixture() {
         assert_eq!(folded.version_vector(), folds[0].version_vector());
     }
 
-    let snapshot_case = common::scenario_at(FIXTURE, &fixture, 1);
+    let snapshot_case = common::scenario_at(&FIXTURE.to_string(), &fixture, 1);
     let snapshot_expect = Expect::new(FIXTURE, "scenarios[1].expect", &snapshot_case["expect"]);
     let snapshot_seed = snapshot_case["seed"]["text"].as_str().unwrap();
     let mut canonical = TextCrdt::from_str(
@@ -144,7 +144,7 @@ fn crdt_tree_replays_canonical_fixture() {
     let duplicates = canonical.len() as i64 - (snapshot_seed.chars().count() as i64 + 2);
     snapshot_expect.assert_key("later_merge_duplicates", duplicates);
 
-    let steady_case = common::scenario_at(FIXTURE, &fixture, 2);
+    let steady_case = common::scenario_at(&FIXTURE.to_string(), &fixture, 2);
     let steady_expect = Expect::new(FIXTURE, "scenarios[2].expect", &steady_case["expect"]);
     let steady = &steady_case["seed"];
     let mut steady = TextCrdt::from_str(

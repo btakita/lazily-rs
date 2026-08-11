@@ -11,8 +11,6 @@
 
 mod common;
 
-use std::path::{Path, PathBuf};
-
 use common::Expect;
 use lazily::{
     CausalReceipt, CommandApplyStatus, CommandMessage, CommandProjection, CommandProjectionImage,
@@ -20,14 +18,14 @@ use lazily::{
 };
 use serde_json::Value;
 
-const FIXTURE_DIR: &str = "../lazily-spec/conformance/message-passing";
+const FIXTURE_DIR: common::SpecDir = common::SpecDir("message-passing");
 
 fn fixtures_present() -> bool {
-    Path::new(FIXTURE_DIR).is_dir()
+    FIXTURE_DIR.is_dir()
 }
 
 fn load(name: &str) -> Value {
-    let path = PathBuf::from(FIXTURE_DIR).join(name);
+    let path = FIXTURE_DIR.join(name);
     let raw = crate::common::spec_read_to_string(&path)
         .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))

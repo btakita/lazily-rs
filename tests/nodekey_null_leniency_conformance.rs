@@ -47,7 +47,7 @@ use lazily::{Delta, DeltaOp, IpcMessage, Snapshot};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/codec";
+const SPEC_DIR: common::SpecDir = common::SpecDir("codec");
 const VENDORED_DIR: &str = "tests/conformance/codec";
 const FIXTURE: &str = "nodekey_null_leniency.json";
 

@@ -19,7 +19,7 @@ use lazily::{
 use lazily::{ThreadSafeContext, ThreadSafeEgressCell};
 use serde_json::{Value, json};
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/egress";
+const SPEC_DIR: common::SpecDir = common::SpecDir("egress");
 const FIXTURES: &[&str] = &[
     "egress_ordered_ack.json",
     "egress_inflight_window.json",

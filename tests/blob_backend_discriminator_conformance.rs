@@ -63,7 +63,7 @@ use lazily::{DecodeError, Delta, DeltaOp, IpcMessage, IpcValue, ShmBlobRef};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/codec";
+const SPEC_DIR: common::SpecDir = common::SpecDir("codec");
 const VENDORED_DIR: &str = "tests/conformance/codec";
 const FIXTURE: &str = "blob_backend_discriminator.json";
 

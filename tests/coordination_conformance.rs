@@ -11,7 +11,7 @@ use common::Expect;
 use lazily::{BarrierCell, Context, LeaderCell, LeaderRole, LeaseCell, LockCell, SemaphoreCell};
 use serde_json::Value;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/coordination";
+const SPEC_DIR: common::SpecDir = common::SpecDir("coordination");
 
 fn load(name: &str) -> Value {
     let path = format!("{SPEC_DIR}/{name}");
@@ -21,7 +21,7 @@ fn load(name: &str) -> Value {
 }
 
 fn present() -> bool {
-    std::path::Path::new(&format!("{SPEC_DIR}/lease.json")).exists()
+    SPEC_DIR.join("lease.json").exists()
 }
 
 fn steps(fx: &Value) -> &Vec<Value> {

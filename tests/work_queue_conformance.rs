@@ -8,7 +8,7 @@ use common::Expect;
 use lazily::{Context, WorkQueueCell, WorkQueueDeadLetterReason};
 use serde_json::Value;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/collections";
+const SPEC_DIR: common::SpecDir = common::SpecDir("collections");
 
 fn load_fixture(name: &str) -> Option<Value> {
     let path = format!("{SPEC_DIR}/{name}");

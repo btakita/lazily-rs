@@ -28,7 +28,7 @@ use common::Expect;
 use lazily::{CrdtSync, Delta, DeltaOp, IpcMessage, IpcValue, NodeState, Snapshot};
 use serde_json::Value;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/codec";
+const SPEC_DIR: common::SpecDir = common::SpecDir("codec");
 const VENDORED_DIR: &str = "tests/conformance/codec";
 
 /// The corpus copy when the sibling spec is checked out, else the vendored one

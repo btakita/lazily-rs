@@ -36,7 +36,7 @@
 mod common;
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use common::Expect;
 #[cfg(feature = "async")]
@@ -51,7 +51,7 @@ use lazily::{KeepLatest, Sum};
 use lazily::{ThreadSafeContext, ThreadSafeIngressCell};
 use serde_json::Value;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/ingress";
+const SPEC_DIR: common::SpecDir = common::SpecDir("ingress");
 
 /// Every fixture the ingress corpus ships. Named explicitly rather than globbed:
 /// a fixture added to the corpus and not to this list is a *missing replay*, and
@@ -147,7 +147,7 @@ trait IngressModel: Sized {
 // --------------------------------------------------------------------------
 
 fn fixture_path(name: &str) -> PathBuf {
-    Path::new(SPEC_DIR).join(name)
+    SPEC_DIR.join(name)
 }
 
 fn load(name: &str) -> Option<Value> {

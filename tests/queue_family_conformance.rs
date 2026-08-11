@@ -49,7 +49,7 @@ use std::fs;
 use common::Expect;
 use std::path::Path;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/collections";
+const SPEC_DIR: common::SpecDir = common::SpecDir("collections");
 
 /// The canonical `QueueCell` corpus.
 const QUEUE_FIXTURES: &[&str] = &[

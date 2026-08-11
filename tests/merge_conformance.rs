@@ -16,7 +16,7 @@ use common::Expect;
 use lazily::{Context, KeepLatest, Max, MergePolicy, Source, Sum};
 use serde_json::Value;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/collections";
+const SPEC_DIR: common::SpecDir = common::SpecDir("collections");
 
 fn load_fixture(name: &str) -> Value {
     let path = format!("{SPEC_DIR}/{name}");
@@ -26,7 +26,7 @@ fn load_fixture(name: &str) -> Value {
 }
 
 fn spec_fixtures_present() -> bool {
-    std::path::Path::new(&format!("{SPEC_DIR}/mergecell_algebra.json")).exists()
+    SPEC_DIR.join("mergecell_algebra.json").exists()
 }
 
 /// Replay one scenario's steps against a `MergeCell<i64, M>`, asserting value and

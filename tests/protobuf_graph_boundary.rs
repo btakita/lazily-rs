@@ -14,7 +14,7 @@ use lazily::protobuf::{
 use prost::Message;
 use serde_json::Value;
 
-const FIXTURE: &str = "../lazily-spec/conformance/protobuf/graph_boundary_traces.json";
+const FIXTURE: common::SpecDir = common::SpecDir("protobuf/graph_boundary_traces.json");
 
 fn strings(value: &Value) -> BTreeMap<String, String> {
     value
@@ -127,10 +127,10 @@ fn generated_handshake_negotiates_the_optional_feature() {
 
 #[test]
 fn generated_protobuf_roundtrips_and_replays_canonical_logical_traces() {
-    let raw = common::spec_read_to_string(FIXTURE).expect("read protobuf trace fixture");
+    let raw = common::spec_read_to_string(FIXTURE.path()).expect("read protobuf trace fixture");
     let fixture: Value = serde_json::from_str(&raw).expect("parse protobuf trace fixture");
 
-    for (_, id, scenario) in common::scenarios(FIXTURE, &fixture) {
+    for (_, id, scenario) in common::scenarios(&FIXTURE.to_string(), &fixture) {
         let scenario = scenario.value();
         let mut projection = GraphBoundaryProjection::default();
         let mut decisions = Vec::new();

@@ -17,8 +17,8 @@ use lazily::{Context, DependencyAvailability, DependencyMap};
 use lazily::{ThreadSafeContext, ThreadSafeDependencyMap};
 use serde_json::{Value, json};
 
-const FIXTURE: &str =
-    "../lazily-spec/conformance/collections/dependency_reactive_availability.json";
+const FIXTURE: common::SpecDir =
+    common::SpecDir("collections/dependency_reactive_availability.json");
 
 fn availability_json(state: DependencyAvailability<i64>) -> Value {
     match state {
@@ -29,7 +29,8 @@ fn availability_json(state: DependencyAvailability<i64>) -> Value {
 
 #[test]
 fn dependency_availability_fixture_replays() {
-    let raw = common::spec_read_to_string(FIXTURE).expect("read dependency availability fixture");
+    let raw =
+        common::spec_read_to_string(FIXTURE.path()).expect("read dependency availability fixture");
     let fixture: Value = serde_json::from_str(&raw).expect("parse dependency availability fixture");
     let steps = fixture["steps"].as_array().expect("steps array");
 
@@ -64,7 +65,7 @@ fn dependency_availability_fixture_replays() {
         let handle = map.handle(&"wanted".to_string()).expect("wanted handle");
         let stable = *first_handle.get_or_insert(handle) == handle;
         let expected = Expect::new(
-            FIXTURE,
+            FIXTURE.to_string(),
             format!("steps[{index}].expected"),
             &step["expected"],
         );

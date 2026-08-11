@@ -17,7 +17,7 @@ use common::Expect;
 use lazily::{Context, QueueCell, QueuePopError, QueuePushError, QueueStorage};
 use serde_json::Value;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/collections";
+const SPEC_DIR: common::SpecDir = common::SpecDir("collections");
 
 type V = String;
 
@@ -29,7 +29,7 @@ fn load_fixture(name: &str) -> Value {
 }
 
 fn spec_fixtures_present() -> bool {
-    std::path::Path::new(&format!("{SPEC_DIR}/queuecell_spsc_push_pop.json")).exists()
+    SPEC_DIR.join("queuecell_spsc_push_pop.json").exists()
 }
 
 fn build_initial(ctx: &Context, initial: &Value) -> QueueCell<V> {

@@ -14,7 +14,7 @@ use common::Expect;
 use lazily::{ChartDef, Context, StateChart};
 use serde_json::Value;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/statechart";
+const SPEC_DIR: common::SpecDir = common::SpecDir("statechart");
 
 fn load_fixture(name: &str) -> Value {
     let path = format!("{SPEC_DIR}/{name}");

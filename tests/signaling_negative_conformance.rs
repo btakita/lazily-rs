@@ -8,8 +8,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-const FRAMES_PATH: &str = "../lazily-spec/conformance/signaling/frames.json";
-const SESSION_PATH: &str = "../lazily-spec/conformance/signaling/anti_spoof_session.json";
+const FRAMES_PATH: common::SpecDir = common::SpecDir("signaling/frames.json");
+const SESSION_PATH: common::SpecDir = common::SpecDir("signaling/anti_spoof_session.json");
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -127,7 +127,8 @@ fn decode(direction: &str, wire: &Value) -> Result<Value, String> {
 
 #[test]
 fn signaling_frames_replay_positive_and_negative_cases() {
-    let raw = common::spec_read_to_string(FRAMES_PATH).expect("read signaling frames fixture");
+    let raw =
+        common::spec_read_to_string(FRAMES_PATH.path()).expect("read signaling frames fixture");
     let fixture: FramesFixture =
         serde_json::from_str(&raw).expect("parse signaling frames fixture");
     assert_eq!(fixture.protocol_version, 1);
@@ -268,7 +269,7 @@ fn assert_frame_assertions(case: &FrameCase, actual: &Value) {
 
 #[test]
 fn anti_spoof_fixture_rejects_client_supplied_from() {
-    let raw = common::spec_read_to_string(SESSION_PATH).expect("read anti-spoof fixture");
+    let raw = common::spec_read_to_string(SESSION_PATH.path()).expect("read anti-spoof fixture");
     let fixture: SessionFixture =
         serde_json::from_str(&raw).expect("parse signaling anti-spoof fixture");
     assert_eq!(fixture.protocol_version, 1);

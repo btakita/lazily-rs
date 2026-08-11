@@ -57,7 +57,7 @@ use common::Expect;
 use engine::{Report, arr, replay};
 use model::GraphModel;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/reactive-graph";
+const SPEC_DIR: common::SpecDir = common::SpecDir("reactive-graph");
 
 /// The canonical fixture set. Asserted against the directory listing so a
 /// fixture added or renamed upstream fails loudly instead of going unrun.
@@ -148,7 +148,7 @@ fn load(name: &str) -> Value {
 }
 
 fn present() -> bool {
-    std::path::Path::new(SPEC_DIR).is_dir()
+    SPEC_DIR.is_dir()
 }
 
 /// Replay the whole corpus against one execution model.
@@ -164,7 +164,7 @@ fn run_corpus<M: GraphModel>() {
 
     // The fixture set on disk must be exactly the one this runner knows about,
     // so an upstream addition cannot arrive unexecuted.
-    let on_disk: BTreeSet<String> = fs::read_dir(SPEC_DIR)
+    let on_disk: BTreeSet<String> = fs::read_dir(SPEC_DIR.path())
         .unwrap()
         .filter_map(Result::ok)
         .map(|e| e.file_name().to_string_lossy().into_owned())

@@ -362,7 +362,8 @@ fn every_ipc_conformance_fixture_wire_is_schema_valid() {
     let delta_schema = composed_schema("delta", &defs);
 
     let local_dir = "tests/conformance";
-    let spec_dir = "../lazily-spec/conformance";
+    let spec_dir_owned = common::spec_root();
+    let spec_dir = spec_dir_owned.to_str().expect("corpus root is valid UTF-8");
     // Every IPC-named fixture this enumeration MET, whether or not it was
     // validated. The ledger check below reasons about this set, so an excuse
     // for a fixture the corpus no longer carries cannot hide in it.

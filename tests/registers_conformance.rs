@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use lazily::{CellCrdt, HlcStamp, LwwRegister, MvRegister, PeerId, PnCounter};
 use serde_json::Value;
 
-const SPEC_DIR: &str = "../lazily-spec/conformance/collections";
+const SPEC_DIR: common::SpecDir = common::SpecDir("collections");
 
 fn load_fixture(name: &str) -> Value {
     let path = format!("{SPEC_DIR}/{name}");
