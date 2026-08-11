@@ -129,6 +129,113 @@ pub fn conformance_root_override() -> Option<&'static str> {
     .as_deref()
 }
 
+// ---------------------------------------------------------------------------
+// The SCHEMAS root (#lzspecschemasoverride)
+// ---------------------------------------------------------------------------
+//
+// `LAZILY_SPEC_CONFORMANCE_DIR` redirects the corpus and NOTHING ELSE. The
+// schema-validating runners resolve `../lazily-spec/schemas` themselves, so a
+// probe that needs to perturb a SCHEMA — flip a `required` entry, narrow an
+// `enum`, and check that the suite reddens — had nowhere to point but the shared
+// sibling checkout. Editing that reddens all ten bindings at once and dirties a
+// repo every one of them is reading, which is precisely why the corpus grew an
+// override in the first place (`#lzoverrideallrunnersaudit`, where 0 of 25 areas
+// reddened because nothing read the env var).
+//
+// So the schemas get the same treatment as the corpus, on the same three terms:
+// the default is unchanged, the value is resolved ONCE, and an explicit override
+// that cannot be read FAILS rather than skipping. The third is the one that
+// matters. Both schema runners already carry a presence probe whose miss prints
+// `skipping: ... not present` and returns green; under an override that probe
+// turns a mistyped scratch path into a suite that validates nothing and says so
+// only on stderr (`#lzzigspecdiroption`). An override naming a directory that is
+// not there is a BROKEN PROBE, and it is reported as one.
+
+/// The schema directory when nothing overrides it.
+const DEFAULT_SCHEMAS_ROOT: &str = "../lazily-spec/schemas";
+
+/// Schema root for this run, or `None` when the default applies.
+///
+/// `LAZILY_SPEC_SCHEMAS_DIR` names the schema directory directly;
+/// `LAZILY_SPEC_DIR` names the sibling checkout, exactly as it does for the
+/// corpus. Resolved once — the schemas a run validates against must not change
+/// halfway through it — and an explicit value that is not a readable directory
+/// panics here, at resolution, so every schema test in the binary fails loudly
+/// instead of quietly falling back to the canonical checkout.
+pub fn schemas_root_override() -> Option<&'static str> {
+    static ROOT: OnceLock<Option<String>> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let (var, value) = match std::env::var("LAZILY_SPEC_SCHEMAS_DIR")
+            .ok()
+            .filter(|v| !v.is_empty())
+        {
+            Some(v) => ("LAZILY_SPEC_SCHEMAS_DIR", v),
+            None => match std::env::var("LAZILY_SPEC_DIR")
+                .ok()
+                .filter(|v| !v.is_empty())
+            {
+                Some(v) => ("LAZILY_SPEC_DIR", format!("{v}/schemas")),
+                None => return None,
+            },
+        };
+        assert!(
+            Path::new(&value).is_dir(),
+            "{var} points the schema runners at `{value}`, which is not a readable \
+             directory. That is a BROKEN PROBE, not a reason to skip: falling back to \
+             `{DEFAULT_SCHEMAS_ROOT}` would validate against the canonical schemas while \
+             reporting on the overridden ones, and skipping would report green having \
+             validated nothing (#lzspecschemasoverride)."
+        );
+        Some(value)
+    })
+    .as_deref()
+}
+
+/// The schema directory this run reads.
+pub fn schemas_root() -> &'static str {
+    schemas_root_override().unwrap_or(DEFAULT_SCHEMAS_ROOT)
+}
+
+/// The resolved path of schema `name` (without the `.json` suffix).
+pub fn schema_path(name: &str) -> PathBuf {
+    Path::new(schemas_root()).join(format!("{name}.json"))
+}
+
+/// Are all of `names` present UNDER THE SCHEMA ROOT THIS RUN READS?
+///
+/// Answering about the default schemas while the run validates against an
+/// overridden set reports on a directory nobody opened. Under an override a
+/// missing schema is a hard failure rather than a `false`, for the same reason
+/// the resolution above is: the probe's `false` leg exists so a checkout without
+/// the sibling can still run the rest of the suite, and an explicit override is a
+/// statement that the sibling is right there.
+pub fn schemas_present(names: &[&str]) -> bool {
+    let missing: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|n| !schema_path(n).exists())
+        .collect();
+    if missing.is_empty() {
+        return true;
+    }
+    assert!(
+        schemas_root_override().is_none(),
+        "the schema root is overridden to `{}`, which is missing: {}. An override \
+         naming an incomplete schema set is a BROKEN PROBE — skipping here would \
+         report green having validated nothing (#lzspecschemasoverride).",
+        schemas_root(),
+        missing.join(", "),
+    );
+    false
+}
+
+/// Read schema `name` from the root this run reads.
+pub fn read_schema(name: &str) -> String {
+    let path = schema_path(name);
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read schema {}: {e}", path.display()))
+}
+
 /// Rewrite a corpus path onto the overridden root (`#lzoverrideallrunnersaudit`).
 ///
 /// Every conformance test in this repo declares its own

@@ -61,6 +61,16 @@ set -euo pipefail
 # line number so an unrelated edit above a site does not churn the baseline, and
 # counted so a second copy of an already-listed reference in the same file is a
 # new site rather than a free one.
+#
+# SCOPE. As of #lzspecschemasoverride this rung covers BOTH lazily-spec roots a
+# test may reach for: `../lazily-spec/conformance` and `../lazily-spec/schemas`.
+# The schemas were previously matched by nothing on the grounds that they are not
+# the corpus, which was true and beside the point — they had no override either,
+# so perturbing a schema meant editing the shared checkout and reddening all ten
+# bindings. They now resolve through the same seam
+# (`common::schemas_root`/`schema_path`/`read_schema`, honouring
+# LAZILY_SPEC_SCHEMAS_DIR), and a respelled default root opts back out of it just
+# as a respelled corpus root does. One baseline covers both, and it is EMPTY.
 CORPUS_ROOT_BASELINE=(
   # EMPTY, and that is the point (#lzrsspecdirconsts). This list carried 45
   # references across 41 files: every conformance test declared its own
@@ -95,15 +105,29 @@ failed somewhere in the family:
   prints OK is the vacuous green (#lzvacuousrun) every rung in this file exists
   to refuse.
 
-`../lazily-spec/schemas` is a deliberate NON-corpus sibling (`SPEC_SCHEMAS_DIR`
-in schema_compliance.rs and lossless_tree_schema.rs). The marker is the
-`conformance` segment itself, so schemas paths are not matched at all rather
-than being matched and then excused.
+`../lazily-spec/schemas` used to be a deliberate NON-corpus sibling, matched by
+nothing: schema_compliance.rs and lossless_tree_schema.rs each spelled it as
+their own `SPEC_SCHEMAS_DIR`. It is now covered (#lzspecschemasoverride). The
+schemas got the same seam the corpus has — `common::schemas_root` /
+`schema_path` / `read_schema`, honouring LAZILY_SPEC_SCHEMAS_DIR — for the same
+reason the corpus needed one: perturbing a schema to check that a runner
+validates against its BYTES had nowhere to point but the shared sibling
+checkout, which reddens every binding at once. A site that respells the default
+root would silently opt back out of that override, exactly as a respelled
+corpus root opts out of LAZILY_SPEC_CONFORMANCE_DIR, so both roots are scanned
+by the same rung and both baselines are EMPTY.
 """
 import os
 import sys
 
-MARKER = "lazily-spec/conformance"
+# Both lazily-spec roots a test may reach for. The `lazily-spec/` prefix is
+# carried in each so a repo-local `conformance/` or `schemas/` directory is not
+# matched.
+MARKERS = ("lazily-spec/conformance", "lazily-spec/schemas")
+
+
+def marks(text):
+    return any(marker in text for marker in MARKERS)
 # The seam itself (#lzoverrideallrunnersaudit). It MUST name the default root:
 # that is where the override is resolved and where the fallback lives.
 ALLOWLIST = {"tests/common/mod.rs"}
@@ -194,7 +218,7 @@ def scan_file(text):
     hits = []
     single = set()
     for idx, (line, value) in enumerate(lits):
-        if MARKER in value.replace("\\", "/"):
+        if marks(value.replace("\\", "/")):
             hits.append((line, "literal", value))
             single.add(idx)
     # Joined-segment form. Windows containing a literal that already matches on
@@ -227,9 +251,9 @@ def scan_file(text):
             parts.append(seg)
             if len(parts) < 2:
                 continue
-            if MARKER in "/".join(parts):
+            if marks("/".join(parts)):
                 first = max(
-                    p for p in range(len(parts)) if MARKER in "/".join(parts[p:])
+                    p for p in range(len(parts)) if marks("/".join(parts[p:]))
                 )
                 hits.append(
                     (lits[start + first][0], "joined", "/".join(parts[first:]))
@@ -303,12 +327,15 @@ for (rel, reference), sites in sorted(found.items()):
     for line, form in sites[allowed:]:
         shape = "joined-segment" if form == "joined" else "literal"
         sys.stderr.write(
-            "ERROR: %s:%d spells the DEFAULT conformance root as a %s (%s),\n"
+            "ERROR: %s:%d spells a DEFAULT lazily-spec root as a %s (%s),\n"
             "       and CORPUS_ROOT_BASELINE does not list it (%d listed for this\n"
             "       file/reference, %d found).\n"
             "       Read the fixture through `common::spec_read_to_string` /\n"
             "       `common::spec_path` / `common::spec_root`, which honour\n"
-            "       LAZILY_SPEC_CONFORMANCE_DIR. Do NOT add an entry here to make a\n"
+            "       LAZILY_SPEC_CONFORMANCE_DIR, and the schema through\n"
+            "       `common::read_schema` / `common::schema_path` /\n"
+            "       `common::schemas_root`, which honour LAZILY_SPEC_SCHEMAS_DIR.\n"
+            "       Do NOT add an entry here to make a\n"
             "       new site pass -- the baseline is a record of debt being retired\n"
             "       under #lzrsspecdirconsts, not a place to park more of it\n"
             "       (#lzcorpusrootguards).\n"

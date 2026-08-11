@@ -10,10 +10,13 @@
 //! conformance fixtures do not yet cover) stays valid against the schemas — a
 //! regression guard symmetric to `lazily-py`'s `test_schema_compliance.py`.
 //!
-//! The schemas live in the sibling `../lazily-spec/schemas`. They share wire
-//! primitives via absolute `$ref` into `defs.json`; rather than pull in an HTTP
-//! retriever, the relevant `$defs` are composed into each message schema at test
-//! time and the external refs rewritten to local ones, yielding a single
+//! The schemas live in the sibling lazily-spec checkout, reached through
+//! [`common::schema_path`] / [`common::read_schema`] so a probe can point this
+//! run at a scratch copy with `LAZILY_SPEC_SCHEMAS_DIR` instead of perturbing the
+//! shared checkout every binding reads (`#lzspecschemasoverride`). They share
+//! wire primitives via absolute `$ref` into `defs.json`; rather than pull in an
+//! HTTP retriever, the relevant `$defs` are composed into each message schema at
+//! test time and the external refs rewritten to local ones, yielding a single
 //! self-contained schema per validation.
 
 mod common;
@@ -27,7 +30,6 @@ use lazily::{
 };
 use serde_json::{Map, Value};
 
-const SPEC_SCHEMAS_DIR: &str = "../lazily-spec/schemas";
 const SCHEMA_FILES: &[&str] = &[
     "defs",
     "snapshot",
@@ -38,14 +40,11 @@ const SCHEMA_FILES: &[&str] = &[
 ];
 
 fn sibling_schemas_present() -> bool {
-    SCHEMA_FILES
-        .iter()
-        .all(|n| std::path::Path::new(&format!("{SPEC_SCHEMAS_DIR}/{n}.json")).exists())
+    common::schemas_present(SCHEMA_FILES)
 }
 
 fn load_json(name: &str) -> Value {
-    let raw = std::fs::read_to_string(format!("{SPEC_SCHEMAS_DIR}/{name}.json"))
-        .unwrap_or_else(|e| panic!("failed to read schema {name}.json: {e}"));
+    let raw = common::read_schema(name);
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("failed to parse schema {name}.json: {e}"))
 }
 
@@ -130,7 +129,10 @@ fn assert_valid_message(message: &IpcMessage, schema_name: &str, defs: &Value) {
 #[test]
 fn snapshot_wire_validates_schema() {
     if !sibling_schemas_present() {
-        eprintln!("skipping: ../lazily-spec/schemas not present (run from the monorepo)");
+        eprintln!(
+            "skipping: {} not present (run from the monorepo)",
+            common::schemas_root()
+        );
         return;
     }
     let defs = load_json("defs");
@@ -170,7 +172,10 @@ fn snapshot_wire_validates_schema() {
 #[test]
 fn delta_wire_validates_schema_all_ops() {
     if !sibling_schemas_present() {
-        eprintln!("skipping: ../lazily-spec/schemas not present (run from the monorepo)");
+        eprintln!(
+            "skipping: {} not present (run from the monorepo)",
+            common::schemas_root()
+        );
         return;
     }
     let defs = load_json("defs");
@@ -214,7 +219,10 @@ fn delta_wire_validates_schema_all_ops() {
 #[test]
 fn crdt_sync_wire_validates_schema() {
     if !sibling_schemas_present() {
-        eprintln!("skipping: ../lazily-spec/schemas not present (run from the monorepo)");
+        eprintln!(
+            "skipping: {} not present (run from the monorepo)",
+            common::schemas_root()
+        );
         return;
     }
     let defs = load_json("defs");
@@ -250,7 +258,10 @@ fn crdt_sync_wire_validates_schema() {
 #[test]
 fn causal_receipts_wire_validates_schema() {
     if !sibling_schemas_present() {
-        eprintln!("skipping: ../lazily-spec/schemas not present (run from the monorepo)");
+        eprintln!(
+            "skipping: {} not present (run from the monorepo)",
+            common::schemas_root()
+        );
         return;
     }
     let defs = load_json("defs");
@@ -354,7 +365,10 @@ fn validate_ipc_fixture(
 #[test]
 fn every_ipc_conformance_fixture_wire_is_schema_valid() {
     if !sibling_schemas_present() {
-        eprintln!("skipping: ../lazily-spec/schemas not present (run from the monorepo)");
+        eprintln!(
+            "skipping: {} not present (run from the monorepo)",
+            common::schemas_root()
+        );
         return;
     }
     let defs = load_json("defs");
@@ -457,7 +471,10 @@ fn every_ipc_conformance_fixture_wire_is_schema_valid() {
 #[test]
 fn command_plane_wire_validates_schema() {
     if !sibling_schemas_present() {
-        eprintln!("skipping: ../lazily-spec/schemas not present (run from the monorepo)");
+        eprintln!(
+            "skipping: {} not present (run from the monorepo)",
+            common::schemas_root()
+        );
         return;
     }
     use lazily::{

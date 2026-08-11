@@ -8,23 +8,26 @@
 //! own emitted frames against the same schemas, so this test is the anchor of
 //! that cross-language loop. Mirrors `tests/schema_compliance.rs` for the IPC
 //! plane. Needs both the `lossless-tree` core and `serde`.
+//!
+//! The schema root is resolved through `common::schemas_root`, so
+//! `LAZILY_SPEC_SCHEMAS_DIR` can point a probe at a scratch copy rather than at
+//! the shared sibling checkout every binding reads (`#lzspecschemasoverride`).
 
 #![cfg(all(feature = "lossless-tree", feature = "serde"))]
+
+mod common;
 
 use lazily::{LeafKind, LosslessTreeCrdt, NodeSeed, TreeNodeId, TreeUpdate};
 use serde_json::Value;
 
-const SPEC_SCHEMAS_DIR: &str = "../lazily-spec/schemas";
+const SCHEMA_FILES: &[&str] = &["lossless-tree", "lossless-tree-delta"];
 
 fn sibling_schemas_present() -> bool {
-    ["lossless-tree", "lossless-tree-delta"]
-        .iter()
-        .all(|n| std::path::Path::new(&format!("{SPEC_SCHEMAS_DIR}/{n}.json")).exists())
+    common::schemas_present(SCHEMA_FILES)
 }
 
 fn load_json(name: &str) -> Value {
-    let raw = std::fs::read_to_string(format!("{SPEC_SCHEMAS_DIR}/{name}.json"))
-        .unwrap_or_else(|e| panic!("failed to read schema {name}.json: {e}"));
+    let raw = common::read_schema(name);
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("failed to parse schema {name}.json: {e}"))
 }
 
@@ -134,7 +137,10 @@ fn all_ops_update() -> (TreeUpdate, Value) {
 #[test]
 fn tree_update_validates_delta_schema() {
     if !sibling_schemas_present() {
-        eprintln!("skipping: ../lazily-spec/schemas not present (run from the monorepo)");
+        eprintln!(
+            "skipping: {} not present (run from the monorepo)",
+            common::schemas_root()
+        );
         return;
     }
     let defs = load_json("lossless-tree");
@@ -146,7 +152,10 @@ fn tree_update_validates_delta_schema() {
 #[test]
 fn frontier_validates_vocabulary_schema() {
     if !sibling_schemas_present() {
-        eprintln!("skipping: ../lazily-spec/schemas not present (run from the monorepo)");
+        eprintln!(
+            "skipping: {} not present (run from the monorepo)",
+            common::schemas_root()
+        );
         return;
     }
     // Validate a real dotted frontier (with a non-contiguous hole) against the
