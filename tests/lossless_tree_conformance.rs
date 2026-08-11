@@ -116,14 +116,68 @@ fn apply_step(world: &mut World, step: &Value) {
     } else if let Some(deliver) = step.get("deliver").and_then(|v| v.as_object()) {
         let from = deliver["from"].as_str().expect("deliver.from");
         let to = deliver["to"].as_str().expect("deliver.to");
+        // The canonical diff: EXACTLY the batch `sync` would send, which `diff`
+        // already returns sorted by dotted `(counter, peer)`. Both selectors are
+        // 0-based indexes INTO this list, so the two step shapes disagree only
+        // about which entries and in what sequence — never about what the list is.
         let full = world.replicas[from].diff(&world.replicas[to].frontier());
-        let only: Vec<usize> = deliver["only"]
-            .as_array()
-            .expect("deliver.only")
+
+        let indexes = |key: &str| -> Vec<usize> {
+            deliver[key]
+                .as_array()
+                .unwrap_or_else(|| panic!("deliver.{key} must be an array of indexes"))
+                .iter()
+                .map(|v| {
+                    v.as_u64().unwrap_or_else(|| {
+                        panic!("deliver.{key} entries must be non-negative integers, got {v}")
+                    }) as usize
+                })
+                .collect()
+        };
+
+        // Exactly one of `only` / `order`. Defaulting to either when both or
+        // neither are present would silently replay a batch the fixture never
+        // described — and the whole point of `order` is that the batch's
+        // SEQUENCE is the thing under test.
+        let picked: Vec<usize> = match (deliver.contains_key("only"), deliver.contains_key("order"))
+        {
+            // `only`: that SUBSET, delivered in canonical order.
+            (true, false) => {
+                let mut idx = indexes("only");
+                idx.sort_unstable();
+                idx
+            }
+            // `order`: exactly those entries, in the LISTED sequence, so an op
+            // can arrive before the op it depends on. Deliberately not sorted,
+            // deliberately not deduplicated, and need not cover the whole diff.
+            (false, true) => indexes("order"),
+            (true, true) => panic!(
+                "deliver step carries BOTH `only` and `order`; exactly one is required: {step}"
+            ),
+            (false, false) => panic!(
+                "deliver step carries NEITHER `only` nor `order`; exactly one is required: {step}"
+            ),
+        };
+
+        // An index past the end of the canonical diff means the fixture and this
+        // binding disagree about what `from` owes `to`. Clamping or skipping
+        // would deliver a different batch under the fixture's name, so fail.
+        let ops = picked
             .iter()
-            .map(|v| v.as_u64().unwrap() as usize)
+            .map(|&i| {
+                full.ops.get(i).cloned().unwrap_or_else(|| {
+                    panic!(
+                        "deliver index {i} is out of range: the canonical diff from `{from}` \
+                         to `{to}` holds {} op(s)",
+                        full.ops.len()
+                    )
+                })
+            })
             .collect();
-        let ops = only.iter().map(|&i| full.ops[i].clone()).collect();
+
+        // ONE `apply_update` call. Splitting the batch across calls would let the
+        // runner's own loop supply the ordering the library's dependency buffer
+        // is supposed to supply, which is exactly the behaviour under test.
         world
             .replicas
             .get_mut(to)
@@ -340,4 +394,26 @@ fn conformance_invalid_source_roundtrip() {
 #[test]
 fn conformance_concurrent_conflict_preserves_text() {
     run_fixture("concurrent_conflict_preserves_text.json");
+}
+
+/// `apply_update` advances the Lamport counter past every observed op —
+/// unconditionally, and BEFORE the idempotence skip — so a write minted AFTER a
+/// sync outranks the stamps that sync delivered. The only lossless-tree scenario
+/// that mutates a replica after a sync INTO it, which is why no earlier fixture
+/// could see this. Both replicas still converge when the counter is not
+/// advanced, so `render_on` is the load-bearing assertion, not `converged`.
+#[test]
+fn conformance_apply_update_advances_counter() {
+    run_fixture("apply_update_advances_counter.json");
+}
+
+/// `apply_update` BUFFERS an op whose dependency has not arrived and retries it
+/// as later ops in the same batch land. The batch is delivered in strictly
+/// reversed order as ONE call (`deliver.order`), so every op precedes the op it
+/// depends on; without the buffer the `LeafEdit` is dropped while its dot is
+/// recorded, and the trailing full sync cannot repair it because both frontiers
+/// already hold every op.
+#[test]
+fn conformance_out_of_order_delivery_buffers() {
+    run_fixture("out_of_order_delivery_buffers.json");
 }
