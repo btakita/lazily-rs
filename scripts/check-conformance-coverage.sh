@@ -19,6 +19,382 @@
 # that state is the vacuous green this guard exists to prevent.
 set -euo pipefail
 
+# ---------------------------------------------------------------------------
+# Corpus-root regression guard (#lzcorpusrootguards)
+# ---------------------------------------------------------------------------
+#
+# THE MEASUREMENT. `LAZILY_SPEC_CONFORMANCE_DIR` repoints every replay at a
+# scratch copy of the corpus, which is how a binding is checked for reading the
+# bytes it claims to read: truncate one fixture per area in the scratch copy and
+# every area must redden. lazily-rs honoured NO environment variable at all, so
+# that probe reddened 0 of 25 areas while the same truncated bytes read directly
+# redden all 25. c6c50b7 fixed the READS by redirecting at
+# `tests/common/mod.rs::spec_read_to_string` -- the single seam every corpus read
+# already passes through -- rather than threading the override into each runner.
+#
+# WHAT THIS RUNG GUARDS. The seam is a redirect, not a prohibition: 45 sites in
+# 41 test files still spell the DEFAULT root themselves
+# (`const SPEC_DIR: &str = "../lazily-spec/conformance/<area>"`, plus the inline
+# uses in durable_outbox.rs, stdlib_conformance.rs,
+# dependency_availability_conformance.rs and schema_compliance.rs). With
+# tests/common/mod.rs's own two, that is the 47 the seam's doc comment cites.
+# None of them is a correctness bug TODAY, because the seam rewrites them
+# on the way through, so a guard that failed on all 45 would be unlandable. What
+# a guard can do is make the debt countable and stop it growing: the 45 are
+# enumerated below, a NEW one FAILS, and a listed one that disappears also FAILS
+# as a stale entry. `#lzrsspecdirconsts` is the companion item that retires them;
+# this baseline is expected to SHRINK, and shrinking it is a deliberate edit here
+# rather than a silent drift.
+#
+# WHAT IT DOES NOT COVER, stated so nobody reads a green run as more than it is:
+# it proves nothing about whether a site's reads go through the seam. A runner
+# that spells no path at all and calls `std::fs::read_to_string` on a value
+# handed to it is invisible here. The runtime manifest below is the rung that
+# sees that, because it observes reads rather than source text.
+#
+# The scan is over SOURCES, so it deliberately runs BEFORE the corpus-presence
+# check: a checkout without the lazily-spec sibling can still grow a new default
+# root, and skipping this rung there would be the same look-away the guard exists
+# to prevent.
+#
+# Entries are `path|corpus-root-reference|count`, keyed by CONTENT rather than by
+# line number so an unrelated edit above a site does not churn the baseline, and
+# counted so a second copy of an already-listed reference in the same file is a
+# new site rather than a free one.
+CORPUS_ROOT_BASELINE=(
+  "tests/blob_backend_discriminator_conformance.rs|../lazily-spec/conformance/codec|1"
+  "tests/boundary_ingress_conformance.rs|../lazily-spec/conformance/ingress/boundary_ingress_adapter.json|1"
+  "tests/codec_roundtrip_conformance.rs|../lazily-spec/conformance/codec|1"
+  "tests/collections_conformance.rs|../lazily-spec/conformance/collections|1"
+  "tests/collections_family_conformance.rs|../lazily-spec/conformance/collections|1"
+  "tests/command_conformance.rs|../lazily-spec/conformance/message-passing|1"
+  "tests/conformance.rs|../lazily-spec/conformance|1"
+  "tests/coordination_conformance.rs|../lazily-spec/conformance/coordination|1"
+  "tests/crdt_tree_laws.rs|../lazily-spec/conformance/crdt-tree/algebra.json|1"
+  "tests/dependency_availability_conformance.rs|../lazily-spec/conformance/collections/dependency_reactive_availability.json|1"
+  "tests/distributed_conformance.rs|../lazily-spec/conformance/distributed|1"
+  "tests/durable_outbox.rs|../lazily-spec/conformance/reliable-sync/outbox_store_protocol.json|2"
+  "tests/egress_family_conformance.rs|../lazily-spec/conformance/egress|1"
+  "tests/familysync_conformance.rs|../lazily-spec/conformance/familysync/materialize_on_ingest.json|1"
+  "tests/ingress_family_conformance.rs|../lazily-spec/conformance/ingress|1"
+  "tests/lossless_tree_conformance.rs|../lazily-spec/conformance/lossless-tree|1"
+  "tests/materialization_async_conformance.rs|../lazily-spec/conformance/materialization|1"
+  "tests/materialization_conformance.rs|../lazily-spec/conformance/materialization|1"
+  "tests/materialization_threadsafe_conformance.rs|../lazily-spec/conformance/materialization|1"
+  "tests/membership_conformance.rs|../lazily-spec/conformance/membership|1"
+  "tests/merge_conformance.rs|../lazily-spec/conformance/collections|1"
+  "tests/nodeid_exact_range_conformance.rs|../lazily-spec/conformance/codec|1"
+  "tests/nodekey_null_leniency_conformance.rs|../lazily-spec/conformance/codec|1"
+  "tests/presence_conformance.rs|../lazily-spec/conformance/presence|1"
+  "tests/protobuf_graph_boundary.rs|../lazily-spec/conformance/protobuf/graph_boundary_traces.json|1"
+  "tests/queue_conformance.rs|../lazily-spec/conformance/collections|1"
+  "tests/queue_family_conformance.rs|../lazily-spec/conformance/collections|1"
+  "tests/rateshape_conformance.rs|../lazily-spec/conformance/rateshape|1"
+  "tests/reactive_graph_conformance.rs|../lazily-spec/conformance/reactive-graph|1"
+  "tests/registers_conformance.rs|../lazily-spec/conformance/collections|1"
+  "tests/reliable_sync_conformance.rs|../lazily-spec/conformance/reliable-sync|1"
+  "tests/resilience_conformance.rs|../lazily-spec/conformance/resilience|1"
+  "tests/schema_compliance.rs|../lazily-spec/conformance|1"
+  "tests/seqcrdt_conformance.rs|../lazily-spec/conformance/collections|1"
+  "tests/service_conformance.rs|../lazily-spec/conformance/service|1"
+  "tests/signaling_negative_conformance.rs|../lazily-spec/conformance/signaling/anti_spoof_session.json|1"
+  "tests/signaling_negative_conformance.rs|../lazily-spec/conformance/signaling/frames.json|1"
+  "tests/statechart_conformance.rs|../lazily-spec/conformance/statechart|1"
+  "tests/stdlib_conformance.rs|../lazily-spec/conformance/stdlib/revision_barrier.json|1"
+  "tests/stdlib_conformance.rs|../lazily-spec/conformance/stdlib/timeout.json|1"
+  "tests/stdlib_conformance.rs|../lazily-spec/conformance/stdlib/timer.json|1"
+  "tests/temporal_conformance.rs|../lazily-spec/conformance/temporal|1"
+  "tests/windowing_conformance.rs|../lazily-spec/conformance/windowing|1"
+  "tests/work_queue_conformance.rs|../lazily-spec/conformance/collections|1"
+)
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "FAIL: python3 is required by the corpus-root guard (#lzcorpusrootguards)." >&2
+  exit 1
+fi
+
+CORPUS_ROOT_BASELINE_TEXT="$(printf '%s\n' "${CORPUS_ROOT_BASELINE[@]:-}")" \
+python3 - ${LAZILY_CORPUS_ROOT_SCAN_DIRS:-tests benches examples} <<'PY'
+"""Fail on a NEW site spelling the default conformance root, or a stale one.
+
+Three properties this scan is built for, each of which a plainer one has already
+failed somewhere in the family:
+
+* Comments are stripped, because many files legitimately quote the path while
+  explaining it, and a guard that fired on prose would be reverted within a day.
+  Stripping happens in the SAME pass that finds the literals, so a `//` inside a
+  string does not open a comment.
+* The JOINED-SEGMENT form is caught. lazily-go's and lazily-js's guards were both
+  proven evadable by `Path::new("..").join("lazily-spec").join("conformance")`,
+  and lazily-dart's first draft was too. Consecutive literals are concatenated
+  and the concatenation is matched, so splitting a path across `.join(...)` calls
+  or across `"../lazily-spec"` + `"/conformance"` buys nothing.
+* Examining nothing FAILS. A scan that walks an empty tree, matches nothing and
+  prints OK is the vacuous green (#lzvacuousrun) every rung in this file exists
+  to refuse.
+
+`../lazily-spec/schemas` is a deliberate NON-corpus sibling (`SPEC_SCHEMAS_DIR`
+in schema_compliance.rs and lossless_tree_schema.rs). The marker is the
+`conformance` segment itself, so schemas paths are not matched at all rather
+than being matched and then excused.
+"""
+import os
+import sys
+
+MARKER = "lazily-spec/conformance"
+# The seam itself (#lzoverrideallrunnersaudit). It MUST name the default root:
+# that is where the override is resolved and where the fallback lives.
+ALLOWLIST = {"tests/common/mod.rs"}
+# How many consecutive literals may be concatenated when looking for the joined
+# form. Four segments reach `".." + "lazily-spec" + "conformance" + "<area>"`.
+WINDOW = 5
+
+
+def literals(text):
+    """`(line, value)` for every Rust string literal OUTSIDE comments.
+
+    Char literals are not tokenised: in this corpus `'` is a lifetime far more
+    often than a quote, and no char literal carries a path. Raw strings and
+    nested block comments are handled, because both appear in these files.
+    """
+    out = []
+    i = 0
+    line = 1
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == "\n":
+            line += 1
+            i += 1
+        elif c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+        elif c == "/" and i + 1 < n and text[i + 1] == "*":
+            depth = 1
+            i += 2
+            while i < n and depth:
+                if text.startswith("/*", i):
+                    depth += 1
+                    i += 2
+                elif text.startswith("*/", i):
+                    depth -= 1
+                    i += 2
+                else:
+                    if text[i] == "\n":
+                        line += 1
+                    i += 1
+        elif c == "r" and i + 1 < n and text[i + 1] in '#"':
+            j = i + 1
+            hashes = 0
+            while j < n and text[j] == "#":
+                hashes += 1
+                j += 1
+            if j < n and text[j] == '"':
+                start_line = line
+                j += 1
+                close = '"' + "#" * hashes
+                buf = []
+                while j < n and not text.startswith(close, j):
+                    if text[j] == "\n":
+                        line += 1
+                    buf.append(text[j])
+                    j += 1
+                out.append((start_line, "".join(buf)))
+                i = j + len(close)
+            else:
+                i += 1
+        elif c == '"':
+            start_line = line
+            i += 1
+            buf = []
+            while i < n and text[i] != '"':
+                if text[i] == "\\" and i + 1 < n:
+                    esc = text[i + 1]
+                    buf.append({"n": "\n", "t": "\t", "r": "\r"}.get(esc, esc))
+                    if esc == "\n":
+                        line += 1
+                    i += 2
+                    continue
+                if text[i] == "\n":
+                    line += 1
+                buf.append(text[i])
+                i += 1
+            out.append((start_line, "".join(buf)))
+            i += 1
+        else:
+            i += 1
+    return out
+
+
+def scan_file(text):
+    """`(line, form, reference)` for every default-root reference in `text`."""
+    lits = literals(text)
+    hits = []
+    single = set()
+    for idx, (line, value) in enumerate(lits):
+        if MARKER in value.replace("\\", "/"):
+            hits.append((line, "literal", value))
+            single.add(idx)
+    # Joined-segment form. Windows containing a literal that already matches on
+    # its own are skipped, so one site is never counted twice, and a matched
+    # window is CONSUMED so overlapping windows do not report the same site
+    # several times. Segments are normalised by stripping separators, which
+    # collapses `Path::new("..").join("lazily-spec").join("conformance")` and
+    # `"../lazily-spec"` + `"/conformance"` onto the same joined reference.
+    #
+    # There is deliberately NO limit on how far apart the segments may sit. Two
+    # consts declared at opposite ends of a file concatenate exactly as well as a
+    # `.join()` chain, and a proximity rule would be an evasion route. The cost is
+    # that a window can pick up an unrelated leading segment, so the match is
+    # trimmed to the LAST starting segment that still reaches the marker before it
+    # is reported -- that is the segment the path really begins at, and its line
+    # is the one worth naming.
+    start = 0
+    while start < len(lits):
+        if start in single:
+            start += 1
+            continue
+        parts = []
+        matched = False
+        for end in range(start, min(start + WINDOW, len(lits))):
+            if end in single:
+                break
+            seg = lits[end][1].replace("\\", "/").strip("/")
+            if not seg:
+                break
+            parts.append(seg)
+            if len(parts) < 2:
+                continue
+            if MARKER in "/".join(parts):
+                first = max(
+                    p for p in range(len(parts)) if MARKER in "/".join(parts[p:])
+                )
+                hits.append(
+                    (lits[start + first][0], "joined", "/".join(parts[first:]))
+                )
+                start = end + 1
+                matched = True
+                break
+        if not matched:
+            start += 1
+    return hits
+
+
+baseline = {}
+for raw in os.environ.get("CORPUS_ROOT_BASELINE_TEXT", "").splitlines():
+    raw = raw.strip()
+    if not raw:
+        continue
+    parts = raw.split("|")
+    if len(parts) != 3 or not parts[2].isdigit():
+        sys.stderr.write(
+            "ERROR: malformed CORPUS_ROOT_BASELINE entry %r "
+            "(want 'path|reference|count').\n" % raw
+        )
+        sys.exit(1)
+    baseline[(parts[0], parts[1])] = int(parts[2])
+
+sources = []
+for directory in sys.argv[1:]:
+    if not os.path.isdir(directory):
+        continue
+    for root, _, names in os.walk(directory):
+        for name in sorted(names):
+            if name.endswith(".rs"):
+                sources.append(os.path.join(root, name))
+sources.sort()
+
+# ---- Positive-evidence floor (#lzvacuousrun) ----
+# Everything below reasons about files this scan opened. Zero files means zero
+# references, which means zero unlisted references, which reports OK having read
+# nothing at all. Refuse before comparing.
+if not sources:
+    sys.stderr.write(
+        "ERROR: the corpus-root scan examined ZERO Rust sources under %s.\n"
+        "       That is missing EVIDENCE, not evidence of absence: a scan over an\n"
+        "       empty tree matches nothing and would otherwise report OK\n"
+        "       (#lzvacuousrun). Check the working directory and\n"
+        "       LAZILY_CORPUS_ROOT_SCAN_DIRS.\n" % (" ".join(sys.argv[1:]) or "(none)")
+    )
+    sys.exit(1)
+
+found = {}
+for path in sources:
+    rel = os.path.relpath(path).replace(os.sep, "/")
+    if rel in ALLOWLIST:
+        continue
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        text = handle.read()
+    for line, form, reference in scan_file(text):
+        found.setdefault((rel, reference), []).append((line, form))
+
+problems = 0
+
+# Direction 1: a reference nobody listed. This is the growth this rung exists to
+# stop -- every new one of these is another site the #lzrsspecdirconsts cleanup
+# has to find, and another place the default root can be reintroduced after the
+# seam is simplified away.
+for (rel, reference), sites in sorted(found.items()):
+    allowed = baseline.get((rel, reference), 0)
+    if len(sites) <= allowed:
+        continue
+    for line, form in sites[allowed:]:
+        shape = "joined-segment" if form == "joined" else "literal"
+        sys.stderr.write(
+            "ERROR: %s:%d spells the DEFAULT conformance root as a %s (%s),\n"
+            "       and CORPUS_ROOT_BASELINE does not list it (%d listed for this\n"
+            "       file/reference, %d found).\n"
+            "       Read the fixture through `common::spec_read_to_string` /\n"
+            "       `common::spec_path` / `common::spec_root`, which honour\n"
+            "       LAZILY_SPEC_CONFORMANCE_DIR. Do NOT add an entry here to make a\n"
+            "       new site pass -- the baseline is a record of debt being retired\n"
+            "       under #lzrsspecdirconsts, not a place to park more of it\n"
+            "       (#lzcorpusrootguards).\n"
+            % (rel, line, shape, reference, allowed, len(sites))
+        )
+        problems += 1
+
+# Direction 2: a listed reference that is gone or thinned out, the same
+# stale-entry check KNOWN_UNCOVERED runs (#lzcovallowlistrot). A baseline that
+# outlives the debt it describes silently absorbs the next real site.
+for (rel, reference), allowed in sorted(baseline.items()):
+    actual = len(found.get((rel, reference), []))
+    if actual >= allowed:
+        continue
+    sys.stderr.write(
+        "ERROR: CORPUS_ROOT_BASELINE lists %d x '%s' in %s, but the scan found %d.\n"
+        "       The entry is STALE -- the site was retired or moved. Lower the count\n"
+        "       (or delete the entry) so the baseline keeps describing the real\n"
+        "       debt; leaving it inflated buys a free slot for the next new site\n"
+        "       (#lzcorpusrootguards).\n" % (allowed, reference, rel, actual)
+    )
+    problems += 1
+
+if problems:
+    sys.stderr.write("corpus-root guard FAILED: %d problem(s)\n" % problems)
+    sys.exit(1)
+
+total = sum(len(sites) for sites in found.values())
+# Second positive-evidence check. The baseline is non-empty, so a scan that
+# suddenly matches nothing has stopped working rather than found a clean tree --
+# and direction 2 above would already have said so. Assert the magnitude anyway,
+# because the day the baseline reaches zero this is the only thing standing
+# between a broken matcher and a green run.
+if baseline and total == 0:
+    sys.stderr.write(
+        "ERROR: %d Rust sources examined and NOT ONE default-root reference found,\n"
+        "       while CORPUS_ROOT_BASELINE lists %d. The matcher is broken.\n"
+        % (len(sources), sum(baseline.values()))
+    )
+    sys.exit(1)
+
+print(
+    "corpus-root guard OK: %d default-root reference(s) across %d file(s), all "
+    "baselined (%d Rust sources scanned; #lzcorpusrootguards)"
+    % (total, len({rel for rel, _ in found}), len(sources))
+)
+PY
+
 SPEC_DIR="${LAZILY_SPEC_CONFORMANCE_DIR:-../lazily-spec/conformance}"
 
 # A missing corpus is a legitimate local state (no sibling checkout) and an
