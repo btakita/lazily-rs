@@ -248,7 +248,37 @@ this repo.
   per-step ones — and the declaration is evaluated on the RAW block FIRST: a
   tracker that subtracts its reserved names before consulting `assertions.prose`
   makes both `frame_roundtrip_*.json` declarations invisible and skips the whole
-  convention while still reporting conforming
+  convention while still reporting conforming.
+  Rung 5 is the **object-valued key-set guard** (`#lzsubblockkeyset`), the same
+  defect one level DOWN: an assertion key whose VALUE is a JSON object, compared
+  field by field and never by its key set, so a field added upstream is compared
+  by nothing while every rung above reports clean — the parent key is read,
+  asserted and consumed. Found by the `#lznullformblind` perturbation pass in
+  lazily-zig on `arena_blob.json`'s `descriptor`. The fix is in the TRACKER, not
+  a per-call-site field count that holds only while every site remembers: three
+  entry points satisfy the obligation — `Expect::sub` / `Expect::sub_if_present`
+  (descent, the child owns every sub-key, so an unrecognised one is an
+  unconsumed key), `Expect::assert_key_set` (the fixture's key set compared in
+  BOTH directions against the set the run produced, for a VOCABULARY whose values
+  are glosses nothing can compare), and `Expect::assert_key`/`assert_key_at`
+  (whole-`Value` equality subsumes key-set equality). `Expect::check` then FAILS
+  at drop for any object-valued key consumed through `assert_key_with`,
+  `assert_key_if_present` or a bare `get` without one of the three; `excuse_key`
+  and `prose_key` stay available and already require a recorded reason. The guard
+  is deliberately NOT scoped to top-level `assertions` blocks — it covers every
+  block the tracker guards, which is where the defect actually lives: 25 distinct
+  block/key shapes across 27 test targets in this suite, `invalidates` most of
+  all. Array-valued vocabularies are out of scope (already guarded by set
+  difference under `#lzblobbackendstrict`). Both of this binding's top-level
+  object-valued keys were covered only BY ACCIDENT before — `descriptor` by a
+  `#[serde(deny_unknown_fields)]` attribute on a test-local struct, `outcomes` by
+  a hand-rolled set comparison inside a closure the tracker could not see — while
+  a key planted inside `queuecell_spsc_push_pop.json`'s `expected.invalidates`
+  left the whole suite GREEN. Self-tested in `tests/expect_guard.rs` (opaque
+  consumption fails and names the key; descent, key-set and whole-value equality
+  each satisfy it; a planted sub-key reddens under each; both set directions;
+  array values untouched), and mutation-checked by neutering the descend /
+  key-set bookkeeping, which names 25 sites instead of reporting clean
 - `tests/state_table_pilot.rs` — the `#lazilystatetable` pilot: Agent Doc's
   retained-document-transition decision as a typed table (Phase 1 — written
   *before* any Agent Doc runtime change, so nothing here reaches into that repo).
@@ -545,7 +575,7 @@ authoring `AGENTS.md`, `SKILL.md`, or runbooks in this repo must read:
 
 before making changes.
 
-<!-- tsift:code-navigation v=0.1.79 -->
+<!-- tsift:code-navigation v=0.1.80 -->
 ## Code Navigation
 
 Run `tsift status` at session start from the owning repo root. If the task or file lives under a git submodule (for example `src/tsift/...`), switch to that submodule root first so the harness loads the narrower local instructions and repo state instead of the superproject root. If status prints a `run:` recommendation for stale or missing tsift state, run `tsift status --fix` before relying on tsift results; when the harness cannot perform write commands, ask the user to run the printed command instead.
