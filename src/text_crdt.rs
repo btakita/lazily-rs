@@ -449,6 +449,22 @@ impl TextCrdt {
     /// visible text changed.
     pub fn apply_delta(&mut self, ops: &[TextOp]) -> bool {
         let before = self.text();
+        self.apply_delta_unprojected(ops);
+        self.text() != before
+    }
+
+    /// Apply a delta without materializing the visible text before and after.
+    ///
+    /// This is the transport/recovery fast path for callers that already own a
+    /// projection cache or only need to know whether stored CRDT state changed.
+    /// It preserves the same commutative, associative, and idempotent merge as
+    /// [`Self::apply_delta`], but returns whether the stored operation graph or
+    /// local counter advanced rather than whether the visible string changed.
+    /// Avoiding `text()` matters for retained histories: projection orders the
+    /// complete operation graph even when an incoming snapshot is idempotent.
+    pub fn apply_delta_unprojected(&mut self, ops: &[TextOp]) -> bool {
+        let before_counter = self.counter;
+        let mut changed = false;
         for op in ops {
             self.counter = self.counter.max(op.id.counter());
             if let Some(d) = op.deleted {
@@ -456,10 +472,12 @@ impl TextCrdt {
             }
             match self.elems.get_mut(&op.id) {
                 Some(e) => {
-                    e.deleted = match (e.deleted, op.deleted) {
+                    let deleted = match (e.deleted, op.deleted) {
                         (Some(a), Some(b)) => Some(a.min(b)),
                         (a, b) => a.or(b),
                     };
+                    changed |= deleted != e.deleted;
+                    e.deleted = deleted;
                 }
                 None => {
                     self.elems.insert(
@@ -470,10 +488,11 @@ impl TextCrdt {
                             deleted: op.deleted,
                         },
                     );
+                    changed = true;
                 }
             }
         }
-        self.text() != before
+        changed || self.counter != before_counter
     }
 }
 
@@ -571,6 +590,20 @@ mod tests {
         let delta = a.delta_since(&TextVersionVector::new());
         assert!(b.apply_delta(&delta));
         assert!(!b.apply_delta(&delta), "re-applying a delta is a no-op");
+        assert_eq!(b.text(), a.text());
+    }
+
+    #[test]
+    fn unprojected_delta_apply_reports_structural_change_without_rendering() {
+        let a = TextCrdt::from_str(1, "retained state\n");
+        let delta = a.delta_since(&TextVersionVector::new());
+        let mut b = TextCrdt::new(2);
+
+        assert!(b.apply_delta_unprojected(&delta));
+        assert!(
+            !b.apply_delta_unprojected(&delta),
+            "an exact replay must be a structural no-op"
+        );
         assert_eq!(b.text(), a.text());
     }
 
