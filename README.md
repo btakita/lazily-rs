@@ -40,7 +40,7 @@ canonical matrix with per-cell notes and platform carve-outs lives in
 | Work queue | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | CRDT data types | ✅ | ~ | ~ | ~ | ~ | ~ | ~ | ~ | ✅ | — |
 | Lossless tree | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| Egress | ✅ | ~ | ~ | ~ | ~ | ~ | ~ | ~ | ~ | — |
+| Egress | ~ | ~ | ~ | ~ | ~ | ~ | ~ | ~ | ~ | — |
 | Ingress | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | Wire codec | ✅ | ✅ | ✅ | ✅ | ~ | ✅ | ✅ | ✅ | ✅ | — |
 | Transport & FFI | ✅ | ✅ | ✅ | ~ | ~ | ✅ | ✅ | ~ | ✅ | — |
@@ -62,7 +62,7 @@ canonical matrix with per-cell notes and platform carve-outs lives in
 
 **Roll-up rule:** a family cell is `✅` only when *every required* row in that family is `✅`; `~` when the family is mixed (some shipped or partial); `—` when no required row is shipped or partial; `⊘` only when every required row in the family is not applicable. Rows the spec marks **MAY** (`optional`) are excluded from the roll-up — declining an optional feature is not a gap.
 
-A family cell summarises 74 feature rows. For row-level marks, per-cell notes, and platform carve-outs see [the canonical coverage matrix in `lazily-spec`](https://github.com/lazily-hub/lazily-spec/blob/main/docs/coverage.md).
+A family cell summarises 75 feature rows. For row-level marks, per-cell notes, and platform carve-outs see [the canonical coverage matrix in `lazily-spec`](https://github.com/lazily-hub/lazily-spec/blob/main/docs/coverage.md).
 <!-- coverage-table:end -->
 
 CRDT convergence and the wire protocol are pinned by the shared conformance fixtures
@@ -411,6 +411,22 @@ the formal backstop is `lazily-formal/LazilyFormal/DurableSink.lean`.
 | `cell.clear_dependents(&ctx)` | Clear downstream slots without changing cell value |
 | `effect.dispose(&ctx)` | Dispose an effect and unsubscribe dependencies |
 | `effect.is_active(&ctx)` | Check whether an effect is still registered |
+
+### Latest-durable projections
+
+`LatestDurableProjectionCore<K, V>` is the delivery authority for sinks where
+only the latest desired value per key must become durable. `upsert_desired`
+conflates pending revisions by monotone epoch, `claim` permits at most one
+in-flight revision per key, and `ack_applied` advances `durable_through` without
+letting an older success clear a newer desire. `fail_retryable` leaves the
+latest revision pending, while `reconnect` fences receipts from an older sink
+generation and requeues its in-flight work.
+
+`LatestDurableProjection`, `ThreadSafeLatestDurableProjection`, and
+`AsyncLatestDurableProjection` expose the same transition algebra through the
+three graph flavors. Their snapshot handles let one application-owned Effect
+drive a storage or IPC adapter; the primitive owns desired/in-flight/durable
+state, not the transport or a history of obsolete commands.
 
 ### Lazily standard library
 

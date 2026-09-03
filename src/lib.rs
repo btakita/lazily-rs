@@ -59,6 +59,8 @@ mod async_context;
 #[cfg(feature = "async")]
 mod async_egress;
 #[cfg(feature = "async")]
+mod async_latest_durable_projection;
+#[cfg(feature = "async")]
 mod async_reactive_family;
 mod boundary_ingress;
 mod boundary_ingress_core;
@@ -107,6 +109,8 @@ mod instrumentation;
 #[cfg(feature = "ipc")]
 mod ipc;
 mod keyed_order;
+mod latest_durable_projection;
+mod latest_durable_projection_core;
 #[cfg(feature = "lossless-tree")]
 mod lossless_tree_crdt;
 mod membership;
@@ -153,6 +157,8 @@ mod thread_safe_egress;
 #[cfg(feature = "thread-safe")]
 mod thread_safe_ingress;
 #[cfg(feature = "thread-safe")]
+mod thread_safe_latest_durable_projection;
+#[cfg(feature = "thread-safe")]
 mod thread_safe_queue;
 #[cfg(feature = "thread-safe")]
 mod thread_safe_reactive_family;
@@ -192,6 +198,8 @@ pub use async_context::{
 pub use async_egress::AsyncEgressCell;
 #[cfg(feature = "async")]
 pub use async_ingress::AsyncIngressCell;
+#[cfg(feature = "async")]
+pub use async_latest_durable_projection::AsyncLatestDurableProjection;
 #[cfg(feature = "async")]
 pub use async_queue::{AsyncQueueCell, AsyncQueueReaderHandles};
 #[cfg(feature = "async")]
@@ -313,6 +321,12 @@ pub use ipc::{
     )
 ))]
 pub use ipc::{DecodeError, EncodeError};
+pub use latest_durable_projection::LatestDurableProjection;
+pub use latest_durable_projection_core::{
+    LatestDurableAck, LatestDurableChange, LatestDurableClaim, LatestDurableEnvelope,
+    LatestDurableFailure, LatestDurableKeyState, LatestDurableProjectionCore,
+    LatestDurableReconnect, LatestDurableRevision, LatestDurableSnapshot, LatestDurableUpsert,
+};
 pub use lazily_macros::{cell, computed, slot, source};
 #[cfg(feature = "lossless-tree")]
 pub use lossless_tree_crdt::{
@@ -417,6 +431,8 @@ pub use thread_safe_boundary_ingress::ThreadSafeBoundaryIngressCell;
 pub use thread_safe_egress::ThreadSafeEgressCell;
 #[cfg(feature = "thread-safe")]
 pub use thread_safe_ingress::ThreadSafeIngressCell;
+#[cfg(feature = "thread-safe")]
+pub use thread_safe_latest_durable_projection::ThreadSafeLatestDurableProjection;
 #[cfg(feature = "thread-safe")]
 pub use thread_safe_queue::ThreadSafeQueueCell;
 #[cfg(feature = "thread-safe")]
