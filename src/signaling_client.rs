@@ -14,6 +14,11 @@
 //!
 //! Enabled by the `signaling-client` feature.
 
+// `SignalingError` is public and changing its WebSocket variant to a box would
+// be an API break. Keep the transparent transport error until the next planned
+// breaking release; Rust 1.98's new size heuristic does not change correctness.
+#![allow(clippy::result_large_err)]
+
 use crate::distributed::PeerId;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};

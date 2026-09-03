@@ -1984,7 +1984,7 @@ impl AsyncContext {
         let effect_ids: Vec<SlotId>;
         {
             let mut inner = self.inner.lock();
-            effect_ids = inner.pending_async_effects.drain(..).collect();
+            effect_ids = std::mem::take(&mut inner.pending_async_effects);
             inner.scheduled_async_effects.clear();
         }
         let ctx_inner = self.inner.clone();
